@@ -50,7 +50,7 @@ The CLI prints a JSON report. Save a GUI run report after the session ends. The 
 
 Send and receive spacing are host timestamps taken near Npcap injection and dequeue. The synthetic fixture measures the same application paths against generated data. Missed deadlines count full elapsed slots at the next dispatch. Deadline mode skips elapsed slots and relative mode rebases the next cycle. The run report separates WKC mismatches, AL mismatches, reply timeouts and logger overruns. A normal GUI close or CLI Ctrl+C stops the worker and drains the writer.
 
-See the [EtherCrab source review](docs/ethercrab-review.md) [verification results](VERIFICATION.md), and [roadmap](ROADMAP.md).
+See the [EtherCrab source review](docs/ethercrab-review.md), [verification results](VERIFICATION.md), and [roadmap](ROADMAP.md).
 
 ## Maintainers
 
@@ -58,7 +58,7 @@ See the [EtherCrab source review](docs/ethercrab-review.md) [verification result
 
 ## Contributing
 
-Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.1.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
 
 ## License
 
