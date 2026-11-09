@@ -1,0 +1,3 @@
+[env]
+# Use Npcap's immediate-mode API on Windows even if the SDK lib directory contains no DLL.
+LIBPCAP_VER = "1.5.0"

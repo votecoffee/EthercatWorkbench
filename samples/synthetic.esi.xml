@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.6">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench synthetic fixture</Name></Vendor>
+  <Descriptions>
+    <Devices>
+      <Device>
+        <Type ProductCode="#x00000001" RevisionNo="#x00000001">BenchFixture</Type>
+        <Name LcId="1033">Bench fixture revision 1</Name>
+        <RxPdo Sm="2">
+          <Index>#x1600</Index>
+          <Entry><Index>#x7000</Index><SubIndex>1</SubIndex><BitLen>16</BitLen><Name>Staged setpoint</Name><DataType>INT</DataType></Entry>
+        </RxPdo>
+        <TxPdo Sm="3">
+          <Index>#x1A00</Index>
+          <Entry><Index>#x6000</Index><SubIndex>1</SubIndex><BitLen>16</BitLen><Name>Counter</Name><DataType>UINT</DataType></Entry>
+          <Entry><Index>#x6000</Index><SubIndex>2</SubIndex><BitLen>1</BitLen><Name>Sensor active</Name><DataType>BOOL</DataType></Entry>
+          <Entry><Index>0</Index><BitLen>15</BitLen></Entry>
+          <Entry><Index>#x6000</Index><SubIndex>3</SubIndex><BitLen>32</BitLen><Name>Scaled counter</Name><DataType>REAL</DataType></Entry>
+        </TxPdo>
+        <TxPdo>
+          <Index>#x1A01</Index>
+          <Entry><Index>#x6010</Index><BitLen>16</BitLen><Name>Alternative</Name><DataType>UINT</DataType></Entry>
+        </TxPdo>
+      </Device>
+      <Device>
+        <Type ProductCode="#x00000001" RevisionNo="#x00000002">BenchFixture</Type>
+        <Name LcId="1033">Bench fixture revision 2</Name>
+        <TxPdo Sm="3">
+          <Index>#x1A00</Index>
+          <Entry><Index>#x6000</Index><SubIndex>1</SubIndex><BitLen>32</BitLen><Name>Wide counter</Name><DataType>UDINT</DataType></Entry>
+        </TxPdo>
+      </Device>
+    </Devices>
+  </Descriptions>
+</EtherCATInfo>
