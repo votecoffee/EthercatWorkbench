@@ -1,0 +1,69 @@
+param(
+    [Parameter(Mandatory)] [string] $Zip
+)
+
+$ErrorActionPreference = 'Stop'
+$Zip = [IO.Path]::GetFullPath($Zip)
+if (Test-Path -LiteralPath $Zip) { throw "Package already exists: $Zip" }
+
+Push-Location (Join-Path $PSScriptRoot '..')
+try {
+    $target = 'x86_64-pc-windows-msvc'
+    $release = "target/$target/release"
+    $notices = '.local/THIRD-PARTY-NOTICES.txt'
+    New-Item -ItemType Directory -Force .local | Out-Null
+    cargo build --locked --release --target $target
+    if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+    cargo about generate --config tools/about.toml --locked --offline --fail --output-file $notices tools/notices.hbs
+    if ($LASTEXITCODE -ne 0) { throw 'License generation failed' }
+
+    $metadata = cargo metadata --locked --format-version 1 --filter-platform $target | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw 'Could not locate locked dependencies' }
+    $fonts = ($metadata.packages | Where-Object name -eq epaint_default_fonts).manifest_path
+    $fontDir = Join-Path (Split-Path -Parent $fonts) fonts
+    $rustDocs = Join-Path (rustc --print sysroot) 'share/doc/rust'
+    $commit = git rev-parse HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'Could not identify source commit' }
+    if (git status --porcelain) { throw 'Package from a clean, committed source tree' }
+
+    $entries = [ordered]@{
+        'ethercat-workbench.exe' = "$release/ethercat-workbench.exe"
+        'ethercat-workbench-cli.exe' = "$release/ethercat-workbench-cli.exe"
+        'README.md' = 'README.md'
+        'ROADMAP.md' = 'ROADMAP.md'
+        'VERIFICATION.md' = 'VERIFICATION.md'
+        'LICENSE' = 'LICENSE'
+        'docs/ethercrab-review.md' = 'docs/ethercrab-review.md'
+        'samples/synthetic.esi.xml' = 'samples/synthetic.esi.xml'
+        'samples/synthetic.json' = 'samples/synthetic.json'
+        'notices/THIRD-PARTY-NOTICES.txt' = $notices
+        'notices/Rust-COPYRIGHT-library.html' = (Join-Path $rustDocs 'COPYRIGHT-library.html')
+    }
+    foreach ($font in @('emoji-icon-font-mit-license.txt', 'Hack-Regular.txt', 'OFL.txt', 'UFL.txt')) {
+        $entries["notices/fonts/$font"] = Join-Path $fontDir $font
+    }
+    foreach ($license in (Get-ChildItem -LiteralPath (Join-Path $rustDocs 'licenses') -File)) {
+        $entries["notices/licenses/$($license.Name)"] = $license.FullName
+    }
+    $manifest = @("Source commit $commit", "Target $target", (rustc --version), '', 'SHA-256')
+    foreach ($name in $entries.Keys) {
+        $hash = (Get-FileHash -LiteralPath $entries[$name] -Algorithm SHA256).Hash.ToLowerInvariant()
+        $manifest += "$hash  $name"
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::Open($Zip, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($name in $entries.Keys) {
+            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive, (Resolve-Path -LiteralPath $entries[$name]).Path, $name,
+                [IO.Compression.CompressionLevel]::Optimal
+            ) | Out-Null
+        }
+        $writer = [IO.StreamWriter]::new($archive.CreateEntry('BUILD.txt').Open())
+        try { $writer.WriteLine(($manifest -join "`n")) }
+        finally { $writer.Dispose() }
+    }
+    finally { $archive.Dispose() }
+    Get-FileHash -LiteralPath $Zip -Algorithm SHA256
+}
+finally { Pop-Location }

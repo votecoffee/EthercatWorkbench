@@ -23,11 +23,20 @@ struct Sample {
     data: [u8; MAX_PAYLOAD],
 }
 
+const METADATA: [&str; 5] = [
+    "capture_start_utc",
+    "elapsed_us",
+    "sample_index",
+    "connection_generation",
+    "cycle_index",
+];
+
 struct Shared {
     queue: ArrayQueue<Sample>,
     done: AtomicBool,
     failed: AtomicBool,
     written: AtomicU64,
+    parts: AtomicU64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -64,11 +73,18 @@ impl Capture {
                 .is_some_and(|e| e.eq_ignore_ascii_case("csv")),
             "capture path must end in .csv"
         );
+        ensure!(
+            fields
+                .iter()
+                .all(|field| !METADATA.contains(&field.name.as_str())),
+            "field name conflicts with a CSV metadata column"
+        );
         let shared = Arc::new(Shared {
             queue: ArrayQueue::new(profile.queue_capacity),
             done: false.into(),
             failed: false.into(),
             written: 0.into(),
+            parts: 1.into(),
         });
         let start = Instant::now();
         let utc = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
@@ -145,7 +161,7 @@ impl Capture {
             written: self.shared.written.load(Relaxed),
             overruns: self.overruns,
             utc_start: self.utc.clone(),
-            parts: 0,
+            parts: self.shared.parts.load(Relaxed),
         }
     }
 
@@ -201,21 +217,8 @@ fn part(base: &Path, index: u64, rotate: u64, fields: &[Field]) -> Result<Writer
     let mut writer = csv::WriterBuilder::new()
         .buffer_capacity(128 * 1024)
         .from_writer(file);
-    let metadata = [
-        "capture_start_utc",
-        "elapsed_us",
-        "sample_index",
-        "connection_generation",
-        "cycle_index",
-    ];
-    ensure!(
-        fields
-            .iter()
-            .all(|field| !metadata.contains(&field.name.as_str())),
-        "field name conflicts with a CSV metadata column"
-    );
     writer.write_record(
-        metadata
+        METADATA
             .into_iter()
             .chain(fields.iter().map(|field| field.name.as_str())),
     )?;
@@ -237,7 +240,7 @@ fn drain(
     loop {
         let done = shared.done.load(std::sync::atomic::Ordering::Acquire);
         let mut batch = 0;
-        while batch < 256 {
+        for _ in 0..256 {
             let Some(sample) = shared.queue.pop() else {
                 break;
             };
@@ -247,6 +250,7 @@ fn drain(
                 batch = 0;
                 part_index += 1;
                 writer = part(path, part_index, rotate, fields)?;
+                shared.parts.store(part_index, Relaxed);
                 rows_in_part = 0;
             }
             record.clear();
@@ -279,5 +283,50 @@ fn drain(
         if shared.queue.is_empty() {
             thread::park_timeout(Duration::from_millis(10));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dropped_change_is_retried_and_leaves_a_visible_index_gap() {
+        let mut capture = Capture {
+            shared: Arc::new(Shared {
+                queue: ArrayQueue::new(1),
+                done: false.into(),
+                failed: false.into(),
+                written: 0.into(),
+                parts: 1.into(),
+            }),
+            writer: None,
+            start: Instant::now(),
+            utc: String::new(),
+            fields: vec![Field {
+                width: 8,
+                ..Field::default()
+            }],
+            len: 1,
+            mode: LogMode::Change,
+            previous: None,
+            selected: 0,
+            overruns: 0,
+        };
+        let mut data = [0; MAX_PAYLOAD];
+        capture.submit(Instant::now(), 1, 1, &data);
+        capture.submit(Instant::now(), 1, 2, &data);
+        data[0] = 5;
+        capture.submit(Instant::now(), 1, 3, &data);
+        assert_eq!(capture.shared.queue.pop().unwrap().index, 1);
+        capture.submit(Instant::now(), 1, 4, &data);
+        let recovered = capture.shared.queue.pop().unwrap();
+        assert_eq!(
+            (recovered.index, recovered.cycle, recovered.data[0]),
+            (3, 4, 5)
+        );
+        assert_eq!(capture.stats().overruns, 1);
+        capture.submit(Instant::now(), 2, 1, &data);
+        assert_eq!(capture.shared.queue.pop().unwrap().generation, 2);
     }
 }

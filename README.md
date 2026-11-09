@@ -46,11 +46,11 @@ Live discovery is read-only on the selected NIC. Select a profile with exact ide
 .\ethercat-workbench-cli.exe run .local/bench.json --backend safeop --approve-esc-writes --seconds 20 --csv .local/bench.csv
 ```
 
-The CLI prints a JSON report. The GUI shows live AL status and expected/actual WKC, raw TxPDO and typed values, requested period, synchronization and separate send/receive spacing. CSV runs on a separate writer thread behind a bounded preallocated queue. Each valid selected exchange is timestamped near receive using a monotonic clock. Rows contain a UTC capture anchor, elapsed microseconds, one-based sample index, connection generation and cycle index. With rotation, parts are named `capture.0001.csv`, `capture.0002.csv`, and so on. Existing files are preserved. Overruns count dropped offers and can cause sample-index gaps. On-change mode compares selected bits with the last queued row and includes the first valid value. A GUI session increments its generation for each run and each capture opens a new file series.
+The CLI prints a JSON report. Save a GUI run report after the session ends. The GUI shows live AL status and expected/actual WKC, raw TxPDO and typed values, requested period, synchronization and separate send/receive spacing. CSV runs on a separate writer thread behind a bounded preallocated queue. Each valid selected exchange is timestamped near receive using a monotonic clock. Rows contain a UTC capture anchor, elapsed microseconds, one-based sample index, connection generation and cycle index. With rotation, parts are named `capture.0001.csv`, `capture.0002.csv`, and so on. Existing files are preserved. Overruns count dropped offers and can cause sample-index gaps. On-change mode compares selected bits with the last queued row and includes the first valid value. A GUI session increments its generation for each run and each capture opens a new file series.
 
 Send and receive spacing are host timestamps taken near Npcap injection and dequeue. The synthetic fixture measures the same application paths against generated data. Missed deadlines count full elapsed slots at the next dispatch. Deadline mode skips elapsed slots and relative mode rebases the next cycle. The run report separates WKC mismatches, AL mismatches, reply timeouts and logger overruns. A normal GUI close or CLI Ctrl+C stops the worker and drains the writer.
 
-See the [EtherCrab source review](docs/ethercrab-review.md) and [roadmap](ROADMAP.md).
+See the [EtherCrab source review](docs/ethercrab-review.md) [verification results](VERIFICATION.md), and [roadmap](ROADMAP.md).
 
 ## Maintainers
 

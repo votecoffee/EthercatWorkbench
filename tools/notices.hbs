@@ -1,0 +1,15 @@
+EtherCAT Workbench Windows x64 dependency notices
+================================================
+
+The executable links EtherCrab from https://github.com/ethercrab-rs/ethercrab
+at fec2730823ce1eb62425f83d5df49d678f03b104 under Apache-2.0.
+Npcap is a separately installed dependency.
+
+{{#each licenses}}
+{{name}} ({{id}})
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+{{{text}}}
+
+{{/each}}

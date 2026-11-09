@@ -66,7 +66,8 @@ impl Gaps {
 
     fn report(&self) -> Spacing {
         let count = self.histogram.len();
-        let percentile = |q| (count != 0).then(|| self.histogram.value_at_quantile(q));
+        let percentile =
+            |q| (count != 0).then(|| self.histogram.value_at_quantile(q).min(self.longest));
         Spacing {
             count,
             p50_us: percentile(0.50),
@@ -98,6 +99,7 @@ pub struct Report {
     pub receive_spacing: Spacing,
     pub capture: Option<CaptureStats>,
     pub devices: Vec<DeviceInfo>,
+    pub stopped_al: Option<(u16, u16)>,
     pub error: Option<String>,
 }
 
@@ -132,7 +134,7 @@ pub struct Exchange {
 
 pub trait Bus {
     fn exchange(&mut self, cycle: u64) -> Result<Exchange>;
-    fn stop(&mut self) -> Result<()>;
+    fn stop(&mut self) -> Result<Option<(u16, u16)>>;
 }
 
 #[derive(Clone, Debug)]
@@ -257,7 +259,7 @@ fn cycle(
     {
         Ok(capture) => capture,
         Err(error) => {
-            let cleanup = bus.stop();
+            let cleanup = bus.stop().map(|al| report.stopped_al = al);
             return combine(Err(error), cleanup);
         }
     };
@@ -344,7 +346,7 @@ fn cycle(
         }
         Ok(())
     })();
-    result = combine(result, bus.stop());
+    result = combine(result, bus.stop().map(|al| report.stopped_al = al));
     update(report, &sends, &receives, capture.as_ref());
     if let Some(capture) = capture {
         let (stats, write_result) = capture.finish();
@@ -408,8 +410,8 @@ impl Bus for Simulated {
         })
     }
 
-    fn stop(&mut self) -> Result<()> {
-        Ok(())
+    fn stop(&mut self) -> Result<Option<(u16, u16)>> {
+        Ok(None)
     }
 }
 

@@ -1,3 +1,6 @@
 [env]
 # Use Npcap's immediate-mode API on Windows even if the SDK lib directory contains no DLL.
 LIBPCAP_VER = "1.5.0"
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

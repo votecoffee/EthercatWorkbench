@@ -350,10 +350,8 @@ pub fn safeop(
                 Err(_) => format!("{direction} CoE sync type unavailable"),
             });
         }
-        report.device_sync = sync_modes.join("; ");
-        report.dc_sync =
-            "SYNC0/SYNC1 not enabled by Workbench; EtherCrab initial clock setup if supported"
-                .into();
+        report.device_sync = sync_modes.join(" / ");
+        report.dc_sync = "SYNC0/SYNC1 disabled. EtherCrab initial clock setup if supported".into();
 
         ensure!(!stop.load(Relaxed), "cancelled during ESC setup");
         let group = port
@@ -390,7 +388,7 @@ pub fn safeop(
             );
             report
                 .dc_sync
-                .push_str(&format!("; ESC activation {activation:#04x}"));
+                .push_str(&format!(". ESC activation {activation:#04x}"));
             if let Ok([sync0, sync1]) = cycles {
                 report.dc_sync.push_str(&format!(
                     ", cycle registers SYNC0 {sync0} ns / SYNC1 {sync1} ns"
@@ -419,7 +417,10 @@ pub fn safeop(
             )
         }
         Err(error) => match request_init(&mut port, &mut tx, &mut rx, &main) {
-            Ok(()) => Err(error),
+            Ok(al) => {
+                report.stopped_al = Some(al);
+                Err(error)
+            }
             Err(cleanup) => Err(error.context(format!("INIT cleanup also failed: {cleanup:#}"))),
         },
     }
@@ -430,14 +431,18 @@ fn request_init<'a>(
     tx: &mut PduTx<'a>,
     rx: &mut PduRx<'a>,
     main: &MainDevice<'a>,
-) -> Result<()> {
+) -> Result<(u16, u16)> {
     port.drive(tx, rx, Command::apwr(0, AL_CONTROL).send(main, 1u16))
         .context("request INIT on stop")?;
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(2) {
-        let al = port.drive(tx, rx, Command::aprd(0, AL_STATUS).receive::<u16>(main))?;
-        if al & 0x1f == 1 {
-            return Ok(());
+        let al = port.drive(
+            tx,
+            rx,
+            Command::aprd(0, AL_STATUS).receive::<[u16; 3]>(main),
+        )?;
+        if al[0] & 0xf == 1 {
+            return Ok((al[0], al[2]));
         }
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -491,7 +496,7 @@ impl Bus for LiveBus<'_, '_> {
         })
     }
 
-    fn stop(&mut self) -> Result<()> {
-        request_init(self.port, self.tx, self.rx, self.main)
+    fn stop(&mut self) -> Result<Option<(u16, u16)>> {
+        request_init(self.port, self.tx, self.rx, self.main).map(Some)
     }
 }

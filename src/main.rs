@@ -72,6 +72,7 @@ struct App {
     auto_start: bool,
     auto_exit: bool,
     report_path: Option<PathBuf>,
+    report_save: String,
     deferred_close: bool,
 }
 
@@ -100,6 +101,7 @@ impl App {
             auto_start: args.simulate_seconds.is_some(),
             auto_exit: args.simulate_seconds.is_some(),
             report_path: args.report,
+            report_save: String::new(),
             deferred_close: false,
         };
         if let Some(path) = args.profile {
@@ -173,18 +175,11 @@ impl App {
             match session.worker.join() {
                 Ok(report) => {
                     self.last = session.view.lock().ok().map(|view| view.clone());
-                    if let Some(path) = &self.report_path {
-                        use std::io::Write;
-                        let result = (|| -> anyhow::Result<()> {
-                            let mut file = std::fs::File::create_new(path)?;
-                            serde_json::to_writer_pretty(&mut file, &report)?;
-                            writeln!(file)?;
-                            Ok(())
-                        })();
-                        if let Err(error) = result {
-                            self.message = format!("Write run report: {error:#}");
-                            self.auto_exit = false;
-                        }
+                    if let Some(path) = &self.report_path
+                        && let Err(error) = write_report(path, &report)
+                    {
+                        self.message = format!("Write run report: {error:#}");
+                        self.auto_exit = false;
                     }
                 }
                 Err(_) => self.message = "Cycle worker failed".into(),
@@ -263,6 +258,21 @@ impl App {
                 "ESI baseline · {} · {} · SHA-256 {}",
                 source.file_name, source.identity, source.sha256
             ));
+        }
+        if let Some(source) = &self.profile.esi {
+            for note in &source.notes {
+                ui.small(note);
+            }
+            if let (Some(tx), Some(rx)) = (source.default_tx_bytes, source.default_rx_bytes) {
+                let provenance = if (tx, rx) == (self.profile.tx_bytes, self.profile.rx_bytes) {
+                    "ESI"
+                } else {
+                    "Override"
+                };
+                ui.small(format!(
+                    "Image lengths · {provenance} · ESI Tx {tx} / Rx {rx} bytes"
+                ));
+            }
         }
         ui.horizontal(|ui| {
             if let Some(identity) = &mut self.profile.expected_identity {
@@ -422,7 +432,34 @@ impl eframe::App for App {
             }
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if let Some(snapshot) = &self.last {
-                    ui.group(|ui| show_snapshot(ui, snapshot, &self.profile.tx));
+                    ui.group(|ui| {
+                        show_snapshot(ui, snapshot, &self.profile.tx);
+                        if self.session.is_none() {
+                            ui.horizontal(|ui| {
+                                ui.label("New report JSON");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.report_save)
+                                        .hint_text(".local/bench-report.json")
+                                        .desired_width(360.0),
+                                );
+                                if ui
+                                    .add_enabled(
+                                        !self.report_save.trim().is_empty(),
+                                        egui::Button::new("Save report"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.message = match write_report(
+                                        Path::new(self.report_save.trim()),
+                                        &snapshot.report,
+                                    ) {
+                                        Ok(()) => "Run report saved".into(),
+                                        Err(error) => format!("Write run report: {error:#}"),
+                                    };
+                                }
+                            });
+                        }
+                    });
                 }
                 ui.add_enabled_ui(self.session.is_none(), |ui| {
                     egui::CollapsingHeader::new("1  Profile and ESI")
@@ -619,6 +656,15 @@ fn device_info(ui: &mut egui::Ui, device: &DeviceInfo) {
     }
 }
 
+fn write_report(path: &Path, report: &Report) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create_new(path)?;
+    serde_json::to_writer_pretty(&mut file, report)?;
+    writeln!(file)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
     let r = &snapshot.report;
     ui.strong(format!("{}  {}", snapshot.phase, r.backend));
@@ -650,6 +696,11 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
                 "{label} spacing µs · p50 {p50} · p95 {p95} · p99 {p99} · longest {longest}"
             ));
         }
+    }
+    if let Some((status, code)) = r.stopped_al {
+        ui.label(format!(
+            "INIT confirmed on stop · AL {status:#06x} code {code:#06x}"
+        ));
     }
     if let Some(c) = &r.capture {
         ui.label(format!(

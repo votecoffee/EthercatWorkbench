@@ -93,6 +93,9 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
                     file_name: file.to_owned(),
                     sha256: sha256.clone(),
                     device: label,
+                    default_tx_bytes: Some(tx_bytes),
+                    default_rx_bytes: Some(rx_bytes),
+                    notes: notes.clone(),
                     identity: Identity {
                         vendor,
                         product,

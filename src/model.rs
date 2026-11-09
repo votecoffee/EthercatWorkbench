@@ -29,6 +29,12 @@ pub struct EsiSource {
     pub sha256: String,
     pub device: String,
     pub identity: Identity,
+    #[serde(default)]
+    pub default_tx_bytes: Option<usize>,
+    #[serde(default)]
+    pub default_rx_bytes: Option<usize>,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
