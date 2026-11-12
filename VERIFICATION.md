@@ -32,3 +32,9 @@ Reproduce from the source checkout with the Windows release binaries and a fresh
 ```powershell
 python tools/verify.py target/x86_64-pc-windows-msvc/release .local/verification --gui --gui-trials 3
 ```
+
+## November 12 PDO verification update
+
+Six Rust tests passed, including per-SyncManager byte alignment, mapping order, padding, overrides and unavailable readback. The headless release workflow imported the sample ESI and matched all four referenced fields against the synthetic CoE snapshot. A reordered snapshot with the same eight-byte input size was rejected. A manual bit/byte profile remained usable and its fields were labeled manual.
+
+The existing synthetic capture checks also passed with zero queue overruns. The Windows helper for ESC SyncManager and CoE assignment reads was compiled and reviewed against the pinned EtherCrab source. Physical device readback remains pending.

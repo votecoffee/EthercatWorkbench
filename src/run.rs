@@ -99,6 +99,7 @@ pub struct Report {
     pub receive_spacing: Spacing,
     pub capture: Option<CaptureStats>,
     pub devices: Vec<DeviceInfo>,
+    pub pdo_verification: Option<crate::pdo::Verification>,
     pub stopped_al: Option<(u16, u16)>,
     pub error: Option<String>,
 }

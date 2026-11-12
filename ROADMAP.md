@@ -11,7 +11,7 @@
 ## Extend bench coverage
 
 - Add a packet-level simulator or replay with licensed, sanitized fixtures for SII, CoE, state transitions, FMMU setup and LRD.
-- Add CoE assignment and mapping readback to verify ESI field order as well as lengths. Expand ESI module, slot, selectable mapping and synchronization support from device examples.
+- Qualify the CoE assignment readback on the selected device and extend verification to SII-only mappings. Expand ESI module, slot, selectable mapping and synchronization support from device examples.
 - Support approved DC configuration and qualify synchronization and timing separately.
 - Allocate logical input ranges and expected WKC by group for multiple SubDevices. Add identity-bound profiles per position and topology-change handling.
 - Design separately approved mapping writes, OP entry and output publishing with an explicit output contract and a bench teardown procedure.

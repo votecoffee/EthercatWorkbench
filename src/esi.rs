@@ -194,7 +194,13 @@ fn fields(device: Node<'_, '_>, tag: &str, notes: &mut Vec<String>) -> Result<(V
     assigned.sort_by_key(|(sm, _)| *sm);
     let mut bit: usize = 0;
     let mut fields = Vec::new();
-    for (_, pdo) in assigned {
+    let mut previous_sm = None;
+    for (sm, pdo) in assigned {
+        ensure!(sm < 16, "ESI SyncManager index exceeds the bench limit");
+        if previous_sm.is_some_and(|previous| previous != sm) {
+            bit = bit.div_ceil(8) * 8;
+        }
+        previous_sm = Some(sm);
         let index = u16::try_from(node_number(pdo, "Index")?)?;
         for entry in pdo.children().filter(|n| named(*n, "Entry")) {
             let width = usize::try_from(node_number(entry, "BitLen")?)?;
@@ -250,4 +256,31 @@ fn node_number(node: Node<'_, '_>, name: &str) -> Result<u32> {
             .and_then(|n| n.text())
             .with_context(|| format!("missing {name}"))?,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aligns_each_sync_manager_and_keeps_bits_contiguous_within_it() {
+        let xml = br#"<EtherCATInfo><Vendor><Id>1</Id></Vendor><Descriptions><Devices>
+          <Device><Type ProductCode="2" RevisionNo="3">Bits</Type>
+            <TxPdo Sm="4"><Index>#x1a02</Index>
+              <Entry><Index>#x6002</Index><BitLen>16</BitLen></Entry>
+            </TxPdo>
+            <TxPdo Sm="3"><Index>#x1a00</Index>
+              <Entry><Index>#x6000</Index><BitLen>1</BitLen></Entry>
+            </TxPdo>
+            <TxPdo Sm="3"><Index>#x1a01</Index>
+              <Entry><Index>#x6001</Index><BitLen>2</BitLen></Entry>
+            </TxPdo>
+          </Device></Devices></Descriptions></EtherCATInfo>"#;
+        let devices = parse("bits.xml", xml).unwrap();
+        assert_eq!(
+            devices[0].tx.iter().map(|f| f.bit).collect::<Vec<_>>(),
+            [0, 1, 8]
+        );
+        assert_eq!(devices[0].tx_bytes, 3);
+    }
 }

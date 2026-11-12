@@ -136,6 +136,18 @@ def main():
     saved = cli_call(cli, "validate", imported)
     assert [f["bit"] for f in saved["tx"]] == [0, 16, 32]
     assert all(f["source"] == "esi" for f in saved["tx"] + saved["rx"])
+    readback = ROOT / "samples/synthetic-pdo.json"
+    verified = cli_call(cli, "verify-pdo", imported, readback)
+    assert all(field["state"] == "matched" for d in ("tx", "rx") for field in verified[d]["fields"])
+    reordered = destination / "reordered-pdo.json"
+    mismatch = json.loads(readback.read_text(encoding="utf-8"))
+    entries = mismatch["tx"]["sync_managers"][0]["pdos"][0]["entries"]
+    entries[0], entries[3] = entries[3], entries[0]
+    reordered.write_text(json.dumps(mismatch), encoding="utf-8")
+    rejected = cli_call(cli, "verify-pdo", imported, reordered, success=False)
+    assert rejected["tx"]["image_bytes"] == 8 and rejected["tx"]["errors"]
+    manual = cli_call(cli, "verify-pdo", profile, readback)
+    assert all(field["state"] == "manual" for d in ("tx", "rx") for field in manual[d]["fields"])
     assert cli_call(cli, "decode", profile, "FE FF", "--rx")[0]["value"] == "-2"
     assert [v["value"] for v in cli_call(cli, "decode", imported, "04 00 00 00 00 00 80 3F")] == ["4", "false", "1"]
     denied = cli_call(cli, "run", profile, "--backend", "safeop", success=False)

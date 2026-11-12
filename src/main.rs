@@ -674,6 +674,29 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
     for device in &r.devices {
         device_info(ui, device);
     }
+    if let Some(verification) = &r.pdo_verification {
+        egui::CollapsingHeader::new(format!(
+            "PDO layout · {} matched fields · {}",
+            verification.matched_fields(),
+            verification.source
+        ))
+        .show(ui, |ui| {
+            for (direction, result) in [("TxPDO", &verification.tx), ("RxPDO", &verification.rx)] {
+                if let Some(reason) = &result.unavailable {
+                    ui.label(format!("{direction} mapping unavailable · {reason}"));
+                }
+                for error in &result.errors {
+                    ui.colored_label(egui::Color32::LIGHT_RED, format!("{direction} · {error}"));
+                }
+                for field in &result.fields {
+                    ui.label(format!(
+                        "{direction} · {} · {:?} · {}",
+                        field.name, field.state, field.detail
+                    ));
+                }
+            }
+        });
+    }
     ui.label(format!(
         "Requested {} µs ({:?}) · generation {} · WKC {}/{}",
         r.requested_cycle_us,

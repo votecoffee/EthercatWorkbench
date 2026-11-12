@@ -43,6 +43,8 @@ enum Command {
     },
     /// Parse and validate a saved profile.
     Validate { profile: PathBuf },
+    /// Compare saved CoE PDO readback with an ESI or manual profile.
+    VerifyPdo { profile: PathBuf, readback: PathBuf },
     /// Decode an offline payload using the profile.
     Decode {
         profile: PathBuf,
@@ -118,6 +120,18 @@ fn main() -> Result<()> {
             output(&selected.notes)
         }
         Command::Validate { profile } => output(&Profile::load(&profile)?),
+        Command::VerifyPdo { profile, readback } => {
+            let profile = Profile::load(&profile)?;
+            let readback: ethercat_workbench::pdo::Readback =
+                serde_json::from_reader(std::fs::File::open(readback)?)?;
+            let verification = readback.verify(&profile, "Saved CoE readback");
+            output(&verification)?;
+            ensure!(
+                verification.compatible(),
+                "saved PDO layout differs from profile"
+            );
+            Ok(())
+        }
         Command::Decode { profile, hex, rx } => {
             let profile = Profile::load(&profile)?;
             let payload = payload_hex(&hex)?;

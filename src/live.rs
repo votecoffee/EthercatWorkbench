@@ -1,3 +1,4 @@
+mod pdo_readback;
 mod wire;
 
 use crate::{
@@ -198,18 +199,18 @@ impl Transport {
 
     // Drive EtherCrab's PDU storage on the same OS thread that owns Npcap.
     // Setup/teardown futures use EtherCrab's own timeout and retry policy.
-    fn drive<T>(
+    fn drive<T, E: Into<anyhow::Error>>(
         &mut self,
         tx: &mut PduTx<'_>,
         rx: &mut PduRx<'_>,
-        future: impl Future<Output = Result<T, ethercrab::error::Error>>,
+        future: impl Future<Output = Result<T, E>>,
     ) -> Result<T> {
         let mut future = std::pin::pin!(future);
         let mut cx = PollContext::from_waker(Waker::noop());
         let start = Instant::now();
         loop {
             if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
-                return Ok(result?);
+                return result.map_err(Into::into);
             }
             ensure!(
                 start.elapsed() < SETUP_TIMEOUT,
@@ -372,6 +373,28 @@ pub fn safeop(
             profile.tx_bytes,
             profile.rx_bytes
         );
+        if let Ok(mut snapshot) = view.try_lock() {
+            snapshot.phase = "Checking device PDO assignments".into();
+            snapshot.report.clone_from(report);
+        }
+        let readback = port.drive(&mut tx, &mut rx, async {
+            Ok::<_, anyhow::Error>(pdo_readback::readback(&sd, stop).await)
+        })?;
+        report.pdo_verification = Some(readback.verify(profile, "Bus CoE assignment reads"));
+        let verified = report.pdo_verification.as_ref().expect("readback set");
+        ensure!(
+            verified.compatible(),
+            "device PDO layout differs from profile: {}",
+            verified
+                .tx
+                .errors
+                .iter()
+                .chain(&verified.rx.errors)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" / ")
+        );
+        ensure!(!stop.load(Relaxed), "cancelled during PDO readback");
         let _group = port
             .drive(&mut tx, &mut rx, group.into_safe_op(&main))
             .context("request SAFEOP")?;
