@@ -10,7 +10,7 @@
 
 ## Extend bench coverage
 
-- Extend the virtual ESC fixture to segmented CoE transfers, DC-capable configurations and communication loss. Add licensed, sanitized fixtures for the selected physical device.
+- Extend the virtual ESC fixture to segmented CoE transfers, DC-capable configurations, driver errors and recovery after sustained communication loss. Add licensed, sanitized fixtures for the selected physical device.
 - Qualify the CoE and SII mapping readback on the selected physical device. Expand ESI module, slot, selectable mapping and synchronization support from device examples.
 - Support approved DC configuration and qualify synchronization and timing separately.
 - Allocate logical input ranges and expected WKC by group for multiple SubDevices. Add identity-bound profiles per position and topology-change handling.

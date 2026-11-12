@@ -60,3 +60,9 @@ The SAFEOP fault exposed that EtherCrab's group state wait can finish with the d
 Ten Rust tests pass, including SII padding, unassigned PDOs and malformed category bounds. The SII model declares no CoE support, provides EEPROM PDO categories and uses two process SyncManagers. It reaches SAFEOP through EtherCrab's EEPROM configuration path, verifies all four referenced fields from SII, logs input values and returns to INIT. Its audit records zero CoE uploads. Both virtual models are checked with every-valid and on-change logging and configuration failures.
 
 The headless functional checker accounts for reply timeouts separately from valid exchanges and validates CSV values against the virtual counter. Host scheduling can expire a receive wait even with an in-memory responder. A CoE readback failure retains its unavailable status, and SII readback is selected from the device's declared mailbox protocols. SII tests establish the authored fixture path. Physical SII device support remains pending acceptance.
+
+## Setup cancellation and dropped responses
+
+Twelve Rust tests pass. The cancellation tests release queued, sent and received PDU futures repeatedly beyond the eight storage slots, then confirm INIT cleanup while the stop flag remains set. A pre-start cancellation completes without sending datagrams. Cancelled runs expose a separate cancellation flag, and cleanup errors retain their failure result.
+
+The CoE and SII headless workflows both exercise a dropped SII response during setup and periodic lost cyclic responses. The setup timeout retains its PDU timeout detail and confirms INIT. Cyclic loss increments reply timeouts, writes only valid received samples, flushes the capture and confirms INIT on stop. The fixture audit distinguishes dropped replies from logger overruns. These checks cover in-memory packet handling and host execution.

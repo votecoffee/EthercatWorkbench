@@ -106,6 +106,7 @@ pub struct Report {
     pub pdo_verification: Option<Arc<crate::pdo::Verification>>,
     pub stopped_al: Option<(u16, u16)>,
     pub setup_failure_al: Option<(u16, u16)>,
+    pub cancelled: bool,
     pub error: Option<String>,
 }
 
@@ -196,6 +197,7 @@ pub fn run(
         ..Report::default()
     };
     let result = run_inner(&profile, options, stop, view, &mut report);
+    report.cancelled = stop.load(Relaxed);
     if let Err(err) = result {
         report.error = Some(format!("{err:#}"));
     }
@@ -203,6 +205,8 @@ pub fn run(
     last.report.clone_from(&report);
     last.phase = if report.error.is_some() {
         "Failed"
+    } else if report.cancelled {
+        "Cancelled"
     } else {
         "Stopped"
     }

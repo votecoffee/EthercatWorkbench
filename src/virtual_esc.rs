@@ -27,12 +27,15 @@ pub enum VirtualFault {
     MailboxAbort,
     ReadbackUnavailable,
     CleanupReject,
+    SetupTimeout,
+    IoTimeout,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct VirtualStats {
     pub model: VirtualModel,
     pub datagrams: u64,
+    pub dropped_replies: u64,
     pub sii_reads: u64,
     pub coe_uploads: u64,
     pub coe_downloads: u64,
@@ -108,6 +111,7 @@ impl VirtualEsc {
         let mut reply = bytes.to_vec();
         reply[6] |= 2;
         let mut offset = 16;
+        let mut drop_reply = false;
         while offset < end {
             ensure!(offset + 12 <= end, "truncated virtual ESC datagram");
             let command = reply[offset];
@@ -149,6 +153,19 @@ impl VirtualEsc {
                     _ => unreachable!(),
                 };
             }
+            if self.fault == VirtualFault::SetupTimeout
+                && command == 0x04
+                && register == 0x0508
+                && self.stats.dropped_replies == 0
+            {
+                drop_reply = true;
+            }
+            if self.fault == VirtualFault::IoTimeout
+                && command == 0x0a
+                && self.stats.logical_reads.is_multiple_of(7)
+            {
+                drop_reply = true;
+            }
             if matches!(command, 0x01 | 0x02 | 0x07 | 0x08) {
                 reply[offset + 2..offset + 4]
                     .copy_from_slice(&station.wrapping_add(1).to_le_bytes());
@@ -160,7 +177,11 @@ impl VirtualEsc {
                 "inconsistent virtual ESC datagram chain"
             );
         }
-        self.replies.push_back(reply);
+        if drop_reply {
+            self.stats.dropped_replies += 1;
+        } else {
+            self.replies.push_back(reply);
+        }
         Ok(())
     }
 

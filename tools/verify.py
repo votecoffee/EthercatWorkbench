@@ -163,13 +163,15 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
         ("pdo-order", "layout differs", [1, 2, 1], [2, 0]),
         ("safeop-reject", "SAFEOP confirmation failed", [1, 2, 4, 1], [0x14, 0x1d]),
         ("mailbox-abort", "aborted", [1, 2, 1], [2, 0]),
+        ("setup-timeout", "timeout: PDU", [1, 1], [1, 0]),
     ]:
         if model == "sii" and fault == "mailbox-abort":
             continue
         base = destination / f"virtual-{fault}.csv"
         report = cli_call(cli, "run", profile, "--backend", "virtual", *model_flags, "--virtual-fault", fault,
                           "--seconds", 1, "--csv", base, success=False)
-        assert report["cycles"] == 0 and report["capture"] is None and text in report["error"]
+        (destination / f"virtual-{fault}.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        assert report["cycles"] == 0 and report["capture"] is None and text in report["error"], report
         assert report["setup_failure_al"] == failed_al and report["stopped_al"] == [1, 0]
         assert report["virtual_esc"]["state_requests"] == states
         assert not list(destination.glob(f"{base.stem}*.csv"))
@@ -189,6 +191,25 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
     assert "0x0014 code 0x0011" in failed_stop["error"]
     assert failed_stop["virtual_esc"]["final_al_status"] == 0x14
     faults["cleanup-reject"] = failed_stop
+
+    lost_base = destination / "lost-io.csv"
+    lost = cli_call(cli, "run", profile, "--backend", "virtual", *model_flags,
+                    "--virtual-fault", "io-timeout", "--seconds", 1, "--csv", lost_base)
+    assert lost["error"] is None and lost["valid"] > 0 and lost["timeouts"] > 0
+    assert lost["cycles"] == lost["valid"] + lost["timeouts"]
+    assert lost["virtual_esc"]["dropped_replies"] > 0
+    assert lost["timeouts"] >= lost["virtual_esc"]["dropped_replies"]
+    assert lost["stopped_al"] == [1, 0]
+    _, lost_rows = rows(lost_base)
+    assert len(lost_rows) == lost["valid"] == lost["capture"]["written"]
+    assert lost["capture"]["overruns"] == 0
+    for index, row in enumerate(lost_rows, 1):
+        counter = int(row["Counter"])
+        assert int(row["sample_index"]) == index
+        assert (index - 1) // 4 <= counter <= (index - 1 + lost["timeouts"]) // 4
+        assert row["Sensor active"] == str(bool(counter & 1)).lower()
+        assert float(row["Scaled counter"]) == counter / 4
+    faults["io-timeout"] = lost
 
     changed = json.loads(profile.read_text(encoding="utf-8"))
     changed["expected_identity"]["revision"] = 9

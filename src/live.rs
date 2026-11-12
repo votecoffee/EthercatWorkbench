@@ -205,15 +205,18 @@ impl Transport {
         &mut self,
         tx: &mut PduTx<'_>,
         rx: &mut PduRx<'_>,
+        cancel: Option<&AtomicBool>,
         future: impl Future<Output = Result<T, E>>,
     ) -> Result<T> {
         let mut future = std::pin::pin!(future);
         let mut cx = PollContext::from_waker(Waker::noop());
         let start = Instant::now();
         loop {
+            check_cancel(cancel)?;
             if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
                 return result.map_err(Into::into);
             }
+            check_cancel(cancel)?;
             ensure!(
                 start.elapsed() < SETUP_TIMEOUT,
                 "EtherCrab setup or teardown exceeded its time budget"
@@ -273,6 +276,9 @@ pub fn safeop(
     report: &mut Report,
     run: impl FnOnce(LiveBus<'_, '_>, &mut Report) -> Result<()>,
 ) -> Result<()> {
+    if stop.load(Relaxed) {
+        return Ok(());
+    }
     ensure!(
         profile.expected_identity.is_some(),
         "live profile needs exact vendor, product and revision"
@@ -310,6 +316,9 @@ fn safeop_on(
     port: &mut Transport,
     run: impl FnOnce(LiveBus<'_, '_>, &mut Report) -> Result<()>,
 ) -> Result<()> {
+    if stop.load(Relaxed) {
+        return Ok(());
+    }
     let expected = profile
         .expected_identity
         .as_ref()
@@ -352,6 +361,7 @@ fn safeop_on(
             .drive(
                 &mut tx,
                 &mut rx,
+                Some(stop),
                 main.init_single_group::<2, { MAX_PAYLOAD * 2 }>(ethercat_now),
             )
             .context("EtherCrab INIT/PREOP setup")?;
@@ -382,7 +392,7 @@ fn safeop_on(
             if size == 0 {
                 continue;
             }
-            let mode = port.drive(&mut tx, &mut rx, sd.sdo_read::<u16>(index, 1u8));
+            let mode = port.drive(&mut tx, &mut rx, Some(stop), sd.sdo_read::<u16>(index, 1u8));
             sync_modes.push(match mode {
                 Ok(mode) => format!("{direction} CoE {index:#06x}:01 = {mode:#06x}"),
                 Err(_) => format!("{direction} CoE sync type unavailable"),
@@ -391,9 +401,9 @@ fn safeop_on(
         report.device_sync = sync_modes.join(" / ");
         report.dc_sync = "SYNC0/SYNC1 disabled. EtherCrab initial clock setup if supported".into();
 
-        ensure!(!stop.load(Relaxed), "cancelled during ESC setup");
+        check_cancel(Some(stop))?;
         let group = port
-            .drive(&mut tx, &mut rx, group.into_pre_op_pdi(&main))
+            .drive(&mut tx, &mut rx, Some(stop), group.into_pre_op_pdi(&main))
             .context("configure FMMU/SyncManagers from discovered device mapping")?;
         let sd = group.subdevice(&main, 0)?;
         let station = sd.configured_address();
@@ -414,12 +424,17 @@ fn safeop_on(
             snapshot.phase = "Checking device PDO assignments".into();
             snapshot.report.clone_from(report);
         }
-        let protocols = port.drive(&mut tx, &mut rx, sd.eeprom_read::<u16>(&main, 0x001c))?;
+        let protocols = port.drive(
+            &mut tx,
+            &mut rx,
+            Some(stop),
+            sd.eeprom_read::<u16>(&main, 0x001c),
+        )?;
         let coe = protocols & 0x0004 != 0;
         if !coe {
             report.device_sync = "Device sync type unavailable (CoE absent)".into();
         }
-        let readback = port.drive(&mut tx, &mut rx, async {
+        let readback = port.drive(&mut tx, &mut rx, Some(stop), async {
             Ok::<_, anyhow::Error>(pdo_readback::readback(&sd, &main, coe, stop).await)
         })?;
         let source = match (&port.io, coe) {
@@ -441,13 +456,14 @@ fn safeop_on(
                 .collect::<Vec<_>>()
                 .join(" / ")
         );
-        ensure!(!stop.load(Relaxed), "cancelled during PDO readback");
+        check_cancel(Some(stop))?;
         let _group = port
-            .drive(&mut tx, &mut rx, group.into_safe_op(&main))
+            .drive(&mut tx, &mut rx, Some(stop), group.into_safe_op(&main))
             .context("request SAFEOP")?;
         let al = port.drive(
             &mut tx,
             &mut rx,
+            Some(stop),
             Command::fprd(station, AL_STATUS).receive::<[u16; 3]>(&main),
         )?;
         if let Some(device) = report.devices.first_mut() {
@@ -463,12 +479,14 @@ fn safeop_on(
         let dc = port.drive(
             &mut tx,
             &mut rx,
+            Some(stop),
             Command::fprd(station, 0x0981).receive::<u8>(&main),
         );
         if let Ok(activation) = dc {
             let cycles = port.drive(
                 &mut tx,
                 &mut rx,
+                Some(stop),
                 Command::fprd(station, 0x09a0).receive::<[u32; 2]>(&main),
             );
             report
@@ -502,12 +520,16 @@ fn safeop_on(
             )
         }
         Err(error) => {
+            let cancelled = error.is::<SetupCancelled>();
             if let Ok(al) = port.drive(
                 &mut tx,
                 &mut rx,
+                None,
                 Command::aprd(0, AL_STATUS).receive::<[u16; 3]>(&main),
             ) {
-                report.setup_failure_al = Some((al[0], al[2]));
+                if !cancelled {
+                    report.setup_failure_al = Some((al[0], al[2]));
+                }
                 if let Some(device) = report.devices.first_mut() {
                     device.al_status = al[0];
                     device.al_code = al[2];
@@ -516,7 +538,7 @@ fn safeop_on(
             match request_init(port, &mut tx, &mut rx, &main) {
                 Ok(al) => {
                     report.stopped_al = Some(al);
-                    Err(error)
+                    if cancelled { Ok(()) } else { Err(error) }
                 }
                 Err(cleanup) => {
                     Err(error.context(format!("INIT cleanup also failed: {cleanup:#}")))
@@ -532,14 +554,20 @@ fn request_init<'a>(
     rx: &mut PduRx<'a>,
     main: &MainDevice<'a>,
 ) -> Result<(u16, u16)> {
-    port.drive(tx, rx, Command::apwr(0, AL_CONTROL).send(main, 0x0011u16))
-        .context("request INIT on stop")?;
+    port.drive(
+        tx,
+        rx,
+        None,
+        Command::apwr(0, AL_CONTROL).send(main, 0x0011u16),
+    )
+    .context("request INIT on stop")?;
     let start = Instant::now();
     let mut last_al = None;
     while start.elapsed() < Duration::from_secs(2) {
         let al = port.drive(
             tx,
             rx,
+            None,
             Command::aprd(0, AL_STATUS).receive::<[u16; 3]>(main),
         )?;
         last_al = Some((al[0], al[2]));
@@ -624,5 +652,123 @@ impl PacketIo {
             },
             Self::Virtual(esc) => Ok(esc.receive()),
         }
+    }
+}
+
+#[derive(Debug)]
+struct SetupCancelled;
+
+impl std::fmt::Display for SetupCancelled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("EtherCrab setup cancelled")
+    }
+}
+
+impl std::error::Error for SetupCancelled {}
+
+fn check_cancel(cancel: Option<&AtomicBool>) -> Result<()> {
+    if cancel.is_some_and(|stop| stop.load(Relaxed)) {
+        return Err(SetupCancelled.into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use crate::{
+        run::{self, Mode, RunOptions},
+        virtual_esc::{VirtualFault, VirtualModel},
+    };
+
+    #[test]
+    fn cancellation_releases_pending_pdus_and_cleanup_ignores_the_stop_flag() {
+        for await_response in [false, true] {
+            let storage = PduStorage::<8, { PduStorage::element_size(1400) }>::new();
+            let (mut tx, mut rx, pdu) = storage.try_split().unwrap();
+            let main = MainDevice::new(
+                pdu,
+                Timeouts {
+                    wait_loop_delay: Duration::ZERO,
+                    ..Timeouts::default()
+                },
+                MainDeviceConfig::default(),
+            );
+            let mut port = Transport {
+                io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(
+                    VirtualModel::Coe,
+                    VirtualFault::SetupTimeout,
+                ))),
+                seq: 0,
+                ignored_frames: 0,
+            };
+            let stop = AtomicBool::new(false);
+            // Reclaim queued, sent and received futures repeatedly, beyond the eight storage slots.
+            for _ in 0..12 {
+                stop.store(false, Relaxed);
+                let mut command =
+                    std::pin::pin!(Command::fprd(0, 0x0508).receive::<[u8; 4]>(&main));
+                let mut polls = 0;
+                let pending = std::future::poll_fn(|context| {
+                    polls += 1;
+                    if await_response && polls > 1 {
+                        stop.store(true, Relaxed);
+                        return Poll::Pending;
+                    }
+                    let result = command.as_mut().poll(context);
+                    if !await_response && result.is_pending() {
+                        stop.store(true, Relaxed);
+                    }
+                    result
+                });
+                let error = port
+                    .drive(&mut tx, &mut rx, Some(&stop), pending)
+                    .unwrap_err();
+                assert!(error.is::<SetupCancelled>());
+            }
+            assert_eq!(
+                request_init(&mut port, &mut tx, &mut rx, &main).unwrap(),
+                (1, 0)
+            );
+            if let PacketIo::Virtual(esc) = port.io {
+                assert_eq!(esc.stats().state_requests, [1]);
+                assert_eq!(esc.stats().datagrams, if await_response { 14 } else { 2 });
+            }
+        }
+    }
+
+    #[test]
+    fn stop_before_setup_reports_cancellation_without_configuration_writes() {
+        let profile = Profile {
+            tx_bytes: 8,
+            rx_bytes: 2,
+            expected_identity: Some(Identity {
+                vendor: 0x00ff1000,
+                product: 1,
+                revision: 1,
+            }),
+            ..Profile::default()
+        };
+        let view = Mutex::new(Snapshot::default());
+        let report = run::run(
+            profile,
+            RunOptions {
+                mode: Mode::Virtual {
+                    model: VirtualModel::Coe,
+                    fault: VirtualFault::None,
+                },
+                duration: Duration::from_secs(1),
+                csv: None,
+                generation: 1,
+            },
+            &AtomicBool::new(true),
+            &view,
+        );
+        assert!(report.cancelled && report.error.is_none());
+        let esc = report.virtual_esc.unwrap();
+        assert!(esc.state_requests.is_empty());
+        assert_eq!(esc.sync_manager_writes, 0);
+        assert_eq!(esc.datagrams, 0);
+        assert_eq!(view.lock().unwrap().phase, "Cancelled");
     }
 }
