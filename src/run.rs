@@ -96,6 +96,7 @@ pub struct Report {
     pub ignored_frames: u64,
     pub replay_exchanges: Option<usize>,
     pub replay_origin: Option<String>,
+    pub virtual_esc: Option<crate::virtual_esc::VirtualStats>,
     pub expected_wkc: u16,
     pub actual_wkc: Option<u16>,
     pub send_spacing: Spacing,
@@ -104,6 +105,7 @@ pub struct Report {
     pub devices: Vec<DeviceInfo>,
     pub pdo_verification: Option<Arc<crate::pdo::Verification>>,
     pub stopped_al: Option<(u16, u16)>,
+    pub setup_failure_al: Option<(u16, u16)>,
     pub error: Option<String>,
 }
 
@@ -144,9 +146,18 @@ pub trait Bus {
 
 #[derive(Clone, Debug)]
 pub enum Mode {
-    Simulate { faults: bool },
-    Replay { fixture: PathBuf },
-    SafeOp { approved: crate::run::BenchApproval },
+    Simulate {
+        faults: bool,
+    },
+    Replay {
+        fixture: PathBuf,
+    },
+    Virtual {
+        fault: crate::virtual_esc::VirtualFault,
+    },
+    SafeOp {
+        approved: crate::run::BenchApproval,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -252,6 +263,20 @@ fn run_inner(
                 "replay duration expired before all recorded exchanges were processed"
             );
             Ok(())
+        }
+        Mode::Virtual { fault } => {
+            report.backend = "Virtual EtherCAT ESC / EtherCrab SAFEOP".into();
+            #[cfg(windows)]
+            {
+                crate::live::virtual_safeop(profile, fault, stop, view, report, |bus, report| {
+                    cycle(bus, profile, &options, stop, view, report)
+                })
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = fault;
+                anyhow::bail!("the virtual setup path currently requires the Windows build")
+            }
         }
         Mode::SafeOp { ref approved } => {
             #[cfg(windows)]

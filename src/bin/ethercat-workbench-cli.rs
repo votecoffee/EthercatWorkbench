@@ -71,6 +71,8 @@ enum Command {
         simulate_faults: bool,
         #[arg(long, required_if_eq("backend", "replay"))]
         replay: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "none")]
+        virtual_fault: ethercat_workbench::virtual_esc::VirtualFault,
         #[arg(long, default_value_t = 1)]
         generation: u64,
         /// Confirm approval for ESC initialization, SAFEOP and return to INIT on one isolated device.
@@ -84,6 +86,7 @@ enum Backend {
     Simulate,
     Safeop,
     Replay,
+    Virtual,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -162,6 +165,7 @@ fn main() -> Result<()> {
             on_change,
             simulate_faults,
             replay,
+            virtual_fault,
             generation,
             approve_esc_writes,
         } => {
@@ -169,10 +173,24 @@ fn main() -> Result<()> {
                 replay.is_none() || matches!(backend, Backend::Replay),
                 "--replay requires --backend replay"
             );
+            ensure!(
+                matches!(backend, Backend::Virtual)
+                    || virtual_fault == ethercat_workbench::virtual_esc::VirtualFault::None,
+                "--virtual-fault requires --backend virtual"
+            );
             let mode = match backend {
                 Backend::Simulate => Mode::Simulate {
                     faults: simulate_faults,
                 },
+                Backend::Virtual => {
+                    ensure!(
+                        !simulate_faults,
+                        "--simulate-faults is for the synthetic backend"
+                    );
+                    Mode::Virtual {
+                        fault: virtual_fault,
+                    }
+                }
                 Backend::Replay => {
                     ensure!(
                         !simulate_faults,

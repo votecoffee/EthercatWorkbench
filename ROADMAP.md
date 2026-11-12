@@ -10,7 +10,7 @@
 
 ## Extend bench coverage
 
-- Extend the authored LRD/AL packet replay to SII, CoE, state transitions and FMMU setup. Add licensed, sanitized fixtures for any selected device.
+- Extend the virtual ESC fixture to SII-only devices, segmented CoE transfers, DC-capable configurations and communication loss. Add licensed, sanitized fixtures for the selected physical device.
 - Qualify the CoE assignment readback on the selected device and extend verification to SII-only mappings. Expand ESI module, slot, selectable mapping and synchronization support from device examples.
 - Support approved DC configuration and qualify synchronization and timing separately.
 - Allocate logical input ranges and expected WKC by group for multiple SubDevices. Add identity-bound profiles per position and topology-change handling.

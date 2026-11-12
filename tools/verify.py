@@ -107,6 +107,94 @@ def gui_trial(gui, profile, destination, scheduler, seconds):
     return result
 
 
+
+def verify_virtual(cli, profile, destination, reports):
+    for on_change in (False, True):
+        base = destination / ("virtual-change.csv" if on_change else "virtual-every.csv")
+        flags = ["--on-change"] if on_change else []
+        report = cli_call(cli, "run", profile, "--backend", "virtual", "--seconds", 1, "--csv", base, *flags)
+        assert report["error"] is None and report["valid"] == report["cycles"] >= 100
+        assert report["stopped_al"] == [1, 0] and report["setup_failure_al"] is None
+        esc = report["virtual_esc"]
+        assert esc["state_requests"] == [1, 2, 4, 1]
+        assert esc["sii_reads"] > 0 and esc["coe_uploads"] >= 24
+        assert esc["sync_manager_writes"] == 20 and esc["fmmu_writes"] == 18
+        assert esc["logical_reads"] == report["valid"]
+        assert esc["coe_downloads"] == esc["logical_writes"] == esc["physical_output_writes"] == esc["op_requests"] == 0
+        assert esc["error_acknowledgements"] == 2
+        assert esc["final_al_status"] == 1 and esc["final_al_code"] == 0
+        verified = report["pdo_verification"]
+        assert verified["source"] == "Virtual ESC CoE assignment reads"
+        assert all(f["state"] == "matched" for direction in ("tx", "rx") for f in verified[direction]["fields"])
+        parts, entries = rows(base)
+        cap = report["capture"]
+        assert len(parts) == cap["parts"] and len(entries) == cap["selected"] == cap["written"]
+        assert cap["overruns"] == 0 and entries
+        elapsed = [int(r["elapsed_us"]) for r in entries]
+        assert all(a <= b for a, b in zip(elapsed, elapsed[1:]))
+        for index, row in enumerate(entries, 1):
+            counter = index - 1 if on_change else (index - 1) // 4
+            assert int(row["sample_index"]) == index
+            assert int(row["Counter"]) == counter
+            assert row["Sensor active"] == str(bool(counter & 1)).lower()
+            assert float(row["Scaled counter"]) == counter / 4
+        if not on_change:
+            assert len(entries) == report["valid"]
+        reports["virtual-change" if on_change else "virtual-every"] = report
+
+    faults = {}
+    for fault, text, states, failed_al in [
+        ("pdo-order", "layout differs", [1, 2, 1], [2, 0]),
+        ("safeop-reject", "SAFEOP confirmation failed", [1, 2, 4, 1], [0x14, 0x1d]),
+        ("mailbox-abort", "aborted", [1, 2, 1], [2, 0]),
+    ]:
+        base = destination / f"virtual-{fault}.csv"
+        report = cli_call(cli, "run", profile, "--backend", "virtual", "--virtual-fault", fault,
+                          "--seconds", 1, "--csv", base, success=False)
+        assert report["cycles"] == 0 and report["capture"] is None and text in report["error"]
+        assert report["setup_failure_al"] == failed_al and report["stopped_al"] == [1, 0]
+        assert report["virtual_esc"]["state_requests"] == states
+        assert not list(destination.glob(f"{base.stem}*.csv"))
+        faults[fault] = report
+
+    unknown = cli_call(cli, "run", profile, "--backend", "virtual",
+                       "--virtual-fault", "readback-unavailable", "--seconds", 1)
+    assert unknown["error"] is None and unknown["valid"] > 0
+    assert all(f["state"] == "unavailable" for direction in ("tx", "rx")
+               for f in unknown["pdo_verification"][direction]["fields"])
+    faults["readback-unavailable"] = unknown
+
+    failed_stop = cli_call(cli, "run", profile, "--backend", "virtual",
+                           "--virtual-fault", "cleanup-reject", "--seconds", 1, success=False)
+    assert failed_stop["valid"] > 0 and failed_stop["stopped_al"] is None
+    assert "0x0014 code 0x0011" in failed_stop["error"]
+    assert failed_stop["virtual_esc"]["final_al_status"] == 0x14
+    faults["cleanup-reject"] = failed_stop
+
+    changed = json.loads(profile.read_text(encoding="utf-8"))
+    changed["expected_identity"]["revision"] = 9
+    mismatch = destination / "wrong-identity.json"
+    mismatch.write_text(json.dumps(changed), encoding="utf-8")
+    report = cli_call(cli, "run", mismatch, "--backend", "virtual", "--seconds", 1, success=False)
+    assert "identity" in report["error"] and report["virtual_esc"]["state_requests"] == [1, 2, 1]
+    assert report["stopped_al"] == [1, 0] and report["cycles"] == 0
+    faults["identity-mismatch"] = report
+
+    collision = destination / "virtual-collision.0001.csv"
+    collision.write_bytes(b"keep this capture\n")
+    report = cli_call(cli, "run", profile, "--backend", "virtual", "--seconds", 1,
+                      "--csv", destination / "virtual-collision.csv", success=False)
+    assert report["error"] and report["cycles"] == 0 and report["stopped_al"] == [1, 0]
+    assert collision.read_bytes() == b"keep this capture\n"
+    assert report["virtual_esc"]["state_requests"] == [1, 2, 4, 1]
+    faults["capture-collision"] = report
+    for report in faults.values():
+        audit = report["virtual_esc"]
+        assert audit["coe_downloads"] == audit["logical_writes"] == audit["physical_output_writes"] == audit["op_requests"] == 0
+        assert audit["error_acknowledgements"] == 2
+    (destination / "virtual-faults.json").write_text(json.dumps(faults, indent=2), encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -224,6 +312,8 @@ def main():
     unavailable.write_text(json.dumps({"tx": None, "rx": None}), encoding="utf-8")
     unknown = cli_call(cli, "verify-pdo", imported, unavailable)
     assert unknown["tx"]["unavailable"] and all(f["state"] == "unavailable" for f in unknown["tx"]["fields"])
+
+    verify_virtual(cli, ROOT / "samples/virtual.json", destination, reports)
 
     if options.gui:
         assert os.name == "nt"

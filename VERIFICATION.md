@@ -46,3 +46,11 @@ The twelve-exchange fixture contains authored Ethernet II requests and candidate
 Headless checks reject a write command in a replay request, reject an all-invalid input run, and report a replay stopped by its duration limit as incomplete. They also cover saved PDO comparison and unavailable readback. Formatting, Clippy, all six Rust tests and the headless release workflow pass on Windows x64.
 
 The November 12 checks use command-line tools and files. The GUI additions compile. The current device-specific SAFEOP run, raw NIC round trip, live CoE readback and physical timing benchmark remain pending the bench selection.
+
+## Virtual ESC startup and cleanup coverage
+
+The authored virtual ESC exercises the shared setup and teardown against the pinned EtherCrab implementation. A normal run reads SII identity and descriptors, performs 24 CoE uploads, configures the two process SyncManagers and FMMUs, requests SAFEOP, exchanges input data and confirms INIT on stop. The virtual device validates its SM/FMMU register image before accepting SAFEOP or returning a nonzero LRD Working Counter. The audit records zero CoE downloads, logical writes, physical output writes and OP requests during the checked application runs.
+
+Eight Rust tests and the headless workflow pass. The workflow checks every-valid and on-change CSV values from the virtual input counter, repeated values, typed data and clean flush. Fault cases cover reordered mappings, SAFEOP with AL error 0x001D, mailbox aborts, unavailable readback, rejected INIT cleanup, a mismatched revision and capture-file creation failure. Setup faults preserve AL status/code and confirm INIT afterward. A rejected cleanup reports its final AL status/code and leaves the successful-stop field unset.
+
+The SAFEOP fault exposed that EtherCrab's group state wait can finish with the desired state while the AL error flag remains set. Workbench now explicitly checks AL status and status code before the first cyclic exchange. INIT cleanup uses the error acknowledgement bit and requires cleared AL status. These checks are exercised through the virtual packet path. Physical controller, driver and timing acceptance remain pending.

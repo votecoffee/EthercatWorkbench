@@ -99,7 +99,7 @@ pub fn nics() -> Result<Vec<Nic>> {
 }
 
 struct Transport {
-    cap: Capture<Active>,
+    io: PacketIo,
     seq: u8,
     ignored_frames: u64,
 }
@@ -124,7 +124,7 @@ impl Transport {
         );
         cap.filter("ether proto 0x88a4", true)?;
         Ok(Self {
-            cap,
+            io: PacketIo::Nic(cap),
             seq: 0,
             ignored_frames: 0,
         })
@@ -139,22 +139,19 @@ impl Transport {
         self.seq = self.seq.wrapping_add(1);
         let frame = Frame::new(self.seq, datagrams);
         let sent = Instant::now();
-        self.cap
-            .sendpacket(frame.bytes())
+        self.io
+            .send(frame.bytes())
             .context("inject EtherCAT read frame")?;
         while sent.elapsed() < timeout {
-            match self.cap.next_packet() {
-                Ok(packet) => {
+            match self.io.receive()? {
+                Some(packet) => {
                     let received = Instant::now();
-                    if let Some(data) = frame.reply(packet.data) {
+                    if let Some(data) = frame.reply(packet) {
                         return Ok((sent, Some(parse(data, received))));
                     }
                     self.ignored_frames += 1;
                 }
-                Err(pcap::Error::NoMorePackets | pcap::Error::TimeoutExpired) => {
-                    std::hint::spin_loop()
-                }
-                Err(error) => return Err(error).context("read EtherCAT frame from Npcap"),
+                None => std::hint::spin_loop(),
             }
         }
         Ok((sent, None))
@@ -223,7 +220,7 @@ impl Transport {
             );
             while let Some(frame) = tx.next_sendable_frame() {
                 let mut inject_error = None;
-                let sent = frame.send_blocking(|bytes| match self.cap.sendpacket(bytes) {
+                let sent = frame.send_blocking(|bytes| match self.io.send(bytes) {
                     Ok(()) => Ok(bytes.len()),
                     Err(error) => {
                         inject_error = Some(error);
@@ -236,15 +233,14 @@ impl Transport {
                 sent?;
             }
             for _ in 0..64 {
-                match self.cap.next_packet() {
-                    Ok(packet) if packet.data.get(6..12) == Some(&ETHERCRAB_REPLY) => {
+                match self.io.receive()? {
+                    Some(packet) if packet.get(6..12) == Some(&ETHERCRAB_REPLY) => {
                         // Delayed or duplicate replies can target an expired PDU slot.
                         // The pending command's own WKC and timeout still determine success.
-                        let _ = rx.receive_frame(packet.data);
+                        let _ = rx.receive_frame(packet);
                     }
-                    Ok(_) => {}
-                    Err(pcap::Error::NoMorePackets | pcap::Error::TimeoutExpired) => break,
-                    Err(error) => return Err(error).context("receive EtherCrab setup frame"),
+                    Some(_) => {}
+                    None => break,
                 }
             }
             std::thread::yield_now();
@@ -277,11 +273,46 @@ pub fn safeop(
     report: &mut Report,
     run: impl FnOnce(LiveBus<'_, '_>, &mut Report) -> Result<()>,
 ) -> Result<()> {
+    ensure!(
+        profile.expected_identity.is_some(),
+        "live profile needs exact vendor, product and revision"
+    );
+    let mut port = Transport::open(&profile.nic)?;
+    safeop_on(profile, stop, view, report, &mut port, run)
+}
+
+pub fn virtual_safeop(
+    profile: &Profile,
+    fault: crate::virtual_esc::VirtualFault,
+    stop: &AtomicBool,
+    view: &Mutex<Snapshot>,
+    report: &mut Report,
+    run: impl FnOnce(LiveBus<'_, '_>, &mut Report) -> Result<()>,
+) -> Result<()> {
+    let mut port = Transport {
+        io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(fault))),
+        seq: 0,
+        ignored_frames: 0,
+    };
+    let result = safeop_on(profile, stop, view, report, &mut port, run);
+    if let PacketIo::Virtual(esc) = &port.io {
+        report.virtual_esc = Some(esc.stats());
+    }
+    result
+}
+
+fn safeop_on(
+    profile: &Profile,
+    stop: &AtomicBool,
+    view: &Mutex<Snapshot>,
+    report: &mut Report,
+    port: &mut Transport,
+    run: impl FnOnce(LiveBus<'_, '_>, &mut Report) -> Result<()>,
+) -> Result<()> {
     let expected = profile
         .expected_identity
         .as_ref()
         .context("live profile needs exact vendor, product and revision")?;
-    let mut port = Transport::open(&profile.nic)?;
     report.devices = port.scan()?;
     ensure!(
         report.devices.len() == 1,
@@ -385,9 +416,7 @@ pub fn safeop(
         let readback = port.drive(&mut tx, &mut rx, async {
             Ok::<_, anyhow::Error>(pdo_readback::readback(&sd, stop).await)
         })?;
-        report.pdo_verification = Some(Arc::new(
-            readback.verify(profile, "Bus CoE assignment reads"),
-        ));
+        report.pdo_verification = Some(Arc::new(readback.verify(profile, port.io.source())));
         let verified = report.pdo_verification.as_ref().expect("readback set");
         ensure!(
             verified.compatible(),
@@ -405,6 +434,21 @@ pub fn safeop(
         let _group = port
             .drive(&mut tx, &mut rx, group.into_safe_op(&main))
             .context("request SAFEOP")?;
+        let al = port.drive(
+            &mut tx,
+            &mut rx,
+            Command::fprd(station, AL_STATUS).receive::<[u16; 3]>(&main),
+        )?;
+        if let Some(device) = report.devices.first_mut() {
+            device.al_status = al[0];
+            device.al_code = al[2];
+        }
+        ensure!(
+            al[0] & 0x1f == 4 && al[2] == 0,
+            "SAFEOP confirmation failed, AL {:#06x} code {:#06x}",
+            al[0],
+            al[2]
+        );
         let dc = port.drive(
             &mut tx,
             &mut rx,
@@ -433,7 +477,7 @@ pub fn safeop(
             report.expected_wkc = 1;
             run(
                 LiveBus {
-                    port: &mut port,
+                    port,
                     tx: &mut tx,
                     rx: &mut rx,
                     main: &main,
@@ -446,13 +490,28 @@ pub fn safeop(
                 report,
             )
         }
-        Err(error) => match request_init(&mut port, &mut tx, &mut rx, &main) {
-            Ok(al) => {
-                report.stopped_al = Some(al);
-                Err(error)
+        Err(error) => {
+            if let Ok(al) = port.drive(
+                &mut tx,
+                &mut rx,
+                Command::aprd(0, AL_STATUS).receive::<[u16; 3]>(&main),
+            ) {
+                report.setup_failure_al = Some((al[0], al[2]));
+                if let Some(device) = report.devices.first_mut() {
+                    device.al_status = al[0];
+                    device.al_code = al[2];
+                }
             }
-            Err(cleanup) => Err(error.context(format!("INIT cleanup also failed: {cleanup:#}"))),
-        },
+            match request_init(port, &mut tx, &mut rx, &main) {
+                Ok(al) => {
+                    report.stopped_al = Some(al);
+                    Err(error)
+                }
+                Err(cleanup) => {
+                    Err(error.context(format!("INIT cleanup also failed: {cleanup:#}")))
+                }
+            }
+        }
     }
 }
 
@@ -462,21 +521,26 @@ fn request_init<'a>(
     rx: &mut PduRx<'a>,
     main: &MainDevice<'a>,
 ) -> Result<(u16, u16)> {
-    port.drive(tx, rx, Command::apwr(0, AL_CONTROL).send(main, 1u16))
+    port.drive(tx, rx, Command::apwr(0, AL_CONTROL).send(main, 0x0011u16))
         .context("request INIT on stop")?;
     let start = Instant::now();
+    let mut last_al = None;
     while start.elapsed() < Duration::from_secs(2) {
         let al = port.drive(
             tx,
             rx,
             Command::aprd(0, AL_STATUS).receive::<[u16; 3]>(main),
         )?;
-        if al[0] & 0xf == 1 {
+        last_al = Some((al[0], al[2]));
+        if al[0] & 0x1f == 1 && al[2] == 0 {
             return Ok((al[0], al[2]));
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    bail!("SubDevice did not confirm INIT during cleanup")
+    let (status, code) = last_al.context("no AL response while confirming INIT cleanup")?;
+    bail!(
+        "SubDevice did not confirm error-free INIT during cleanup, AL {status:#06x} code {code:#06x}"
+    )
 }
 
 pub struct LiveBus<'a, 's> {
@@ -515,5 +579,39 @@ impl Bus for LiveBus<'_, '_> {
 
     fn stop(&mut self) -> Result<Option<(u16, u16)>> {
         request_init(self.port, self.tx, self.rx, self.main).map(Some)
+    }
+}
+
+enum PacketIo {
+    Nic(Capture<Active>),
+    Virtual(Box<crate::virtual_esc::VirtualEsc>),
+}
+
+impl PacketIo {
+    fn source(&self) -> &str {
+        match self {
+            Self::Nic(_) => "Bus CoE assignment reads",
+            Self::Virtual(_) => "Virtual ESC CoE assignment reads",
+        }
+    }
+
+    fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        match self {
+            Self::Nic(cap) => cap
+                .sendpacket(bytes)
+                .context("inject EtherCAT frame through Npcap"),
+            Self::Virtual(esc) => esc.send(bytes),
+        }
+    }
+
+    fn receive(&mut self) -> Result<Option<&[u8]>> {
+        match self {
+            Self::Nic(cap) => match cap.next_packet() {
+                Ok(packet) => Ok(Some(packet.data)),
+                Err(pcap::Error::NoMorePackets | pcap::Error::TimeoutExpired) => Ok(None),
+                Err(error) => Err(error).context("receive EtherCAT frame through Npcap"),
+            },
+            Self::Virtual(esc) => Ok(esc.receive()),
+        }
     }
 }

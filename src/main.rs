@@ -389,6 +389,11 @@ impl App {
         if ui.button("Start synthetic fixture").clicked() {
             self.start(Mode::Simulate { faults: false });
         }
+        if ui.button("Start virtual EtherCAT controller").clicked() {
+            self.start(Mode::Virtual {
+                fault: ethercat_workbench::virtual_esc::VirtualFault::None,
+            });
+        }
         ui.horizontal(|ui| {
             ui.label("Offline frame fixture");
             ui.add(
@@ -750,6 +755,19 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
                 "{label} spacing µs · p50 {p50} · p95 {p95} · p99 {p99} · longest {longest}"
             ));
         }
+    }
+    if let Some(esc) = &r.virtual_esc {
+        ui.label(format!("Virtual ESC · SII reads {} · CoE uploads {} · SM writes {} · FMMU writes {} · state requests {:?}",
+            esc.sii_reads, esc.coe_uploads, esc.sync_manager_writes, esc.fmmu_writes, esc.state_requests));
+        ui.label(format!(
+            "Virtual audit · CoE downloads {} · logical writes {} · physical output writes {} · OP requests {}",
+            esc.coe_downloads, esc.logical_writes, esc.physical_output_writes, esc.op_requests
+        ));
+    }
+    if let Some((status, code)) = r.setup_failure_al {
+        ui.label(format!(
+            "AL at setup failure · {status:#06x} code {code:#06x}"
+        ));
     }
     if let Some((status, code)) = r.stopped_al {
         ui.label(format!(
