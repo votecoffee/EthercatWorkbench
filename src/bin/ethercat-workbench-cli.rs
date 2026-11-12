@@ -187,13 +187,22 @@ fn main() -> Result<()> {
                 "--virtual-model requires --backend virtual"
             );
             ensure!(
-                virtual_model == ethercat_workbench::virtual_esc::VirtualModel::Coe
+                virtual_model.has_coe()
                     || !matches!(
                         virtual_fault,
                         ethercat_workbench::virtual_esc::VirtualFault::MailboxAbort
                             | ethercat_workbench::virtual_esc::VirtualFault::ReadbackUnavailable
                     ),
                 "selected virtual fault requires the CoE model"
+            );
+            ensure!(
+                virtual_model == ethercat_workbench::virtual_esc::VirtualModel::CoeDc
+                    || !matches!(
+                        virtual_fault,
+                        ethercat_workbench::virtual_esc::VirtualFault::DcActive
+                            | ethercat_workbench::virtual_esc::VirtualFault::DcReadbackUnavailable
+                    ),
+                "selected virtual fault requires the coe-dc model"
             );
             let mode = match backend {
                 Backend::Simulate => Mode::Simulate {

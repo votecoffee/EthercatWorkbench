@@ -404,6 +404,11 @@ impl App {
                     ethercat_workbench::virtual_esc::VirtualModel::Sii,
                     "SII virtual device",
                 );
+                ui.selectable_value(
+                    &mut self.virtual_model,
+                    ethercat_workbench::virtual_esc::VirtualModel::CoeDc,
+                    "CoE / DC virtual device",
+                );
             });
         if ui.button("Start virtual EtherCAT controller").clicked() {
             self.start(Mode::Virtual {
@@ -758,6 +763,12 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
         "Device sync · {}  |  DC · {}",
         r.device_sync, r.dc_sync
     ));
+    if let Some(sync) = &r.synchronization {
+        ui.collapsing("Synchronization register readback", |ui| {
+            ui.label(&sync.source);
+            ui.monospace(serde_json::to_string_pretty(sync).unwrap_or_default());
+        });
+    }
     ui.label(format!("Cycles {} · replies {} · valid {} · timeouts {} · missed slots {} · WKC mismatches {} · AL mismatches {} · ignored frames {}",
         r.cycles, r.replies, r.valid, r.timeouts, r.missed_deadlines, r.wkc_mismatches, r.state_mismatches, r.ignored_frames));
     if let Some(origin) = &r.replay_origin {

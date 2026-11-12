@@ -5,6 +5,7 @@ pub mod pdo;
 mod replay;
 pub mod run;
 mod sii;
+pub mod sync;
 pub mod virtual_esc;
 mod wire;
 

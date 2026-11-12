@@ -110,7 +110,7 @@ def gui_trial(gui, profile, destination, scheduler, seconds):
 
 def verify_virtual(cli, profile, destination, reports, model="coe"):
     model_flags = ["--virtual-model", model]
-    prefix = "virtual" if model == "coe" else "virtual-sii"
+    prefix = "virtual" if model == "coe" else f"virtual-{model}"
     for on_change in (False, True):
         base = destination / ("virtual-change.csv" if on_change else "virtual-every.csv")
         flags = ["--on-change"] if on_change else []
@@ -123,16 +123,38 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
         esc = report["virtual_esc"]
         assert esc["state_requests"] == [1, 2, 4, 1]
         assert esc["sii_reads"] > 0
-        assert esc["coe_uploads"] >= 24 if model == "coe" else esc["coe_uploads"] == 0
-        assert esc["model"] == model
-        assert esc["sync_manager_writes"] == (20 if model == "coe" else 18) and esc["fmmu_writes"] == 18
+        assert esc["coe_uploads"] >= 24 if model != "sii" else esc["coe_uploads"] == 0
+        assert esc["model"] == model.replace("-", "_")
+        sync = report["synchronization"]
+        dc = sync["dc"]
+        assert dc["requested_sync"] == "disabled"
+        assert dc["enhanced_sync_supported"] == (model == "coe-dc")
+        assert dc["static_sync_iterations"] == 0 and dc["cyclic_clock_distribution"] is False
+        if model == "coe-dc":
+            assert dc["support"] == "Bits64" and dc["initial_offset_setup_attempted"] is True
+            assert dc["activation"] == {"value": 0, "unavailable": None}
+            assert dc["sync0_cycle_ns"] == dc["sync1_cycle_ns"] == {"value": 0, "unavailable": None}
+            assert dc["system_time_offset_ns"]["value"] > 0
+            assert dc["transmission_delay_ns"] == {"value": 0, "unavailable": None}
+            assert esc["dc_latches"] == 1 and esc["dc_offset_writes"] == esc["dc_delay_writes"] == 2
+            assert esc["dc_activation_writes"] == 1
+        else:
+            assert dc["support"] == "None" and dc["initial_offset_setup_attempted"] is False
+            assert dc["activation"] is dc["sync0_cycle_ns"] is dc["sync1_cycle_ns"] is None
+            assert dc["system_time_offset_ns"] is dc["transmission_delay_ns"] is None
+        assert esc["dc_enable_requests"] == esc["dc_clock_distribution"] == 0
+        if model != "sii":
+            assert sync["tx_sync_type"]["value"] == sync["rx_sync_type"]["value"] == 0
+        else:
+            assert sync["tx_sync_type"] is sync["rx_sync_type"] is None
+        assert esc["sync_manager_writes"] == (20 if model != "sii" else 18) and esc["fmmu_writes"] == 18
         assert esc["logical_reads"] == report["cycles"]
         assert esc["coe_downloads"] == esc["logical_writes"] == esc["physical_output_writes"] == esc["op_requests"] == 0
         assert esc["error_acknowledgements"] == 2
         assert esc["final_al_status"] == 1 and esc["final_al_code"] == 0
         verified = report["pdo_verification"]
-        assert verified["source"] == ("Virtual ESC CoE assignment reads" if model == "coe" else "Virtual ESC SII PDO descriptors")
-        assert verified["readback"]["tx"]["mapping_source"] == model
+        assert verified["source"] == ("Virtual ESC CoE assignment reads" if model != "sii" else "Virtual ESC SII PDO descriptors")
+        assert verified["readback"]["tx"]["mapping_source"] == ("sii" if model == "sii" else "coe")
         assert all(f["state"] == "matched" for direction in ("tx", "rx") for f in verified[direction]["fields"])
         parts, entries = rows(base)
         cap = report["capture"]
@@ -177,7 +199,7 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
         assert not list(destination.glob(f"{base.stem}*.csv"))
         faults[fault] = report
 
-    if model == "coe":
+    if model != "sii":
         unknown = cli_call(cli, "run", profile, "--backend", "virtual", *model_flags,
                            "--virtual-fault", "readback-unavailable", "--seconds", 1)
         assert unknown["error"] is None and unknown["valid"] > 0
@@ -228,10 +250,24 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
     assert collision.read_bytes() == b"keep this capture\n"
     assert report["virtual_esc"]["state_requests"] == [1, 2, 4, 1]
     faults["capture-collision"] = report
+    if model == "coe-dc":
+        for fault, text in [("dc-active", "unexpected active DC synchronization"),
+                            ("dc-readback-unavailable", "cannot confirm disabled DC synchronization")]:
+            base = destination / (fault + ".csv")
+            report = cli_call(cli, "run", profile, "--backend", "virtual", *model_flags,
+                              "--virtual-fault", fault, "--seconds", 1, "--csv", base, success=False)
+            assert text in report["error"] and report["cycles"] == 0 and report["capture"] is None, report
+            assert report["stopped_al"] == [1, 0] and report["setup_failure_al"] == [4, 0]
+            activation = report["synchronization"]["dc"]["activation"]
+            assert activation["value"] == (3 if fault == "dc-active" else None)
+            assert bool(activation["unavailable"]) == (fault == "dc-readback-unavailable")
+            assert not list(destination.glob(f"{base.stem}*.csv"))
+            faults[fault] = report
     for report in faults.values():
         audit = report["virtual_esc"]
         assert audit["coe_downloads"] == audit["logical_writes"] == audit["physical_output_writes"] == audit["op_requests"] == 0
         assert audit["error_acknowledgements"] == 2
+        assert audit["dc_enable_requests"] == audit["dc_clock_distribution"] == 0
     (destination / "virtual-faults.json").write_text(json.dumps(faults, indent=2), encoding="utf-8")
 
 
@@ -357,6 +393,9 @@ def main():
     sii_destination = destination / "sii"
     sii_destination.mkdir()
     verify_virtual(cli, ROOT / "samples/virtual-sii.json", sii_destination, reports, model="sii")
+    dc_destination = destination / "dc"
+    dc_destination.mkdir()
+    verify_virtual(cli, ROOT / "samples/virtual-dc.json", dc_destination, reports, model="coe-dc")
 
     if options.gui:
         assert os.name == "nt"

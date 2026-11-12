@@ -10,8 +10,8 @@
 
 ## Extend bench coverage
 
-- Extend the virtual ESC fixture to segmented CoE transfers, DC-capable configurations, driver errors and recovery after sustained communication loss. Add licensed, sanitized fixtures for the selected physical device.
+- Extend the virtual ESC fixture to segmented CoE transfers, enabled DC synchronization, driver errors and recovery after sustained communication loss. The current DC model covers disabled SYNC startup and register readback. Add licensed, sanitized fixtures for the selected physical device.
 - Qualify the CoE and SII mapping readback on the selected physical device. Expand ESI module, slot, selectable mapping and synchronization support from device examples.
-- Support approved DC configuration and qualify synchronization and timing separately.
+- Support device-specific approved DC mode configuration, cyclic reference-clock distribution and qualification of clock alignment and frame timing separately. Current diagnostics retain raw DC registers and reject unexpected active SYNC settings.
 - Allocate logical input ranges and expected WKC by group for multiple SubDevices. Add identity-bound profiles per position and topology-change handling.
 - Design separately approved mapping writes, OP entry and output publishing with an explicit output contract and a bench teardown procedure.

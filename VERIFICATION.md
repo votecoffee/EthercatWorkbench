@@ -66,3 +66,11 @@ The headless functional checker accounts for reply timeouts separately from vali
 Twelve Rust tests pass. The cancellation tests release queued, sent and received PDU futures repeatedly beyond the eight storage slots, then confirm INIT cleanup while the stop flag remains set. A pre-start cancellation completes without sending datagrams. Cancelled runs expose a separate cancellation flag, and cleanup errors retain their failure result.
 
 The CoE and SII headless workflows both exercise a dropped SII response during setup and periodic lost cyclic responses. The setup timeout retains its PDU timeout detail and confirms INIT. Cyclic loss increments reply timeouts, writes only valid received samples, flushes the capture and confirms INIT on stop. The fixture audit distinguishes dropped replies from logger overruns. These checks cover in-memory packet handling and host execution.
+
+## Version 0.5.0 DC startup diagnostics
+
+Thirteen Rust tests, formatting and Clippy pass. The full headless release workflow covers every-valid and on-change logging on the CoE, SII and new CoE/DC virtual models, plus the existing ESI, decoder, saved PDO, replay, fault, rotation and collision checks. The DC model advertises enhanced 64-bit clock support and exercises EtherCrab receive-time latching and initial offset/delay writes. It returns disabled activation and zero SYNC cycle registers. Reports retain those values separately from the requested 1,000 microsecond host cycle and observed send/receive spacing.
+
+Injected active activation and unavailable activation both stop with zero cyclic samples, no CSV opened and confirmed INIT cleanup. Reports retain the readback value or failure reason and the pre-cleanup AL status. Audit counters record no OP, live output, SDO download, DC enable or cyclic clock-distribution requests. Ordinary and fault runs validate their received rows and clean flush. The startup fixture does not generate SYNC pulses, model oscillator drift or establish clock alignment.
+
+All new execution is headless and uses authored, in-memory packets. GUI changes were compiled. Native GUI interaction, physical NIC exchange, device-specific SAFEOP input, enabled DC synchronization and the agreed physical 1 ms bench comparison remain pending the device and NIC selection.

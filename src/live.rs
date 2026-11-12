@@ -4,6 +4,7 @@ use crate::wire::{APRD, BRD, Datagram, ETHERCRAB_REPLY, Frame, input_datagrams, 
 use crate::{
     model::{Identity, MAX_PAYLOAD, Profile},
     run::{BenchApproval, Bus, DeviceInfo, Exchange, Report, Snapshot},
+    sync::{DcReadback, RegisterRead, Synchronization},
 };
 use anyhow::{Context, Result, bail, ensure};
 use ethercrab::{Command, MainDevice, MainDeviceConfig, PduRx, PduStorage, PduTx, Timeouts};
@@ -384,29 +385,13 @@ fn safeop_on(
             "bus identity {observed} differs from profile {expected}"
         );
 
-        let mut sync_modes = Vec::new();
-        for (size, index, direction) in [
-            (profile.tx_bytes, 0x1c33, "TxPDO"),
-            (profile.rx_bytes, 0x1c32, "RxPDO"),
-        ] {
-            if size == 0 {
-                continue;
-            }
-            let mode = port.drive(&mut tx, &mut rx, Some(stop), sd.sdo_read::<u16>(index, 1u8));
-            sync_modes.push(match mode {
-                Ok(mode) => format!("{direction} CoE {index:#06x}:01 = {mode:#06x}"),
-                Err(_) => format!("{direction} CoE sync type unavailable"),
-            });
-        }
-        report.device_sync = sync_modes.join(" / ");
-        report.dc_sync = "SYNC0/SYNC1 disabled. EtherCrab initial clock setup if supported".into();
-
         check_cancel(Some(stop))?;
         let group = port
             .drive(&mut tx, &mut rx, Some(stop), group.into_pre_op_pdi(&main))
             .context("configure FMMU/SyncManagers from discovered device mapping")?;
         let sd = group.subdevice(&main, 0)?;
         let station = sd.configured_address();
+        let dc_support = sd.dc_support();
         let (input, output) = {
             let io = sd.io_raw();
             (io.inputs().len(), io.outputs().len())
@@ -431,9 +416,65 @@ fn safeop_on(
             sd.eeprom_read::<u16>(&main, 0x001c),
         )?;
         let coe = protocols & 0x0004 != 0;
-        if !coe {
-            report.device_sync = "Device sync type unavailable (CoE absent)".into();
-        }
+        let sync_source = match &port.io {
+            PacketIo::Nic(_) => "Bus register readback",
+            PacketIo::Virtual(_) => "Virtual ESC register readback",
+        };
+        let sync = port.drive(&mut tx, &mut rx, Some(stop), async {
+            let mut sync = Synchronization {
+                source: sync_source.into(),
+                dc: DcReadback {
+                    support: format!("{:?}", sd.dc_support()),
+                    enhanced_sync_supported: sd.dc_support().enhanced(),
+                    requested_sync: "disabled".into(),
+                    initial_offset_setup_attempted: sd.dc_support().any(),
+                    static_sync_iterations: 0,
+                    cyclic_clock_distribution: false,
+                    ..DcReadback::default()
+                },
+                ..Synchronization::default()
+            };
+            if coe {
+                if profile.tx_bytes != 0 {
+                    sync.tx_sync_type = Some(RegisterRead::from_result(
+                        sd.sdo_read::<u16>(0x1c33, 1u8).await,
+                    ));
+                }
+                if profile.rx_bytes != 0 {
+                    sync.rx_sync_type = Some(RegisterRead::from_result(
+                        sd.sdo_read::<u16>(0x1c32, 1u8).await,
+                    ));
+                }
+            }
+            if sd.dc_support().any() {
+                sync.dc.system_time_offset_ns = Some(RegisterRead::from_result(
+                    Command::fprd(station, 0x0920).receive::<i64>(&main).await,
+                ));
+                sync.dc.transmission_delay_ns = Some(RegisterRead::from_result(
+                    Command::fprd(station, 0x0928).receive::<u32>(&main).await,
+                ));
+            }
+            Ok::<_, anyhow::Error>(sync)
+        })?;
+        report.device_sync = if coe {
+            [
+                (&sync.tx_sync_type, "TxPDO", 0x1c33),
+                (&sync.rx_sync_type, "RxPDO", 0x1c32),
+            ]
+            .into_iter()
+            .filter_map(|(read, label, index)| {
+                read.as_ref().map(|read| match read.value {
+                    Some(value) => format!("{label} CoE {index:#06x}:01 = {value:#06x}"),
+                    None => format!("{label} CoE sync type unavailable"),
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" / ")
+        } else {
+            "Device sync type unavailable (CoE absent)".into()
+        };
+        report.dc_sync = sync.dc.summary();
+        report.synchronization = Some(sync);
         let readback = port.drive(&mut tx, &mut rx, Some(stop), async {
             Ok::<_, anyhow::Error>(pdo_readback::readback(&sd, &main, coe, stop).await)
         })?;
@@ -476,27 +517,26 @@ fn safeop_on(
             al[0],
             al[2]
         );
-        let dc = port.drive(
-            &mut tx,
-            &mut rx,
-            Some(stop),
-            Command::fprd(station, 0x0981).receive::<u8>(&main),
-        );
-        if let Ok(activation) = dc {
-            let cycles = port.drive(
-                &mut tx,
-                &mut rx,
-                Some(stop),
-                Command::fprd(station, 0x09a0).receive::<[u32; 2]>(&main),
-            );
-            report
-                .dc_sync
-                .push_str(&format!(". ESC activation {activation:#04x}"));
-            if let Ok([sync0, sync1]) = cycles {
-                report.dc_sync.push_str(&format!(
-                    ", cycle registers SYNC0 {sync0} ns / SYNC1 {sync1} ns"
-                ));
-            }
+        if dc_support.enhanced() {
+            let (activation, sync0, sync1) = port.drive(&mut tx, &mut rx, Some(stop), async {
+                Ok::<_, anyhow::Error>((
+                    RegisterRead::from_result(
+                        Command::fprd(station, 0x0981).receive::<u8>(&main).await,
+                    ),
+                    RegisterRead::from_result(
+                        Command::fprd(station, 0x09a0).receive::<u32>(&main).await,
+                    ),
+                    RegisterRead::from_result(
+                        Command::fprd(station, 0x09a4).receive::<u32>(&main).await,
+                    ),
+                ))
+            })?;
+            let sync = report.synchronization.as_mut().expect("sync readback set");
+            sync.dc.activation = Some(activation);
+            sync.dc.sync0_cycle_ns = Some(sync0);
+            sync.dc.sync1_cycle_ns = Some(sync1);
+            report.dc_sync = sync.dc.summary();
+            sync.dc.confirm_disabled()?;
         }
         Ok(station)
     })();

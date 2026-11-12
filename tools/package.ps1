@@ -38,6 +38,7 @@ try {
         'samples/synthetic.json' = 'samples/synthetic.json'
         'samples/virtual.json' = 'samples/virtual.json'
         'samples/virtual-sii.json' = 'samples/virtual-sii.json'
+        'samples/virtual-dc.json' = 'samples/virtual-dc.json'
         'samples/synthetic-pdo.json' = 'samples/synthetic-pdo.json'
         'samples/synthetic-replay.json' = 'samples/synthetic-replay.json'
         'notices/THIRD-PARTY-NOTICES.txt' = $notices

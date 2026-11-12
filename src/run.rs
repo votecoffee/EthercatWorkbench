@@ -85,6 +85,7 @@ pub struct Report {
     pub scheduler: Scheduler,
     pub device_sync: String,
     pub dc_sync: String,
+    pub synchronization: Option<crate::sync::Synchronization>,
     pub connection_generation: u64,
     pub cycles: u64,
     pub replies: u64,

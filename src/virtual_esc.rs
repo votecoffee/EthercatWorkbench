@@ -2,7 +2,7 @@
 use anyhow::{Result, bail, ensure};
 use clap::ValueEnum;
 use serde::Serialize;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 
 const MAILBOX_IN: usize = 0x1000;
 const MAILBOX_OUT: usize = 0x1040;
@@ -16,6 +16,13 @@ pub enum VirtualModel {
     #[default]
     Coe,
     Sii,
+    CoeDc,
+}
+
+impl VirtualModel {
+    pub fn has_coe(self) -> bool {
+        self != Self::Sii
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -29,6 +36,8 @@ pub enum VirtualFault {
     CleanupReject,
     SetupTimeout,
     IoTimeout,
+    DcActive,
+    DcReadbackUnavailable,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -39,6 +48,12 @@ pub struct VirtualStats {
     pub sii_reads: u64,
     pub coe_uploads: u64,
     pub coe_downloads: u64,
+    pub dc_latches: u64,
+    pub dc_offset_writes: u64,
+    pub dc_delay_writes: u64,
+    pub dc_activation_writes: u64,
+    pub dc_enable_requests: u64,
+    pub dc_clock_distribution: u64,
     pub sync_manager_writes: u64,
     pub fmmu_writes: u64,
     pub logical_reads: u64,
@@ -60,6 +75,7 @@ pub(crate) struct VirtualEsc {
     stats: VirtualStats,
     fault: VirtualFault,
     model: VirtualModel,
+    clock_started: Instant,
 }
 
 impl VirtualEsc {
@@ -67,7 +83,10 @@ impl VirtualEsc {
         let mut registers = Box::new([0u8; 65_536]);
         registers[0] = 0x11;
         registers[4] = 2; // FMMU channels.
-        registers[5] = if model == VirtualModel::Coe { 4 } else { 2 }; // SyncManager channels.
+        registers[5] = if model.has_coe() { 4 } else { 2 }; // SyncManager channels.
+        if model == VirtualModel::CoeDc {
+            registers[0x0008..0x000a].copy_from_slice(&0x010cu16.to_le_bytes());
+        }
         registers[0x0110] = 0x13; // One linked port, PDI operational, watchdog OK.
         registers[0x0130] = 1; // INIT.
         Self {
@@ -82,6 +101,7 @@ impl VirtualEsc {
             },
             fault,
             model,
+            clock_started: Instant::now(),
         }
     }
 
@@ -126,6 +146,10 @@ impl VirtualEsc {
                 0x01 | 0x02 => station == 0,
                 0x04 | 0x05 => station == word(&self.registers[0x0010..]),
                 0x07 | 0x08 | 0x0a => true,
+                0x0e => {
+                    self.stats.dc_clock_distribution += 1;
+                    bail!("virtual fixture rejects cyclic DC clock distribution")
+                }
                 0x0b | 0x0c => {
                     self.stats.logical_writes += 1;
                     bail!("virtual fixture rejects logical output writes")
@@ -139,12 +163,14 @@ impl VirtualEsc {
                 wkc = match command {
                     0x01 | 0x04 | 0x07 => {
                         self.read(usize::from(register), data)?;
-                        1
+                        u16::from(
+                            !(self.fault == VirtualFault::DcReadbackUnavailable
+                                && register == 0x0981),
+                        )
                     }
                     0x02 | 0x05 | 0x08 => {
                         self.write(usize::from(register), data)?;
-                        // The virtual device declares no Distributed Clock support.
-                        u16::from(register != 0x0900)
+                        u16::from(register != 0x0900 || self.model == VirtualModel::CoeDc)
                     }
                     0x0a => {
                         let address = u32::from(station) | (u32::from(register) << 16);
@@ -190,7 +216,10 @@ impl VirtualEsc {
             .checked_add(data.len())
             .filter(|end| *end <= self.registers.len());
         ensure!(end.is_some(), "virtual ESC register read outside memory");
-        if register == 0x0508 {
+        if register == 0x0981 && self.fault == VirtualFault::DcActive {
+            data.fill(0);
+            data[0] = 3; // Authored unexpected device activation, no enable write was sent.
+        } else if register == 0x0508 {
             let word_address = usize::from(word(&self.registers[0x0504..]));
             let start = word_address * 2;
             let source = self
@@ -219,6 +248,27 @@ impl VirtualEsc {
         if end > OUTPUTS && register < OUTPUTS + 2 {
             self.stats.physical_output_writes += 1;
             bail!("virtual fixture rejects physical output data writes");
+        }
+        if self.model == VirtualModel::CoeDc {
+            match register {
+                0x0900 => {
+                    self.stats.dc_latches += 1;
+                    let time = 1_000_000_000 + self.clock_started.elapsed().as_nanos() as u64;
+                    self.registers[0x0918..0x0920].copy_from_slice(&time.to_le_bytes());
+                    self.registers[0x0900..0x0904].copy_from_slice(&(time as u32).to_le_bytes());
+                    return Ok(());
+                }
+                0x0920 => self.stats.dc_offset_writes += 1,
+                0x0928 => self.stats.dc_delay_writes += 1,
+                0x0981 => {
+                    self.stats.dc_activation_writes += 1;
+                    if data[0] & 7 != 0 {
+                        self.stats.dc_enable_requests += 1;
+                        bail!("virtual fixture rejects DC enable requests");
+                    }
+                }
+                _ => {}
+            }
         }
         self.registers[register..end].copy_from_slice(data);
         match register {
@@ -278,7 +328,7 @@ impl VirtualEsc {
     fn process_configuration_valid(&self) -> bool {
         // Independently verify the SM/FMMU layout required by this authored fixture.
         let sms = match self.model {
-            VirtualModel::Coe => [(2, OUTPUTS, 2, 4), (3, INPUTS, 8, 0)],
+            VirtualModel::Coe | VirtualModel::CoeDc => [(2, OUTPUTS, 2, 4), (3, INPUTS, 8, 0)],
             VirtualModel::Sii => [(0, OUTPUTS, 2, 4), (1, INPUTS, 8, 0)],
         };
         let sms_ok = sms.into_iter().all(|(index, physical, len, direction)| {
@@ -289,7 +339,9 @@ impl VirtualEsc {
                 && sm[6] & 1 == 1
         });
         let fmmus = match self.model {
-            VirtualModel::Coe => [(0, 0u32, INPUTS, 8, 1), (1, 8, OUTPUTS, 2, 2)],
+            VirtualModel::Coe | VirtualModel::CoeDc => {
+                [(0, 0u32, INPUTS, 8, 1), (1, 8, OUTPUTS, 2, 2)]
+            }
             VirtualModel::Sii => [(1, 0u32, INPUTS, 8, 1), (0, 8, OUTPUTS, 2, 2)],
         };
         sms_ok
@@ -410,14 +462,21 @@ fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
     let mut bytes = vec![0u8; 512];
     for (offset, value) in [
         (0x10, 0x00ff_1000u32),
-        (0x14, if model == VirtualModel::Coe { 1 } else { 2 }),
+        (
+            0x14,
+            match model {
+                VirtualModel::Coe => 1,
+                VirtualModel::Sii => 2,
+                VirtualModel::CoeDc => 3,
+            },
+        ),
         (0x18, 1),
         (0x1c, 1),
     ] {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
     bytes[0x7c..0x7e].copy_from_slice(&3u16.to_le_bytes());
-    if model == VirtualModel::Coe {
+    if model.has_coe() {
         for (offset, value) in [
             (0x30, MAILBOX_IN as u16),
             (0x32, MAILBOX_BYTES as u16),
@@ -431,7 +490,7 @@ fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
     let mut categories = Vec::new();
     categories.extend_from_slice(&[40, 0, 1, 0, 2, 1]);
     let channels = match model {
-        VirtualModel::Coe => vec![
+        VirtualModel::Coe | VirtualModel::CoeDc => vec![
             (MAILBOX_IN as u16, MAILBOX_BYTES as u16, 0x26, 1),
             (MAILBOX_OUT as u16, MAILBOX_BYTES as u16, 0x22, 2),
             (OUTPUTS as u16, 2, 0x04, 3),
