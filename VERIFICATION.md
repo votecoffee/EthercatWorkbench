@@ -55,9 +55,9 @@ Eight Rust tests and the headless workflow pass. The workflow checks every-valid
 
 The SAFEOP fault exposed that EtherCrab's group state wait can finish with the desired state while the AL error flag remains set. Workbench now explicitly checks AL status and status code before the first cyclic exchange. INIT cleanup uses the error acknowledgement bit and requires cleared AL status. These checks are exercised through the virtual packet path. Physical controller, driver and timing acceptance remain pending.
 
-## SII mapping and virtual device coverage
+## Version 0.4.0 SII mapping and virtual device coverage
 
-Ten Rust tests pass, including SII padding, unassigned PDOs and malformed category bounds. The SII model declares no CoE support, provides EEPROM PDO categories and uses two process SyncManagers. It reaches SAFEOP through EtherCrab's EEPROM configuration path, verifies all four referenced fields from SII, logs input values and returns to INIT. Its audit records zero CoE uploads. Both virtual models are checked with every-valid and on-change logging and configuration failures.
+The SII tests cover padding, unassigned PDOs and malformed category bounds. The SII model declares no CoE support, provides EEPROM PDO categories and uses two process SyncManagers. It reaches SAFEOP through EtherCrab's EEPROM configuration path, verifies all four referenced fields from SII, logs input values and returns to INIT. Its audit records zero CoE uploads. Both virtual models are checked with every-valid and on-change logging and configuration failures.
 
 The headless functional checker accounts for reply timeouts separately from valid exchanges and validates CSV values against the virtual counter. Host scheduling can expire a receive wait even with an in-memory responder. A CoE readback failure retains its unavailable status, and SII readback is selected from the device's declared mailbox protocols. SII tests establish the authored fixture path. Physical SII device support remains pending acceptance.
 
