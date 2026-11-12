@@ -3,10 +3,29 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-/// CoE assignments in ascending SyncManager order, with entries in device order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MappingSource {
+    #[default]
+    Coe,
+    Sii,
+}
+
+impl MappingSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Coe => "CoE",
+            Self::Sii => "SII",
+        }
+    }
+}
+
+/// Device PDOs in ascending SyncManager order, with entries in device order.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layout {
+    #[serde(default)]
+    pub mapping_source: MappingSource,
     pub sync_managers: Vec<SyncManager>,
 }
 
@@ -132,7 +151,7 @@ impl Layout {
             if let Some(configured) = sm.configured_bytes {
                 ensure!(
                     (bit - start_bit) / 8 == configured,
-                    "SM{} register length {configured} differs from its CoE mapping length {}",
+                    "SM{} register length {configured} differs from its PDO mapping length {}",
                     sm.index,
                     (bit - start_bit) / 8
                 );
@@ -211,8 +230,8 @@ fn compare(
                     && entry.object_index == object && entry.subindex == sub
                     && entry.bit == field.bit && entry.width == field.width);
                 if let Some(entry) = found {
-                    (FieldState::Matched, format!("CoE SM{} {pdo:#06x}/{object:#06x}:{sub:02x}, bit {} width {}",
-                        entry.sync_manager, entry.bit, entry.width))
+                    (FieldState::Matched, format!("{} SM{} {pdo:#06x}/{object:#06x}:{sub:02x}, bit {} width {}",
+                        layout.expect("parsed layout").mapping_source.label(), entry.sync_manager, entry.bit, entry.width))
                 } else {
                     let detail = format!("{}: no device entry for {pdo:#06x}/{object:#06x}:{sub:02x} at bit {} width {}",
                         field.name, field.bit, field.width);
@@ -278,6 +297,7 @@ mod tests {
     #[test]
     fn pads_each_sync_manager_and_rejects_invalid_or_partial_data() {
         let layout = Layout {
+            mapping_source: MappingSource::Coe,
             sync_managers: vec![
                 SyncManager {
                     index: 3,

@@ -73,6 +73,8 @@ enum Command {
         replay: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "none")]
         virtual_fault: ethercat_workbench::virtual_esc::VirtualFault,
+        #[arg(long, value_enum, default_value = "coe")]
+        virtual_model: ethercat_workbench::virtual_esc::VirtualModel,
         #[arg(long, default_value_t = 1)]
         generation: u64,
         /// Confirm approval for ESC initialization, SAFEOP and return to INIT on one isolated device.
@@ -130,7 +132,7 @@ fn main() -> Result<()> {
             let profile = Profile::load(&profile)?;
             let readback: ethercat_workbench::pdo::Readback =
                 serde_json::from_reader(std::fs::File::open(readback)?)?;
-            let verification = readback.verify(&profile, "Saved CoE readback");
+            let verification = readback.verify(&profile, "Saved PDO readback");
             output(&verification)?;
             ensure!(
                 verification.compatible(),
@@ -166,6 +168,7 @@ fn main() -> Result<()> {
             simulate_faults,
             replay,
             virtual_fault,
+            virtual_model,
             generation,
             approve_esc_writes,
         } => {
@@ -178,6 +181,20 @@ fn main() -> Result<()> {
                     || virtual_fault == ethercat_workbench::virtual_esc::VirtualFault::None,
                 "--virtual-fault requires --backend virtual"
             );
+            ensure!(
+                matches!(backend, Backend::Virtual)
+                    || virtual_model == ethercat_workbench::virtual_esc::VirtualModel::Coe,
+                "--virtual-model requires --backend virtual"
+            );
+            ensure!(
+                virtual_model == ethercat_workbench::virtual_esc::VirtualModel::Coe
+                    || !matches!(
+                        virtual_fault,
+                        ethercat_workbench::virtual_esc::VirtualFault::MailboxAbort
+                            | ethercat_workbench::virtual_esc::VirtualFault::ReadbackUnavailable
+                    ),
+                "selected virtual fault requires the CoE model"
+            );
             let mode = match backend {
                 Backend::Simulate => Mode::Simulate {
                     faults: simulate_faults,
@@ -188,6 +205,7 @@ fn main() -> Result<()> {
                         "--simulate-faults is for the synthetic backend"
                     );
                     Mode::Virtual {
+                        model: virtual_model,
                         fault: virtual_fault,
                     }
                 }

@@ -283,6 +283,7 @@ pub fn safeop(
 
 pub fn virtual_safeop(
     profile: &Profile,
+    model: crate::virtual_esc::VirtualModel,
     fault: crate::virtual_esc::VirtualFault,
     stop: &AtomicBool,
     view: &Mutex<Snapshot>,
@@ -290,7 +291,7 @@ pub fn virtual_safeop(
     run: impl FnOnce(LiveBus<'_, '_>, &mut Report) -> Result<()>,
 ) -> Result<()> {
     let mut port = Transport {
-        io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(fault))),
+        io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(model, fault))),
         seq: 0,
         ignored_frames: 0,
     };
@@ -413,10 +414,20 @@ fn safeop_on(
             snapshot.phase = "Checking device PDO assignments".into();
             snapshot.report.clone_from(report);
         }
+        let protocols = port.drive(&mut tx, &mut rx, sd.eeprom_read::<u16>(&main, 0x001c))?;
+        let coe = protocols & 0x0004 != 0;
+        if !coe {
+            report.device_sync = "Device sync type unavailable (CoE absent)".into();
+        }
         let readback = port.drive(&mut tx, &mut rx, async {
-            Ok::<_, anyhow::Error>(pdo_readback::readback(&sd, stop).await)
+            Ok::<_, anyhow::Error>(pdo_readback::readback(&sd, &main, coe, stop).await)
         })?;
-        report.pdo_verification = Some(Arc::new(readback.verify(profile, port.io.source())));
+        let source = match (&port.io, coe) {
+            (PacketIo::Nic(_), false) => "Bus SII PDO descriptors",
+            (PacketIo::Virtual(_), false) => "Virtual ESC SII PDO descriptors",
+            _ => port.io.source(),
+        };
+        report.pdo_verification = Some(Arc::new(readback.verify(profile, source)));
         let verified = report.pdo_verification.as_ref().expect("readback set");
         ensure!(
             verified.compatible(),

@@ -153,6 +153,7 @@ pub enum Mode {
         fixture: PathBuf,
     },
     Virtual {
+        model: crate::virtual_esc::VirtualModel,
         fault: crate::virtual_esc::VirtualFault,
     },
     SafeOp {
@@ -264,17 +265,23 @@ fn run_inner(
             );
             Ok(())
         }
-        Mode::Virtual { fault } => {
+        Mode::Virtual { model, fault } => {
             report.backend = "Virtual EtherCAT ESC / EtherCrab SAFEOP".into();
             #[cfg(windows)]
             {
-                crate::live::virtual_safeop(profile, fault, stop, view, report, |bus, report| {
-                    cycle(bus, profile, &options, stop, view, report)
-                })
+                crate::live::virtual_safeop(
+                    profile,
+                    model,
+                    fault,
+                    stop,
+                    view,
+                    report,
+                    |bus, report| cycle(bus, profile, &options, stop, view, report),
+                )
             }
             #[cfg(not(windows))]
             {
-                let _ = fault;
+                let _ = (model, fault);
                 anyhow::bail!("the virtual setup path currently requires the Windows build")
             }
         }

@@ -64,6 +64,7 @@ struct App {
     csv: String,
     offline_hex: String,
     replay_path: String,
+    virtual_model: ethercat_workbench::virtual_esc::VirtualModel,
     seconds: u64,
     approved: bool,
     generation: u64,
@@ -94,6 +95,7 @@ impl App {
                 .unwrap_or_default(),
             offline_hex: String::new(),
             replay_path: String::new(),
+            virtual_model: ethercat_workbench::virtual_esc::VirtualModel::Coe,
             seconds: args.simulate_seconds.unwrap_or(10),
             approved: false,
             generation: 0,
@@ -389,8 +391,23 @@ impl App {
         if ui.button("Start synthetic fixture").clicked() {
             self.start(Mode::Simulate { faults: false });
         }
+        egui::ComboBox::from_id_salt("virtual_model")
+            .selected_text(format!("{:?}", self.virtual_model))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.virtual_model,
+                    ethercat_workbench::virtual_esc::VirtualModel::Coe,
+                    "CoE virtual device",
+                );
+                ui.selectable_value(
+                    &mut self.virtual_model,
+                    ethercat_workbench::virtual_esc::VirtualModel::Sii,
+                    "SII virtual device",
+                );
+            });
         if ui.button("Start virtual EtherCAT controller").clicked() {
             self.start(Mode::Virtual {
+                model: self.virtual_model,
                 fault: ethercat_workbench::virtual_esc::VirtualFault::None,
             });
         }

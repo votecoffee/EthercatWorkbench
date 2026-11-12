@@ -4,6 +4,7 @@ pub mod model;
 pub mod pdo;
 mod replay;
 pub mod run;
+mod sii;
 pub mod virtual_esc;
 mod wire;
 

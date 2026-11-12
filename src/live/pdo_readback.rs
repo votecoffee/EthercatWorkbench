@@ -1,6 +1,9 @@
-use crate::pdo::{Layout, Pdo, Readback, SyncManager};
+use crate::{
+    pdo::{Layout, MappingSource, Pdo, Readback, SyncManager},
+    sii::{MAX_CATEGORIES_BYTES, SiiPdos},
+};
 use anyhow::{Context, Result, ensure};
-use ethercrab::{SubDevice, SubDeviceRef};
+use ethercrab::{MainDevice, SubDevice, SubDeviceRef};
 use std::{
     ops::Deref,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
@@ -19,6 +22,8 @@ struct Channel {
 
 pub async fn readback<S: Deref<Target = SubDevice>>(
     sd: &SubDeviceRef<'_, S>,
+    main: &MainDevice<'_>,
+    coe: bool,
     stop: &AtomicBool,
 ) -> Readback {
     let started = Instant::now();
@@ -34,6 +39,29 @@ pub async fn readback<S: Deref<Target = SubDevice>>(
             };
         }
     };
+    if !coe {
+        return match sii_categories(sd, main, stop, started)
+            .await
+            .and_then(|bytes| SiiPdos::parse(&bytes))
+        {
+            Ok(sii) => {
+                let configured = |tx| {
+                    channels
+                        .iter()
+                        .filter(|c| c.tx == tx)
+                        .map(|c| (c.index, c.bytes))
+                        .collect::<Vec<_>>()
+                };
+                Readback {
+                    tx: Some(sii.layout(true, &configured(true))),
+                    rx: Some(sii.layout(false, &configured(false))),
+                    tx_unavailable: None,
+                    rx_unavailable: None,
+                }
+            }
+            Err(error) => unavailable(format!("SII PDO readback: {error:#}")),
+        };
+    }
     let tx = layout(sd, &channels, true, stop, started).await;
     let rx = layout(sd, &channels, false, stop, started).await;
     Readback {
@@ -125,6 +153,60 @@ async fn layout<S: Deref<Target = SubDevice>>(
             pdos,
         });
     }
-    let layout = Layout { sync_managers };
+    let layout = Layout {
+        mapping_source: MappingSource::Coe,
+        sync_managers,
+    };
     Ok(layout)
+}
+
+fn unavailable(reason: String) -> Readback {
+    Readback {
+        tx: None,
+        rx: None,
+        tx_unavailable: Some(reason.clone()),
+        rx_unavailable: Some(reason),
+    }
+}
+
+async fn sii_categories<S: Deref<Target = SubDevice>>(
+    sd: &SubDeviceRef<'_, S>,
+    main: &MainDevice<'_>,
+    stop: &AtomicBool,
+    started: Instant,
+) -> Result<Vec<u8>> {
+    let mut word_address = 0x0040u16;
+    let mut bytes = Vec::new();
+    loop {
+        check(stop, started)?;
+        let header: [u8; 4] = sd.eeprom_read(main, word_address).await?;
+        ensure!(
+            bytes.len() + 4 <= MAX_CATEGORIES_BYTES,
+            "SII categories exceed 16 KiB"
+        );
+        bytes.extend_from_slice(&header);
+        if header[..2] == [0xff, 0xff] {
+            return Ok(bytes);
+        }
+        let words = u16::from_le_bytes([header[2], header[3]]);
+        let length = usize::from(words) * 2;
+        ensure!(
+            bytes.len() + length <= MAX_CATEGORIES_BYTES,
+            "SII categories exceed 16 KiB"
+        );
+        word_address = word_address
+            .checked_add(2)
+            .context("SII category address overflow")?;
+        for offset in (0..length).step_by(4) {
+            check(stop, started)?;
+            let address = word_address
+                .checked_add((offset / 2) as u16)
+                .context("SII category address overflow")?;
+            let chunk: [u8; 4] = sd.eeprom_read(main, address).await?;
+            bytes.extend_from_slice(&chunk[..(length - offset).min(4)]);
+        }
+        word_address = word_address
+            .checked_add(words)
+            .context("SII category address overflow")?;
+    }
 }

@@ -10,6 +10,14 @@ const MAILBOX_BYTES: usize = 64;
 const OUTPUTS: usize = 0x1100;
 const INPUTS: usize = 0x1200;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VirtualModel {
+    #[default]
+    Coe,
+    Sii,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum VirtualFault {
     #[default]
@@ -23,6 +31,7 @@ pub enum VirtualFault {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct VirtualStats {
+    pub model: VirtualModel,
     pub datagrams: u64,
     pub sii_reads: u64,
     pub coe_uploads: u64,
@@ -47,24 +56,29 @@ pub(crate) struct VirtualEsc {
     mailbox: Option<[u8; MAILBOX_BYTES]>,
     stats: VirtualStats,
     fault: VirtualFault,
+    model: VirtualModel,
 }
 
 impl VirtualEsc {
-    pub fn new(fault: VirtualFault) -> Self {
+    pub fn new(model: VirtualModel, fault: VirtualFault) -> Self {
         let mut registers = Box::new([0u8; 65_536]);
         registers[0] = 0x11;
         registers[4] = 2; // FMMU channels.
-        registers[5] = 4; // SyncManager channels.
+        registers[5] = if model == VirtualModel::Coe { 4 } else { 2 }; // SyncManager channels.
         registers[0x0110] = 0x13; // One linked port, PDI operational, watchdog OK.
         registers[0x0130] = 1; // INIT.
         Self {
             registers,
-            eeprom: eeprom(),
+            eeprom: eeprom(model, fault),
             replies: VecDeque::new(),
             current: None,
             mailbox: None,
-            stats: VirtualStats::default(),
+            stats: VirtualStats {
+                model,
+                ..VirtualStats::default()
+            },
             fault,
+            model,
         }
     }
 
@@ -242,7 +256,10 @@ impl VirtualEsc {
 
     fn process_configuration_valid(&self) -> bool {
         // Independently verify the SM/FMMU layout required by this authored fixture.
-        let sms = [(2, OUTPUTS, 2, 4), (3, INPUTS, 8, 0)];
+        let sms = match self.model {
+            VirtualModel::Coe => [(2, OUTPUTS, 2, 4), (3, INPUTS, 8, 0)],
+            VirtualModel::Sii => [(0, OUTPUTS, 2, 4), (1, INPUTS, 8, 0)],
+        };
         let sms_ok = sms.into_iter().all(|(index, physical, len, direction)| {
             let sm = &self.registers[0x0800 + index * 8..];
             usize::from(word(sm)) == physical
@@ -250,7 +267,10 @@ impl VirtualEsc {
                 && sm[4] & 0x0f == direction
                 && sm[6] & 1 == 1
         });
-        let fmmus = [(0, 0u32, INPUTS, 8, 1), (1, 8, OUTPUTS, 2, 2)];
+        let fmmus = match self.model {
+            VirtualModel::Coe => [(0, 0u32, INPUTS, 8, 1), (1, 8, OUTPUTS, 2, 2)],
+            VirtualModel::Sii => [(1, 0u32, INPUTS, 8, 1), (0, 8, OUTPUTS, 2, 2)],
+        };
         sms_ok
             && fmmus
                 .into_iter()
@@ -365,35 +385,66 @@ fn dword(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
-fn eeprom() -> Vec<u8> {
+fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
     let mut bytes = vec![0u8; 512];
-    for (offset, value) in [(0x10, 0x00ff_1000u32), (0x14, 1), (0x18, 1), (0x1c, 1)] {
+    for (offset, value) in [
+        (0x10, 0x00ff_1000u32),
+        (0x14, if model == VirtualModel::Coe { 1 } else { 2 }),
+        (0x18, 1),
+        (0x1c, 1),
+    ] {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
-    for (offset, value) in [
-        (0x30, MAILBOX_IN as u16),
-        (0x32, MAILBOX_BYTES as u16),
-        (0x34, MAILBOX_OUT as u16),
-        (0x36, MAILBOX_BYTES as u16),
-        (0x38, 4),
-        (0x7c, 3),
-    ] {
-        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    bytes[0x7c..0x7e].copy_from_slice(&3u16.to_le_bytes());
+    if model == VirtualModel::Coe {
+        for (offset, value) in [
+            (0x30, MAILBOX_IN as u16),
+            (0x32, MAILBOX_BYTES as u16),
+            (0x34, MAILBOX_OUT as u16),
+            (0x36, MAILBOX_BYTES as u16),
+            (0x38, 4),
+        ] {
+            bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
     }
     let mut categories = Vec::new();
-    // FMMU usage in SII category 40, input then output.
     categories.extend_from_slice(&[40, 0, 1, 0, 2, 1]);
-    // Four SII SyncManager descriptors, category 41.
-    categories.extend_from_slice(&[41, 0, 16, 0]);
-    for (address, length, control, usage) in [
-        (MAILBOX_IN as u16, MAILBOX_BYTES as u16, 0x26, 1),
-        (MAILBOX_OUT as u16, MAILBOX_BYTES as u16, 0x22, 2),
-        (OUTPUTS as u16, 2, 0x04, 3),
-        (INPUTS as u16, 8, 0x00, 4),
-    ] {
+    let channels = match model {
+        VirtualModel::Coe => vec![
+            (MAILBOX_IN as u16, MAILBOX_BYTES as u16, 0x26, 1),
+            (MAILBOX_OUT as u16, MAILBOX_BYTES as u16, 0x22, 2),
+            (OUTPUTS as u16, 2, 0x04, 3),
+            (INPUTS as u16, 8, 0x00, 4),
+        ],
+        VirtualModel::Sii => vec![(OUTPUTS as u16, 2, 0x04, 3), (INPUTS as u16, 8, 0x00, 4)],
+    };
+    categories.extend_from_slice(&41u16.to_le_bytes());
+    categories.extend_from_slice(&((channels.len() * 4) as u16).to_le_bytes());
+    for (address, length, control, usage) in channels {
         categories.extend_from_slice(&address.to_le_bytes());
         categories.extend_from_slice(&length.to_le_bytes());
         categories.extend_from_slice(&[control, 0, 1, usage]);
+    }
+    if model == VirtualModel::Sii {
+        categories.extend_from_slice(&[42, 0, 3, 0, 1, 1, 0, 0, 0, 0]);
+        let entries: [u32; 4] = if fault == VirtualFault::PdoOrder {
+            [0x6000_0320, 0x6000_0201, 15, 0x6000_0110]
+        } else {
+            [0x6000_0110, 0x6000_0201, 15, 0x6000_0320]
+        };
+        for (category, pdo, sm, entries) in [
+            (50u16, 0x1a00u16, 1, &entries[..]),
+            (51, 0x1600, 0, &[0x7000_0110][..]),
+        ] {
+            categories.extend_from_slice(&category.to_le_bytes());
+            categories.extend_from_slice(&((8 + entries.len() * 8) as u16 / 2).to_le_bytes());
+            categories.extend_from_slice(&pdo.to_le_bytes());
+            categories.extend_from_slice(&[entries.len() as u8, sm, 0, 0, 0, 0]);
+            for entry in entries {
+                categories.extend_from_slice(&((entry >> 16) as u16).to_le_bytes());
+                categories.extend_from_slice(&[(entry >> 8) as u8, 0, 0, *entry as u8, 0, 0]);
+            }
+        }
     }
     categories.extend_from_slice(&[0xff, 0xff, 0, 0]);
     bytes[0x80..0x80 + categories.len()].copy_from_slice(&categories);
@@ -407,7 +458,7 @@ mod tests {
 
     #[test]
     fn rejects_output_commands_and_requires_valid_fmmus_for_safeop() {
-        let mut esc = VirtualEsc::new(VirtualFault::None);
+        let mut esc = VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
         let mut write = Frame::new(1, [Datagram::register(FPRD, 0, 0x0120, 2)])
             .bytes()
             .to_vec();
@@ -442,7 +493,7 @@ mod tests {
 
     #[test]
     fn reports_sdo_download_attempt_and_preserves_the_authored_mapping() {
-        let mut esc = VirtualEsc::new(VirtualFault::None);
+        let mut esc = VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
         let mut request = [0u8; MAILBOX_BYTES];
         request[5] = 0x13;
         request[8] = 0x23; // SDO expedited download, four bytes.
