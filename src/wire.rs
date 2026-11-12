@@ -77,11 +77,43 @@ impl<const N: usize> Frame<N> {
                 return None;
             }
             let end = offset + 10 + part.len;
-            result[i] = (&bytes[offset + 10..end], super::word(&bytes[end..end + 2]));
+            result[i] = (
+                &bytes[offset + 10..end],
+                u16::from_le_bytes([bytes[end], bytes[end + 1]]),
+            );
             offset = end + 2;
         }
         Some(result)
     }
+}
+
+pub fn input_datagrams(station: u16, input_len: usize) -> [Datagram; 2] {
+    [
+        Datagram {
+            command: LRD,
+            address: [0; 4],
+            len: input_len,
+        },
+        Datagram::register(FPRD, station, 0x0130, 6),
+    ]
+}
+
+pub struct InputReply {
+    pub data: [u8; crate::model::MAX_PAYLOAD],
+    pub wkc: u16,
+    pub status: Option<(u16, u16)>,
+}
+
+pub fn input_reply([(input, wkc), (al, status_wkc)]: [(&[u8], u16); 2]) -> InputReply {
+    let mut data = [0; crate::model::MAX_PAYLOAD];
+    data[..input.len()].copy_from_slice(input);
+    let status = (status_wkc == 1).then(|| {
+        (
+            u16::from_le_bytes([al[0], al[1]]),
+            u16::from_le_bytes([al[4], al[5]]),
+        )
+    });
+    InputReply { data, wkc, status }
 }
 
 #[cfg(test)]

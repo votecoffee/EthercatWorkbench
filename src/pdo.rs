@@ -305,6 +305,9 @@ mod tests {
             .swap(0, 3);
         assert!(!readback.verify(&profile, "fixture").compatible());
         let (_, mut readback) = fixture();
+        readback.tx.as_mut().unwrap().sync_managers[0].configured_bytes = Some(7);
+        assert!(!readback.verify(&profile, "fixture").compatible());
+        let (_, mut readback) = fixture();
         readback.tx = None;
         let check = readback.verify(&profile, "fixture");
         assert!(check.compatible());

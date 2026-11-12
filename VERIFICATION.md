@@ -1,6 +1,6 @@
-# EtherCAT Workbench 0.1.0 verification
+# EtherCAT Workbench verification
 
-## Windows x64 build
+## Version 0.1.0 Windows x64 build
 
 The release was built on Windows 11 Pro x64 build 26200 with Rust 1.99.1, MSVC 14.44 and Npcap SDK 1.17. PE inspection found the x64 GUI and console subsystem executables, static MSVC CRT linkage and a delay import for `wpcap.dll`. The CLI enumerated 12 candidate adapters through the installed Npcap 1.85 runtime on this host. Enumeration required no transmission. The selected bench interface and raw Ethernet round trip remain to be checked.
 
@@ -38,3 +38,11 @@ python tools/verify.py target/x86_64-pc-windows-msvc/release .local/verification
 Six Rust tests passed, including per-SyncManager byte alignment, mapping order, padding, overrides and unavailable readback. The headless release workflow imported the sample ESI and matched all four referenced fields against the synthetic CoE snapshot. A reordered snapshot with the same eight-byte input size was rejected. A manual bit/byte profile remained usable and its fields were labeled manual.
 
 The existing synthetic capture checks also passed with zero queue overruns. The Windows helper for ESC SyncManager and CoE assignment reads was compiled and reviewed against the pinned EtherCrab source. Physical device readback remains pending.
+
+## Version 0.2.0 raw-frame replay
+
+The twelve-exchange fixture contains authored Ethernet II requests and candidate replies. The replay uses the same frame matcher, input parser, WKC/AL validation, bounded queue and CSV writer as the live cyclic path. It processes all twelve exchanges and classifies six as valid. The remaining cases produce one PDO WKC mismatch, three AL mismatches and two missing matching responses. Six outbound, stale, truncated, wrong-protocol or invalid-length candidates are ignored. Every-valid mode writes the six expected values, including unchanged inputs. On-change mode writes four rows. Both flush without logger overruns.
+
+Headless checks reject a write command in a replay request, reject an all-invalid input run, and report a replay stopped by its duration limit as incomplete. They also cover saved PDO comparison and unavailable readback. Formatting, Clippy, all six Rust tests and the headless release workflow pass on Windows x64.
+
+The November 12 checks use command-line tools and files. The GUI additions compile. The current device-specific SAFEOP run, raw NIC round trip, live CoE readback and physical timing benchmark remain pending the bench selection.

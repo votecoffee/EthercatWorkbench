@@ -170,6 +170,61 @@ def main():
     assert collision.read_bytes() == b"preserve existing part\n"
     assert report["capture"]["written"] == 500 and "CSV capture incomplete" in report["error"]
 
+    fixture = ROOT / "samples/synthetic-replay.json"
+    for on_change in (False, True):
+        case = destination / ("replay-change.csv" if on_change else "replay-every.csv")
+        flags = ["--on-change"] if on_change else []
+        replay = cli_call(cli, "run", profile, "--backend", "replay", "--replay", fixture,
+                          "--seconds", 2, "--csv", case, *flags)
+        assert replay["replay_exchanges"] == replay["cycles"] == 12
+        assert replay["valid"] == 6 and replay["replies"] == 10
+        assert replay["wkc_mismatches"] == 1 and replay["state_mismatches"] == 3
+        assert replay["timeouts"] == 2 and replay["ignored_frames"] == 6
+        assert replay["error"] is None and replay["stopped_al"] is None
+        _, replay_rows = rows(case)
+        expected = [4, 6, 7, 8] if on_change else [4, 4, 6, 6, 7, 8]
+        assert [int(row["Counter"]) for row in replay_rows] == expected
+        assert [int(row["sample_index"]) for row in replay_rows] == list(range(1, len(expected) + 1))
+        assert replay["capture"]["written"] == len(expected) and replay["capture"]["overruns"] == 0
+        for row in replay_rows:
+            counter = int(row["Counter"])
+            assert row["Sensor active"] == str(bool(counter & 1)).lower()
+            assert float(row["Scaled counter"]) == counter / 4
+        reports["replay-change" if on_change else "replay-every"] = replay
+
+    bad_request = json.loads(fixture.read_text(encoding="utf-8"))
+    request = bytearray.fromhex(bad_request["exchanges"][0]["request_hex"])
+    request[16] = 0x0c
+    bad_request["exchanges"][0]["request_hex"] = request.hex()
+    invalid_fixture = destination / "write-request.json"
+    invalid_fixture.write_text(json.dumps(bad_request), encoding="utf-8")
+    rejected = cli_call(cli, "run", profile, "--backend", "replay", "--replay", invalid_fixture,
+                        "--seconds", 2, success=False)
+    assert "differs from the LRD/AL read path" in rejected["error"]
+    assert rejected["cycles"] == 0 and rejected["capture"] is None
+
+    invalid_data = json.loads(fixture.read_text(encoding="utf-8"))
+    invalid_data["exchanges"] = [invalid_data["exchanges"][2]]
+    no_valid = destination / "no-valid-pdo.json"
+    no_valid.write_text(json.dumps(invalid_data), encoding="utf-8")
+    rejected = cli_call(cli, "run", profile, "--backend", "replay", "--replay", no_valid,
+                        "--seconds", 2, success=False)
+    assert rejected["cycles"] == 1 and rejected["wkc_mismatches"] == 1
+    assert rejected["valid"] == 0 and "no valid SAFEOP" in rejected["error"]
+
+    limited = json.loads(fixture.read_text(encoding="utf-8"))
+    limited["exchanges"] = [limited["exchanges"][0]] * 1200
+    limited_fixture = destination / "duration-limit.json"
+    limited_fixture.write_text(json.dumps(limited), encoding="utf-8")
+    rejected = cli_call(cli, "run", profile, "--backend", "replay", "--replay", limited_fixture,
+                        "--seconds", 1, success=False)
+    assert rejected["cycles"] < 1200 and "duration expired" in rejected["error"]
+
+    unavailable = destination / "unavailable-pdo.json"
+    unavailable.write_text(json.dumps({"tx": None, "rx": None}), encoding="utf-8")
+    unknown = cli_call(cli, "verify-pdo", imported, unavailable)
+    assert unknown["tx"]["unavailable"] and all(f["state"] == "unavailable" for f in unknown["tx"]["fields"])
+
     if options.gui:
         assert os.name == "nt"
         assert options.gui_trials > 0

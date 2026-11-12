@@ -63,6 +63,7 @@ struct App {
     scan: Option<JoinHandle<anyhow::Result<Vec<DeviceInfo>>>>,
     csv: String,
     offline_hex: String,
+    replay_path: String,
     seconds: u64,
     approved: bool,
     generation: u64,
@@ -92,6 +93,7 @@ impl App {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             offline_hex: String::new(),
+            replay_path: String::new(),
             seconds: args.simulate_seconds.unwrap_or(10),
             approved: false,
             generation: 0,
@@ -387,6 +389,25 @@ impl App {
         if ui.button("Start synthetic fixture").clicked() {
             self.start(Mode::Simulate { faults: false });
         }
+        ui.horizontal(|ui| {
+            ui.label("Offline frame fixture");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.replay_path)
+                    .hint_text("samples/synthetic-replay.json")
+                    .desired_width(350.0),
+            );
+            if ui
+                .add_enabled(
+                    !self.replay_path.trim().is_empty(),
+                    egui::Button::new("Replay frames"),
+                )
+                .clicked()
+            {
+                self.start(Mode::Replay {
+                    fixture: PathBuf::from(self.replay_path.trim()),
+                });
+            }
+        });
         ui.checkbox(
             &mut self.approved,
             "Approved: isolated one-device bench, ESC setup writes, SAFEOP and INIT on stop",
@@ -675,6 +696,12 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
         device_info(ui, device);
     }
     if let Some(verification) = &r.pdo_verification {
+        if verification.tx.unavailable.is_some() || verification.rx.unavailable.is_some() {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "Device PDO assignment order is unverified. See the layout details.",
+            );
+        }
         egui::CollapsingHeader::new(format!(
             "PDO layout · {} matched fields · {}",
             verification.matched_fields(),
@@ -709,8 +736,12 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
         "Device sync · {}  |  DC · {}",
         r.device_sync, r.dc_sync
     ));
-    ui.label(format!("Cycles {} · replies {} · valid {} · timeouts {} · missed slots {} · WKC mismatches {} · AL mismatches {}",
-        r.cycles, r.replies, r.valid, r.timeouts, r.missed_deadlines, r.wkc_mismatches, r.state_mismatches));
+    ui.label(format!("Cycles {} · replies {} · valid {} · timeouts {} · missed slots {} · WKC mismatches {} · AL mismatches {} · ignored frames {}",
+        r.cycles, r.replies, r.valid, r.timeouts, r.missed_deadlines, r.wkc_mismatches, r.state_mismatches, r.ignored_frames));
+    if let Some(origin) = &r.replay_origin {
+        ui.label(format!("Replay origin · {origin}"));
+        ui.label("Spacing measures host playback. Cycle and receive timestamps are generated during playback.");
+    }
     for (label, gap) in [("Send", &r.send_spacing), ("Receive", &r.receive_spacing)] {
         if let (Some(p50), Some(p95), Some(p99), Some(longest)) =
             (gap.p50_us, gap.p95_us, gap.p99_us, gap.longest_gap_us)

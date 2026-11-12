@@ -69,6 +69,8 @@ enum Command {
         on_change: bool,
         #[arg(long)]
         simulate_faults: bool,
+        #[arg(long, required_if_eq("backend", "replay"))]
+        replay: Option<PathBuf>,
         #[arg(long, default_value_t = 1)]
         generation: u64,
         /// Confirm approval for ESC initialization, SAFEOP and return to INIT on one isolated device.
@@ -81,6 +83,7 @@ enum Command {
 enum Backend {
     Simulate,
     Safeop,
+    Replay,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -158,13 +161,27 @@ fn main() -> Result<()> {
             scheduler,
             on_change,
             simulate_faults,
+            replay,
             generation,
             approve_esc_writes,
         } => {
+            ensure!(
+                replay.is_none() || matches!(backend, Backend::Replay),
+                "--replay requires --backend replay"
+            );
             let mode = match backend {
                 Backend::Simulate => Mode::Simulate {
                     faults: simulate_faults,
                 },
+                Backend::Replay => {
+                    ensure!(
+                        !simulate_faults,
+                        "--simulate-faults is for the synthetic backend"
+                    );
+                    Mode::Replay {
+                        fixture: replay.context("replay fixture path is required")?,
+                    }
+                }
                 Backend::Safeop => {
                     ensure!(
                         !simulate_faults,

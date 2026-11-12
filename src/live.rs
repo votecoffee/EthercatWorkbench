@@ -1,6 +1,6 @@
 mod pdo_readback;
-mod wire;
 
+use crate::wire::{APRD, BRD, Datagram, ETHERCRAB_REPLY, Frame, input_datagrams, input_reply};
 use crate::{
     model::{Identity, MAX_PAYLOAD, Profile},
     run::{BenchApproval, Bus, DeviceInfo, Exchange, Report, Snapshot},
@@ -14,7 +14,7 @@ use std::{
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::PathBuf,
     sync::{
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering::Relaxed},
     },
     task::{Context as PollContext, Poll, Waker},
@@ -26,7 +26,6 @@ use windows_sys::Win32::{
     },
     System::SystemInformation::GetSystemDirectoryW,
 };
-use wire::{APRD, BRD, Datagram, ETHERCRAB_REPLY, FPRD, Frame, LRD};
 
 const AL_CONTROL: u16 = 0x0120;
 const AL_STATUS: u16 = 0x0130;
@@ -102,6 +101,7 @@ pub fn nics() -> Result<Vec<Nic>> {
 struct Transport {
     cap: Capture<Active>,
     seq: u8,
+    ignored_frames: u64,
 }
 
 impl Transport {
@@ -123,7 +123,11 @@ impl Transport {
             "NIC must expose Ethernet II frames"
         );
         cap.filter("ether proto 0x88a4", true)?;
-        Ok(Self { cap, seq: 0 })
+        Ok(Self {
+            cap,
+            seq: 0,
+            ignored_frames: 0,
+        })
     }
 
     fn read<const N: usize, T>(
@@ -145,6 +149,7 @@ impl Transport {
                     if let Some(data) = frame.reply(packet.data) {
                         return Ok((sent, Some(parse(data, received))));
                     }
+                    self.ignored_frames += 1;
                 }
                 Err(pcap::Error::NoMorePackets | pcap::Error::TimeoutExpired) => {
                     std::hint::spin_loop()
@@ -380,7 +385,9 @@ pub fn safeop(
         let readback = port.drive(&mut tx, &mut rx, async {
             Ok::<_, anyhow::Error>(pdo_readback::readback(&sd, stop).await)
         })?;
-        report.pdo_verification = Some(readback.verify(profile, "Bus CoE assignment reads"));
+        report.pdo_verification = Some(Arc::new(
+            readback.verify(profile, "Bus CoE assignment reads"),
+        ));
         let verified = report.pdo_verification.as_ref().expect("readback set");
         ensure!(
             verified.compatible(),
@@ -483,40 +490,27 @@ pub struct LiveBus<'a, 's> {
 }
 
 impl Bus for LiveBus<'_, '_> {
-    fn exchange(&mut self, _cycle: u64) -> Result<Exchange> {
-        let mut data = [0; MAX_PAYLOAD];
-        // EtherCrab assigns the first group's input PDI starting at logical zero.
-        // The FPRD in the same frame qualifies the returned PDO with current AL status.
+    fn exchange(&mut self, _cycle: u64) -> Result<Option<Exchange>> {
+        let before = self.port.ignored_frames;
+        // The first group's input FMMUs start at logical zero.
         let (sent, reply) = self.port.read(
-            [
-                Datagram {
-                    command: LRD,
-                    address: [0; 4],
-                    len: self.input,
-                },
-                Datagram::register(FPRD, self.station, AL_STATUS, 6),
-            ],
+            input_datagrams(self.station, self.input),
             self.timeout,
-            |[(input, wkc), (al, status_wkc)], received| {
-                data[..input.len()].copy_from_slice(input);
-                (
-                    received,
-                    wkc,
-                    (status_wkc == 1).then(|| (word(al), word(&al[4..]))),
-                )
-            },
+            |parts, received| (input_reply(parts), received),
         )?;
-        let (received, wkc, status) = match reply {
-            Some((at, wkc, status)) => (Some(at), wkc, status),
-            None => (None, 0, None),
+        let ignored_frames = self.port.ignored_frames - before;
+        let (received, wkc, status, data) = match reply {
+            Some((input, at)) => (Some(at), input.wkc, input.status, input.data),
+            None => (None, 0, None, [0; MAX_PAYLOAD]),
         };
-        Ok(Exchange {
+        Ok(Some(Exchange {
             sent,
             received,
             wkc,
             status,
             data,
-        })
+            ignored_frames,
+        }))
     }
 
     fn stop(&mut self) -> Result<Option<(u16, u16)>> {

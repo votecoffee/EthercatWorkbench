@@ -93,13 +93,16 @@ pub struct Report {
     pub missed_deadlines: u64,
     pub wkc_mismatches: u64,
     pub state_mismatches: u64,
+    pub ignored_frames: u64,
+    pub replay_exchanges: Option<usize>,
+    pub replay_origin: Option<String>,
     pub expected_wkc: u16,
     pub actual_wkc: Option<u16>,
     pub send_spacing: Spacing,
     pub receive_spacing: Spacing,
     pub capture: Option<CaptureStats>,
     pub devices: Vec<DeviceInfo>,
-    pub pdo_verification: Option<crate::pdo::Verification>,
+    pub pdo_verification: Option<Arc<crate::pdo::Verification>>,
     pub stopped_al: Option<(u16, u16)>,
     pub error: Option<String>,
 }
@@ -131,16 +134,18 @@ pub struct Exchange {
     pub wkc: u16,
     pub status: Option<(u16, u16)>,
     pub data: [u8; MAX_PAYLOAD],
+    pub ignored_frames: u64,
 }
 
 pub trait Bus {
-    fn exchange(&mut self, cycle: u64) -> Result<Exchange>;
+    fn exchange(&mut self, cycle: u64) -> Result<Option<Exchange>>;
     fn stop(&mut self) -> Result<Option<(u16, u16)>>;
 }
 
 #[derive(Clone, Debug)]
 pub enum Mode {
     Simulate { faults: bool },
+    Replay { fixture: PathBuf },
     SafeOp { approved: crate::run::BenchApproval },
 }
 
@@ -227,6 +232,27 @@ fn run_inner(
             }];
             cycle(Simulated { faults }, profile, &options, stop, view, report)
         }
+        Mode::Replay { ref fixture } => {
+            let replay = crate::replay::Replay::load(fixture, profile)?;
+            report.backend = "Offline raw Ethernet frame replay".into();
+            report.expected_wkc = 1;
+            report.device_sync = "Offline playback".into();
+            report.dc_sync = "Fixture has no device clock measurements".into();
+            report.replay_exchanges = Some(replay.len());
+            report.replay_origin = Some(replay.origin.clone());
+            report.devices = vec![DeviceInfo {
+                station_address: replay.station_address,
+                name: Some("Replay fixture".into()),
+                tx_bytes: Some(profile.tx_bytes),
+                ..DeviceInfo::default()
+            }];
+            cycle(replay, profile, &options, stop, view, report)?;
+            ensure!(
+                Some(report.cycles as usize) == report.replay_exchanges || stop.load(Relaxed),
+                "replay duration expired before all recorded exchanges were processed"
+            );
+            Ok(())
+        }
         Mode::SafeOp { ref approved } => {
             #[cfg(windows)]
             {
@@ -295,8 +321,11 @@ fn cycle(
                 break;
             }
             index += 1;
+            let Some(exchange) = bus.exchange(index)? else {
+                break;
+            };
             report.cycles += 1;
-            let exchange = bus.exchange(index)?;
+            report.ignored_frames += exchange.ignored_frames;
             sends.tick(exchange.sent);
             report.actual_wkc = exchange.received.map(|_| exchange.wkc);
             let status_ok = exchange
@@ -395,20 +424,21 @@ struct Simulated {
 }
 
 impl Bus for Simulated {
-    fn exchange(&mut self, cycle: u64) -> Result<Exchange> {
+    fn exchange(&mut self, cycle: u64) -> Result<Option<Exchange>> {
         let sent = Instant::now();
         let mut data = [0; MAX_PAYLOAD];
         let step = ((cycle - 1) / 4) as u16;
         data[0..2].copy_from_slice(&step.to_le_bytes());
         data[2] = (step & 1) as u8;
         data[4..8].copy_from_slice(&(f32::from(step) / 4.0).to_le_bytes());
-        Ok(Exchange {
+        Ok(Some(Exchange {
             sent,
             received: (!(self.faults && cycle.is_multiple_of(149))).then(Instant::now),
             wkc: u16::from(!(self.faults && cycle.is_multiple_of(97))),
             status: Some((4, 0)),
             data,
-        })
+            ignored_frames: 0,
+        }))
     }
 
     fn stop(&mut self) -> Result<Option<(u16, u16)>> {
