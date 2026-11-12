@@ -36,6 +36,7 @@ try {
         'docs/ethercrab-review.md' = 'docs/ethercrab-review.md'
         'samples/synthetic.esi.xml' = 'samples/synthetic.esi.xml'
         'samples/synthetic.json' = 'samples/synthetic.json'
+        'samples/virtual.json' = 'samples/virtual.json'
         'samples/synthetic-pdo.json' = 'samples/synthetic-pdo.json'
         'samples/synthetic-replay.json' = 'samples/synthetic-replay.json'
         'notices/THIRD-PARTY-NOTICES.txt' = $notices

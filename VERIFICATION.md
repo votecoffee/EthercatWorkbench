@@ -47,7 +47,7 @@ Headless checks reject a write command in a replay request, reject an all-invali
 
 The November 12 checks use command-line tools and files. The GUI additions compile. The current device-specific SAFEOP run, raw NIC round trip, live CoE readback and physical timing benchmark remain pending the bench selection.
 
-## Virtual ESC startup and cleanup coverage
+## Version 0.3.0 virtual ESC startup and cleanup coverage
 
 The authored virtual ESC exercises the shared setup and teardown against the pinned EtherCrab implementation. A normal run reads SII identity and descriptors, performs 24 CoE uploads, configures the two process SyncManagers and FMMUs, requests SAFEOP, exchanges input data and confirms INIT on stop. The virtual device validates its SM/FMMU register image before accepting SAFEOP or returning a nonzero LRD Working Counter. The audit records zero CoE downloads, logical writes, physical output writes and OP requests during the checked application runs.
 
