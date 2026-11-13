@@ -3,6 +3,7 @@ pub mod esi;
 pub mod health;
 pub mod model;
 pub mod pdo;
+pub mod pdo_catalog;
 mod replay;
 pub mod run;
 mod sii;

@@ -1,0 +1,263 @@
+{
+  "version": 1,
+  "name": "Authored selectable PDOs",
+  "nic": "",
+  "expected_identity": {
+    "vendor": 16715776,
+    "product": 1,
+    "revision": 1
+  },
+  "esi": {
+    "file_name": "pdo-choices.esi.xml",
+    "sha256": "9bcd1a0713e27928e8f32acb2b831a27a4fa6e1314e3ea77d021fcb1d528d3e4",
+    "device": "Authored selectable PDOs",
+    "identity": {
+      "vendor": 16715776,
+      "product": 1,
+      "revision": 1
+    },
+    "default_tx_bytes": 8,
+    "default_rx_bytes": 2,
+    "dc_modes": [],
+    "pdo_catalog": [
+      {
+        "direction": "rx",
+        "index": 5632,
+        "name": "Required setpoint",
+        "default_sm": 2,
+        "mandatory": true,
+        "fixed": true,
+        "virtual_pdo": false,
+        "excludes": [],
+        "entries": [
+          {
+            "index": 28672,
+            "subindex": 1,
+            "width": 16,
+            "name": "Staged setpoint",
+            "data_type": "INT",
+            "fixed": true
+          }
+        ],
+        "notes": [],
+        "unsupported": false
+      },
+      {
+        "direction": "tx",
+        "index": 6656,
+        "name": "Default eight-byte input",
+        "default_sm": 3,
+        "mandatory": false,
+        "fixed": true,
+        "virtual_pdo": false,
+        "excludes": [
+          6657
+        ],
+        "entries": [
+          {
+            "index": 24576,
+            "subindex": 1,
+            "width": 16,
+            "name": "Counter",
+            "data_type": "UINT",
+            "fixed": false
+          },
+          {
+            "index": 24576,
+            "subindex": 2,
+            "width": 1,
+            "name": "Sensor active",
+            "data_type": "BOOL",
+            "fixed": false
+          },
+          {
+            "index": 0,
+            "subindex": 0,
+            "width": 15,
+            "name": "Entry",
+            "data_type": "",
+            "fixed": false
+          },
+          {
+            "index": 24576,
+            "subindex": 3,
+            "width": 32,
+            "name": "Scaled counter",
+            "data_type": "REAL",
+            "fixed": false
+          }
+        ],
+        "notes": [],
+        "unsupported": false
+      },
+      {
+        "direction": "tx",
+        "index": 6657,
+        "name": "Alternative eight-byte input",
+        "default_sm": null,
+        "mandatory": false,
+        "fixed": true,
+        "virtual_pdo": false,
+        "excludes": [
+          6656
+        ],
+        "entries": [
+          {
+            "index": 24592,
+            "subindex": 1,
+            "width": 16,
+            "name": "Alternative counter",
+            "data_type": "UINT",
+            "fixed": false
+          },
+          {
+            "index": 0,
+            "subindex": 0,
+            "width": 48,
+            "name": "Entry",
+            "data_type": "",
+            "fixed": false
+          }
+        ],
+        "notes": [],
+        "unsupported": false
+      },
+      {
+        "direction": "tx",
+        "index": 6658,
+        "name": "Optional status byte",
+        "default_sm": null,
+        "mandatory": false,
+        "fixed": false,
+        "virtual_pdo": false,
+        "excludes": [],
+        "entries": [
+          {
+            "index": 24577,
+            "subindex": 1,
+            "width": 8,
+            "name": "Optional status",
+            "data_type": "USINT",
+            "fixed": false
+          }
+        ],
+        "notes": [],
+        "unsupported": false
+      },
+      {
+        "direction": "tx",
+        "index": 6659,
+        "name": "Module-dependent example",
+        "default_sm": null,
+        "mandatory": false,
+        "fixed": false,
+        "virtual_pdo": false,
+        "excludes": [],
+        "entries": [
+          {
+            "index": 24578,
+            "subindex": 0,
+            "width": 8,
+            "name": "Module status",
+            "data_type": "USINT",
+            "fixed": false
+          }
+        ],
+        "notes": [
+          "Descriptive Index attribute DependOnSlot=true"
+        ],
+        "unsupported": true
+      }
+    ],
+    "notes": [
+      "TxPdo without a default SyncManager was omitted from the default image and retained in the catalog",
+      "TxPdo without a default SyncManager was omitted from the default image and retained in the catalog",
+      "TxPdo without a default SyncManager was omitted from the default image and retained in the catalog"
+    ]
+  },
+  "staged_esi_dc_mode": null,
+  "esi_pdo_selection": {
+    "tx": [
+      {
+        "index": 6656,
+        "sm": 3
+      }
+    ],
+    "rx": [
+      {
+        "index": 5632,
+        "sm": 2
+      }
+    ]
+  },
+  "sync_unit_cycle_ns": null,
+  "requested_cycle_us": 1000,
+  "input_loss_timeout_ms": 1000,
+  "scheduler": "deadline",
+  "mode": "every",
+  "queue_capacity": 4096,
+  "rotate_rows": 0,
+  "tx_bytes": 8,
+  "rx_bytes": 2,
+  "tx": [
+    {
+      "name": "Counter [1A00/6000:01]",
+      "bit": 0,
+      "width": 16,
+      "kind": "unsigned",
+      "big_endian": false,
+      "swap_bytes_in_words": false,
+      "reverse_words": false,
+      "log": true,
+      "source": "esi",
+      "pdo_index": 6656,
+      "object_index": 24576,
+      "subindex": 1
+    },
+    {
+      "name": "Sensor active [1A00/6000:02]",
+      "bit": 16,
+      "width": 1,
+      "kind": "bool",
+      "big_endian": false,
+      "swap_bytes_in_words": false,
+      "reverse_words": false,
+      "log": true,
+      "source": "esi",
+      "pdo_index": 6656,
+      "object_index": 24576,
+      "subindex": 2
+    },
+    {
+      "name": "Scaled counter [1A00/6000:03]",
+      "bit": 32,
+      "width": 32,
+      "kind": "f32",
+      "big_endian": false,
+      "swap_bytes_in_words": false,
+      "reverse_words": false,
+      "log": true,
+      "source": "esi",
+      "pdo_index": 6656,
+      "object_index": 24576,
+      "subindex": 3
+    }
+  ],
+  "rx": [
+    {
+      "name": "Staged setpoint [1600/7000:01]",
+      "bit": 0,
+      "width": 16,
+      "kind": "signed",
+      "big_endian": false,
+      "swap_bytes_in_words": false,
+      "reverse_words": false,
+      "log": false,
+      "source": "esi",
+      "pdo_index": 5632,
+      "object_index": 28672,
+      "subindex": 1
+    }
+  ],
+  "staged_rx_hex": ""
+}

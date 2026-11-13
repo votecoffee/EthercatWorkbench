@@ -9,6 +9,7 @@ pub enum MappingSource {
     #[default]
     Coe,
     Sii,
+    Esi,
 }
 
 impl MappingSource {
@@ -16,6 +17,7 @@ impl MappingSource {
         match self {
             Self::Coe => "CoE",
             Self::Sii => "SII",
+            Self::Esi => "ESI",
         }
     }
 }
@@ -86,6 +88,7 @@ pub struct FieldCheck {
 #[derive(Clone, Debug, Serialize)]
 pub struct DirectionCheck {
     pub image_bytes: Option<usize>,
+    pub expected_selection: Option<Layout>,
     pub entries: Vec<Entry>,
     pub fields: Vec<FieldCheck>,
     pub errors: Vec<String>,
@@ -163,18 +166,37 @@ impl Layout {
 
 impl Readback {
     pub fn verify(self, profile: &Profile, source: &str) -> Verification {
-        let tx = compare(
+        let mut tx = compare(
             self.tx.as_ref(),
             self.tx_unavailable.as_deref(),
             profile.tx_bytes,
             &profile.tx,
         );
-        let rx = compare(
+        let mut rx = compare(
             self.rx.as_ref(),
             self.rx_unavailable.as_deref(),
             profile.rx_bytes,
             &profile.rx,
         );
+        if let Some(selection) = &profile.esi_pdo_selection {
+            match profile
+                .esi
+                .as_ref()
+                .context("PDO selection has no ESI catalog")
+                .and_then(|esi| crate::pdo_catalog::build(&esi.pdo_catalog, selection))
+            {
+                Ok(built) => {
+                    compare_selection(&mut tx, self.tx.as_ref(), built.tx_layout);
+                    compare_selection(&mut rx, self.rx.as_ref(), built.rx_layout);
+                }
+                Err(error) => {
+                    tx.errors
+                        .push(format!("invalid ESI PDO selection: {error:#}"));
+                    rx.errors
+                        .push(format!("invalid ESI PDO selection: {error:#}"));
+                }
+            }
+        }
         Verification {
             source: source.into(),
             readback: self,
@@ -197,6 +219,28 @@ impl Verification {
             .filter(|f| matches!(f.state, FieldState::Matched))
             .count()
     }
+}
+
+fn compare_selection(check: &mut DirectionCheck, actual: Option<&Layout>, expected: Layout) {
+    if let Some(actual) = actual {
+        let same = actual.sync_managers.len() == expected.sync_managers.len()
+            && actual
+                .sync_managers
+                .iter()
+                .zip(&expected.sync_managers)
+                .all(|(a, b)| {
+                    a.index == b.index
+                        && a.pdos.len() == b.pdos.len()
+                        && a.pdos
+                            .iter()
+                            .zip(&b.pdos)
+                            .all(|(a, b)| a.index == b.index && a.entries == b.entries)
+                });
+        if !same {
+            check.errors.push("device SyncManager/PDO assignment order or full descriptors differ from the offline ESI selection".into());
+        }
+    }
+    check.expected_selection = Some(expected);
 }
 
 fn compare(
@@ -251,6 +295,7 @@ fn compare(
     }).collect();
     DirectionCheck {
         image_bytes,
+        expected_selection: None,
         entries,
         fields: checked,
         errors,
@@ -270,7 +315,7 @@ mod tests {
         )
         .unwrap();
         let mut profile = Profile::default();
-        devices[0].apply(&mut profile);
+        devices[0].apply(&mut profile).unwrap();
         let readback = serde_json::from_str(include_str!("../samples/synthetic-pdo.json")).unwrap();
         (profile, readback)
     }

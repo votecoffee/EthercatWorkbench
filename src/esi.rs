@@ -1,4 +1,4 @@
-use crate::model::{EsiSource, Field, Identity, Kind, Profile, Source};
+use crate::model::{EsiSource, Field, Identity, Profile};
 use anyhow::{Context, Result, bail, ensure};
 use roxmltree::{Document, Node};
 use sha2::{Digest, Sha256};
@@ -15,17 +15,27 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn apply(&self, profile: &mut Profile) {
-        profile.name.clone_from(&self.source.device);
-        profile.expected_identity = Some(self.source.identity.clone());
-        profile.esi = Some(self.source.clone());
-        profile.tx.clone_from(&self.tx);
-        profile.rx.clone_from(&self.rx);
-        profile.tx_bytes = self.tx_bytes;
-        profile.rx_bytes = self.rx_bytes;
-        profile.staged_rx_hex.clear();
-        profile.staged_esi_dc_mode = None;
-        profile.sync_unit_cycle_ns = None;
+    pub fn apply(&self, profile: &mut Profile) -> Result<()> {
+        self.apply_selection(
+            profile,
+            crate::pdo_catalog::defaults(&self.source.pdo_catalog),
+        )
+    }
+
+    pub fn apply_selection(
+        &self,
+        profile: &mut Profile,
+        selection: crate::pdo_catalog::Selection,
+    ) -> Result<()> {
+        let mut candidate = profile.clone();
+        candidate.name.clone_from(&self.source.device);
+        candidate.expected_identity = Some(self.source.identity.clone());
+        candidate.esi = Some(self.source.clone());
+        candidate.staged_esi_dc_mode = None;
+        candidate.sync_unit_cycle_ns = None;
+        crate::pdo_catalog::apply(&mut candidate, selection)?;
+        *profile = candidate;
+        Ok(())
     }
 }
 
@@ -80,8 +90,19 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
             if ty.attribute("RevisionNo").is_none() {
                 notes.push("RevisionNo is absent. Verify revision manually.".into());
             }
-            let (tx, tx_bytes) = fields(device, "TxPdo", &mut notes)?;
-            let (rx, rx_bytes) = fields(device, "RxPdo", &mut notes)?;
+            let pdo_catalog = pdo_catalog(device)?;
+            for pdo in pdo_catalog.iter().filter(|p| p.default_sm.is_none()) {
+                notes.push(format!("{:?}Pdo without a default SyncManager was omitted from the default image and retained in the catalog", pdo.direction));
+            }
+            let default_layout = crate::pdo_catalog::build(&pdo_catalog, &crate::pdo_catalog::defaults(&pdo_catalog));
+            let default_known = default_layout.is_ok();
+            let (tx, tx_bytes, rx, rx_bytes) = match default_layout {
+                Ok(built) => (built.tx, built.tx_bytes, built.rx, built.rx_bytes),
+                Err(error) => {
+                    notes.push(format!("Default PDO image needs an explicit selection: {error:#}"));
+                    (Vec::new(), 0, Vec::new(), 0)
+                }
+            };
             let dc_modes = dc_modes(device)?;
             if !dc_modes.is_empty() {
                 notes.push(format!(
@@ -94,9 +115,10 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
                     file_name: file.to_owned(),
                     sha256: sha256.clone(),
                     device: label,
-                    default_tx_bytes: Some(tx_bytes),
-                    default_rx_bytes: Some(rx_bytes),
+                    default_tx_bytes: default_known.then_some(tx_bytes),
+                    default_rx_bytes: default_known.then_some(rx_bytes),
                     dc_modes,
+                    pdo_catalog,
                     notes: notes.clone(),
                     identity: Identity {
                         vendor,
@@ -186,80 +208,146 @@ pub fn number(text: &str) -> Result<u32> {
         .with_context(|| format!("invalid integer {text:?}"))
 }
 
-fn fields(device: Node<'_, '_>, tag: &str, notes: &mut Vec<String>) -> Result<(Vec<Field>, usize)> {
-    let mut assigned = Vec::new();
-    for pdo in device.children().filter(|n| named(*n, tag)) {
-        if let Some(sm) = pdo.attribute("Sm") {
-            assigned.push((number(sm)?, pdo));
-        } else {
-            notes.push(format!("{tag} without a default SyncManager was omitted"));
+fn bool_attr(node: Node<'_, '_>, name: &str) -> Result<bool> {
+    match node.attribute(name).map(str::trim) {
+        None | Some("false" | "0") => Ok(false),
+        Some("true" | "1") => Ok(true),
+        Some(value) => bail!("invalid ESI {name} boolean {value:?}"),
+    }
+}
+
+fn default_sm(node: Node<'_, '_>) -> Result<Option<u8>> {
+    match node.attribute("Sm").map(str::trim) {
+        None | Some("-1") => Ok(None),
+        Some(value) => {
+            let sm = u8::try_from(number(value)?)?;
+            ensure!(sm < 16, "ESI default SyncManager exceeds 15");
+            Ok(Some(sm))
         }
     }
-    assigned.sort_by_key(|(sm, _)| *sm);
-    let mut bit: usize = 0;
-    let mut fields = Vec::new();
-    let mut previous_sm = None;
-    for (sm, pdo) in assigned {
-        ensure!(sm < 16, "ESI SyncManager index exceeds the bench limit");
-        if previous_sm.is_some_and(|previous| previous != sm) {
-            bit = bit.div_ceil(8) * 8;
+}
+
+fn pdo_catalog(device: Node<'_, '_>) -> Result<Vec<crate::pdo_catalog::Definition>> {
+    use crate::pdo_catalog::{Definition, Direction, Entry, validate_catalog};
+    let mut catalog = Vec::new();
+    for node in device
+        .children()
+        .filter(|n| named(*n, "TxPdo") || named(*n, "RxPdo"))
+    {
+        ensure!(
+            catalog.len() < 512,
+            "ESI PDO catalog exceeds 512 candidates"
+        );
+        let mut notes = Vec::new();
+        let mut unsupported = bool_attr(node, "OverwrittenByModule")?;
+        for attr in node
+            .attributes()
+            .filter(|a| !["Sm", "Fixed", "Mandatory", "Virtual"].contains(&a.name()))
+        {
+            notes.push(format!(
+                "Descriptive PDO attribute {}={}",
+                attr.name(),
+                attr.value()
+            ));
         }
-        previous_sm = Some(sm);
-        let index = u16::try_from(node_number(pdo, "Index")?)?;
-        for entry in pdo.children().filter(|n| named(*n, "Entry")) {
-            let width = usize::try_from(node_number(entry, "BitLen")?)?;
-            let object = u16::try_from(node_number(entry, "Index")?)?;
-            if object != 0 {
-                let sub = child(entry, "SubIndex")
-                    .and_then(|n| n.text())
-                    .map(number)
-                    .transpose()?
-                    .unwrap_or(0);
-                let base = label(entry, "Name").unwrap_or("Entry");
-                let kind = match child(entry, "DataType")
-                    .and_then(|n| n.text())
-                    .unwrap_or("")
-                    .trim()
-                {
-                    "BOOL" | "BIT" if width == 1 => Kind::Bool,
-                    "SINT" | "INT" | "DINT" | "LINT" | "INT24" | "INT40" | "INT48" | "INT56" => {
-                        Kind::Signed
-                    }
-                    "REAL" | "REAL32" if width == 32 && bit.is_multiple_of(8) => Kind::F32,
-                    "LREAL" | "REAL64" if width == 64 && bit.is_multiple_of(8) => Kind::F64,
-                    _ if width <= 64 => Kind::Unsigned,
-                    _ if width.is_multiple_of(8) && bit.is_multiple_of(8) => Kind::Raw,
-                    _ => bail!("unsupported PDO entry width/alignment at {object:#06x}:{sub}"),
-                };
-                let mut name = format!("{base} [{index:04X}/{object:04X}:{sub:02X}]");
-                if fields.iter().any(|f: &Field| f.name == name) {
-                    name.push_str(&format!(" @{bit}"));
-                }
-                fields.push(Field {
-                    name,
-                    bit,
-                    width,
-                    kind,
-                    log: tag == "TxPdo",
-                    source: Source::Esi,
-                    pdo_index: Some(index),
-                    object_index: Some(object),
-                    subindex: Some(u8::try_from(sub)?),
-                    ..Field::default()
-                });
+        let mut record_dependencies = |element: Node<'_, '_>| -> Result<()> {
+            unsupported |=
+                bool_attr(element, "DependOnSlot")? || bool_attr(element, "DependOnSlotGroup")?;
+            for attr in element.attributes() {
+                notes.push(format!(
+                    "Descriptive {} attribute {}={}",
+                    element.tag_name().name(),
+                    attr.name(),
+                    attr.value()
+                ));
             }
-            bit = bit.checked_add(width).context("PDO size overflow")?;
+            Ok(())
+        };
+        let index_node = unique_child(node, "Index")?.context("PDO Index missing")?;
+        record_dependencies(index_node)?;
+        let index = u16::try_from(number(&dc_text(index_node))?)?;
+        let mut excludes = Vec::new();
+        for excluded in node.children().filter(|n| named(*n, "Exclude")) {
+            record_dependencies(excluded)?;
+            excludes.push(u16::try_from(number(&dc_text(excluded))?)?);
         }
+        let mut entries = Vec::new();
+        for entry in node.children().filter(|n| named(*n, "Entry")) {
+            ensure!(entries.len() < 255, "ESI PDO exceeds 255 entries");
+            let object = unique_child(entry, "Index")?.context("PDO entry Index missing")?;
+            record_dependencies(object)?;
+            entries.push(Entry {
+                index: u16::try_from(number(&dc_text(object))?)?,
+                subindex: u8::try_from(
+                    unique_child(entry, "SubIndex")?
+                        .map(|n| number(&dc_text(n)))
+                        .transpose()?
+                        .unwrap_or(0),
+                )?,
+                width: usize::try_from(node_number(entry, "BitLen")?)?,
+                name: label(entry, "Name").unwrap_or("Entry").into(),
+                data_type: child(entry, "DataType")
+                    .map(dc_text)
+                    .unwrap_or_default()
+                    .trim()
+                    .into(),
+                fixed: bool_attr(entry, "Fixed")?,
+            });
+        }
+        for entry in node.children().filter(|n| named(*n, "Entry")) {
+            for attr in entry.attributes().filter(|a| a.name() != "Fixed") {
+                notes.push(format!(
+                    "Entry attribute {}={} is descriptive only",
+                    attr.name(),
+                    attr.value()
+                ));
+            }
+            for ty in entry.children().filter(|n| named(*n, "DataType")) {
+                for attr in ty.attributes() {
+                    notes.push(format!(
+                        "DataType attribute {}={} is not applied to decoding",
+                        attr.name(),
+                        attr.value()
+                    ));
+                }
+            }
+        }
+        for unknown in node.children().filter(Node::is_element).filter(|n| {
+            !["Index", "Name", "Exclude", "Entry"]
+                .iter()
+                .any(|name| named(*n, name))
+        }) {
+            notes.push(format!(
+                "Unsupported PDO child {}",
+                unknown.tag_name().name()
+            ));
+        }
+        catalog.push(Definition {
+            direction: if named(node, "TxPdo") {
+                Direction::Tx
+            } else {
+                Direction::Rx
+            },
+            index,
+            name: label(node, "Name").unwrap_or("PDO").into(),
+            default_sm: default_sm(node)?,
+            fixed: bool_attr(node, "Fixed")?,
+            mandatory: bool_attr(node, "Mandatory")?,
+            virtual_pdo: bool_attr(node, "Virtual")?,
+            excludes,
+            entries,
+            notes,
+            unsupported,
+        });
     }
-    Ok((fields, bit.div_ceil(8)))
+    validate_catalog(&catalog)?;
+    Ok(catalog)
 }
 
 fn node_number(node: Node<'_, '_>, name: &str) -> Result<u32> {
-    number(
-        child(node, name)
-            .and_then(|n| n.text())
-            .with_context(|| format!("missing {name}"))?,
-    )
+    number(&dc_text(
+        unique_child(node, name)?.with_context(|| format!("missing {name}"))?,
+    ))
 }
 
 fn unique_child<'a, 'd>(node: Node<'a, 'd>, tag: &str) -> Result<Option<Node<'a, 'd>>> {
@@ -429,7 +517,7 @@ mod tests {
         assert_eq!(modes[3].xml_path, "Device/OpMode/Dc");
         assert!(modes[3].notes.iter().any(|n| n.contains("Sm")));
         let mut profile = Profile::default();
-        devices[0].apply(&mut profile);
+        devices[0].apply(&mut profile).unwrap();
         profile.staged_esi_dc_mode = Some(2);
         profile.sync_unit_cycle_ns = Some(1_000_000);
         profile.validate().unwrap();
@@ -442,7 +530,7 @@ mod tests {
         assert_eq!(saved.esi.unwrap().dc_modes, *modes);
         profile.expected_identity.as_mut().unwrap().revision += 1;
         assert!(profile.validate().is_err());
-        devices[0].apply(&mut profile);
+        devices[0].apply(&mut profile).unwrap();
         assert_eq!(profile.staged_esi_dc_mode, None);
         assert_eq!(profile.sync_unit_cycle_ns, None);
     }

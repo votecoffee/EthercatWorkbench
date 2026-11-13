@@ -6,6 +6,7 @@ use ethercat_workbench::{
     esi::{self, Device},
     live::{self, Nic},
     model::{Field, Identity, Kind, LogMode, Profile, Scheduler, Source, payload_hex},
+    pdo_catalog::{self, Assignment, Definition, Direction, Selection},
     run::{self, BenchApproval, DeviceInfo, Mode, Report, RunOptions, Snapshot},
 };
 use std::{
@@ -58,6 +59,8 @@ struct App {
     esi_path: String,
     esi: Vec<Device>,
     esi_selected: usize,
+    esi_pdo_draft: Option<(usize, Selection)>,
+    profile_pdo_draft: Option<Selection>,
     nics: Vec<Nic>,
     discovery: Vec<DeviceInfo>,
     scan: Option<JoinHandle<anyhow::Result<Vec<DeviceInfo>>>>,
@@ -86,6 +89,8 @@ impl App {
             esi_path: String::new(),
             esi: Vec::new(),
             esi_selected: 0,
+            esi_pdo_draft: None,
+            profile_pdo_draft: None,
             nics: Vec::new(),
             discovery: Vec::new(),
             scan: None,
@@ -119,6 +124,7 @@ impl App {
         match Profile::load(Path::new(&self.profile_path)) {
             Ok(profile) => {
                 self.profile = profile;
+                self.profile_pdo_draft = None;
                 self.approved = false;
                 self.last = None;
                 self.message = "Profile loaded".into();
@@ -223,6 +229,7 @@ impl App {
                     Ok(devices) => {
                         self.esi = devices;
                         self.esi_selected = 0;
+                        self.esi_pdo_draft = None;
                         self.message.clear();
                     }
                     Err(error) => {
@@ -247,12 +254,37 @@ impl App {
                             );
                         }
                     });
-                if ui.button("Use selected ESI layout").clicked() {
-                    self.esi[self.esi_selected].apply(&mut self.profile);
-                    self.approved = false;
-                    self.last = None;
-                }
             });
+            let device = &self.esi[self.esi_selected];
+            let (index, draft) = self.esi_pdo_draft.get_or_insert_with(|| {
+                (
+                    self.esi_selected,
+                    pdo_catalog::defaults(&device.source.pdo_catalog),
+                )
+            });
+            if *index != self.esi_selected {
+                *index = self.esi_selected;
+                *draft = pdo_catalog::defaults(&device.source.pdo_catalog);
+            }
+            ui.push_id("loaded_pdos", |ui| {
+                ui.collapsing("ESI PDO candidates and offline choices", |ui| {
+                    pdo_choices(ui, &device.source.pdo_catalog, draft)
+                });
+            });
+            if ui
+                .button("Build profile from selected ESI PDO choices")
+                .clicked()
+            {
+                match device.apply_selection(&mut self.profile, draft.clone()) {
+                    Ok(()) => {
+                        self.profile_pdo_draft = None;
+                        self.approved = false;
+                        self.last = None;
+                        self.message.clear();
+                    }
+                    Err(error) => self.message = error.to_string(),
+                }
+            }
             for note in &self.esi[self.esi_selected].notes {
                 ui.small(note);
             }
@@ -277,6 +309,56 @@ impl App {
                     "Image lengths · {provenance} · ESI Tx {tx} / Rx {rx} bytes"
                 ));
             }
+        }
+        if self
+            .profile
+            .esi
+            .as_ref()
+            .is_some_and(|s| !s.pdo_catalog.is_empty())
+        {
+            ui.push_id("profile_pdos", |ui| {
+                ui.collapsing("Saved profile PDO catalog and offline choices", |ui| {
+                    let catalog = &self
+                        .profile
+                        .esi
+                        .as_ref()
+                        .expect("catalog present")
+                        .pdo_catalog;
+                    let draft = self.profile_pdo_draft.get_or_insert_with(|| {
+                        self.profile
+                            .esi_pdo_selection
+                            .clone()
+                            .unwrap_or_else(|| pdo_catalog::defaults(catalog))
+                    });
+                    pdo_choices(ui, catalog, draft);
+                    if ui
+                        .button("Rebuild offline fields from these choices")
+                        .clicked()
+                    {
+                        match pdo_catalog::apply(&mut self.profile, draft.clone()) {
+                            Ok(()) => {
+                                self.approved = false;
+                                self.last = None;
+                                self.message.clear();
+                            }
+                            Err(error) => self.message = error.to_string(),
+                        }
+                    }
+                    if ui
+                        .button("Detach selection and keep editable fields")
+                        .clicked()
+                    {
+                        self.profile.esi_pdo_selection = None;
+                        self.message =
+                            "ESI selection detached; editable field checks remain active".into();
+                        for field in self.profile.tx.iter_mut().chain(&mut self.profile.rx) {
+                            if field.source == Source::Esi {
+                                field.source = Source::Override;
+                            }
+                        }
+                    }
+                });
+            });
         }
         if let Some(esi) = &self.profile.esi
             && !esi.dc_modes.is_empty()
@@ -618,6 +700,90 @@ impl eframe::App for App {
                 });
             });
         });
+    }
+}
+
+fn pdo_choices(ui: &mut egui::Ui, catalog: &[Definition], selection: &mut Selection) {
+    ui.label(
+        "Offline expectation only. Rebuilding fields sends no PDO assignment or output writes.",
+    );
+    if ui.button("Reset choices to ESI defaults").clicked() {
+        *selection = pdo_catalog::defaults(catalog);
+    }
+    egui::ScrollArea::vertical()
+        .max_height(240.0)
+        .show(ui, |ui| {
+            for direction in [Direction::Tx, Direction::Rx] {
+                ui.strong(format!("{direction:?}PDO choices"));
+                for pdo in catalog.iter().filter(|p| p.direction == direction) {
+                    let assignments = selection.assignments_mut(direction);
+                    let mut selected = assignments.iter().any(|a| a.index == pdo.index);
+                    ui.horizontal(|ui| {
+                        let label = format!(
+                            "{:#06x} {} | ESI SM {:?} | mandatory {} | fixed {}",
+                            pdo.index, pdo.name, pdo.default_sm, pdo.mandatory, pdo.fixed
+                        );
+                        if ui.checkbox(&mut selected, label).changed() {
+                            if selected {
+                                assignments.push(Assignment {
+                                    index: pdo.index,
+                                    sm: pdo.default_sm.unwrap_or(if direction == Direction::Tx {
+                                        3
+                                    } else {
+                                        2
+                                    }),
+                                });
+                            } else {
+                                assignments.retain(|a| a.index != pdo.index);
+                            }
+                        }
+                        if let Some(position) =
+                            assignments.iter().position(|a| a.index == pdo.index)
+                        {
+                            ui.label("Chosen SM");
+                            ui.add(
+                                egui::DragValue::new(&mut assignments[position].sm).range(0..=15),
+                            );
+                            let sm = assignments[position].sm;
+                            if ui.small_button("Up").clicked()
+                                && let Some(other) =
+                                    (0..position).rev().find(|i| assignments[*i].sm == sm)
+                            {
+                                assignments.swap(position, other);
+                            }
+                            if ui.small_button("Down").clicked()
+                                && let Some(other) = (position + 1..assignments.len())
+                                    .find(|i| assignments[*i].sm == sm)
+                            {
+                                assignments.swap(position, other);
+                            }
+                        }
+                    });
+                    for note in &pdo.notes {
+                        ui.small(note);
+                    }
+                }
+                ui.small(format!(
+                    "Chosen order within each SM: {}",
+                    selection
+                        .assignments(direction)
+                        .iter()
+                        .map(|a| format!("{:#06x}@{}", a.index, a.sm))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        });
+    match pdo_catalog::build(catalog, selection) {
+        Ok(built) => {
+            ui.label(format!(
+                "Offline image: Tx {} / Rx {} bytes; raw entries and padding preserved",
+                built.tx_bytes, built.rx_bytes
+            ));
+        }
+        Err(error) => {
+            ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
+        }
     }
 }
 

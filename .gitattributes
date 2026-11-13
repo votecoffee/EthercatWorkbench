@@ -1,0 +1,2 @@
+# Keep hash-linked authored ESI fixtures stable across Windows checkouts.
+/samples/*.esi.xml text eol=lf

@@ -424,6 +424,83 @@ def verify_sync_modes(cli, destination):
     (destination / "sync-checks.json").write_text(json.dumps({"preview": preview, "compared": compared, "matched": matched}, indent=2), encoding="utf-8")
 
 
+def verify_pdo_choices(cli, destination):
+    esi = ROOT / "samples/pdo-choices.esi.xml"
+    listing = cli_call(cli, "esi-list", esi)[0]
+    catalog = listing["source"]["pdo_catalog"]
+    assert len(catalog) == 5 and catalog[2]["default_sm"] is None
+    assert catalog[0]["mandatory"] and catalog[0]["entries"][0]["fixed"]
+    assert catalog[4]["unsupported"] is True
+    default = destination / "default.json"
+    cli_call(cli, "esi-import", esi, "--device", 0, "--out", default)
+    profile = cli_call(cli, "validate", default)
+    assert profile["esi"]["sha256"] == hashlib.sha256(esi.read_bytes()).hexdigest()
+    assert len(profile["esi_pdo_selection"]["tx"]) == len(profile["esi_pdo_selection"]["rx"]) == 1
+    preview = cli_call(cli, "review-pdos", default)
+    assert preview["applied"] is False and preview["tx_bytes"] == 8 and preview["rx_bytes"] == 2
+    assert preview["tx"]["sync_managers"][0]["pdos"][0]["entries"] == [0x60000110, 0x60000201, 15, 0x60000320]
+    checked = cli_call(cli, "verify-pdo", default, ROOT / "samples/synthetic-pdo.json")
+    assert checked["tx"]["expected_selection"]["mapping_source"] == "esi"
+    for name, mutate in [("sm", lambda x: x["tx"]["sync_managers"][0].update(index=4)),
+                          ("padding", lambda x: x["tx"]["sync_managers"][0]["pdos"][0]["entries"].__setitem__(2, 0x600f000f))]:
+        data = json.loads((ROOT / "samples/synthetic-pdo.json").read_text(encoding="utf-8")); mutate(data)
+        path = destination / (name + "-readback.json"); path.write_text(json.dumps(data), encoding="utf-8")
+        result = cli_call(cli, "verify-pdo", default, path, success=False)
+        assert result["tx"]["errors"] and all(f["state"] == "matched" for f in result["tx"]["fields"])
+    profile["rotate_rows"] = 500
+    default.write_text(json.dumps(profile), encoding="utf-8")
+    base = destination / "default.csv"
+    report = cli_call(cli, "run", default, "--backend", "virtual", "--seconds", 1, "--csv", base)
+    (destination / "default-run.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    assert report["valid"] > 100 and report["stopped_al"] == [1,0] and report["error"] is None
+    _, entries = rows(base)
+    assert len(entries) == report["valid"] == report["capture"]["written"] and report["capture"]["overruns"] == 0
+    counter_name, bool_name, float_name = [f["name"] for f in profile["tx"]]
+    for i,row in enumerate(entries,1):
+        counter=int(row[counter_name]); assert (i-1)//4 <= counter <= (i-1+report["timeouts"])//4
+        assert row[bool_name] == str(bool(counter&1)).lower() and float(row[float_name]) == counter/4
+    alt = destination / "alternative.json"
+    cli_call(cli, "select-pdos", default, "--tx-pdo", "0x1a01@3", "--out", alt)
+    selected = cli_call(cli, "validate", alt)
+    assert selected["tx_bytes"] == 8 and selected["tx"][0]["source"] == "override"
+    assert len(selected["esi_pdo_selection"]["rx"]) == 1
+    failed = cli_call(cli, "run", alt, "--backend", "virtual", "--seconds", 1, success=False)
+    (destination / "mismatch-run.json").write_text(json.dumps(failed, indent=2), encoding="utf-8")
+    assert "layout differs" in failed["error"] and failed["cycles"] == 0 and failed["stopped_al"] == [1,0]
+    assert failed["virtual_esc"]["state_requests"] == [1,2,1]
+    assert report["virtual_esc"]["coe_downloads"] == failed["virtual_esc"]["coe_downloads"] == 0
+    assert report["virtual_esc"]["logical_writes"] == failed["virtual_esc"]["logical_writes"] == 0
+    # Different SMs align to bytes; selected order remains stable within an SM.
+    ordered = destination / "ordered.json"
+    cli_call(cli, "select-pdos", default, "--tx-pdo", "0x1a02@4", "--tx-pdo", "0x1a00@3", "--out", ordered)
+    changed = cli_call(cli, "validate", ordered)
+    assert changed["tx_bytes"] == 9 and [f["bit"] for f in changed["tx"]] == [0,16,32,64]
+    combined = destination / "same-sm.json"
+    cli_call(cli, "select-pdos", default, "--tx-pdo", "0x1a02@3", "--tx-pdo", "0x1a00@3", "--out", combined)
+    assert [f["bit"] for f in cli_call(cli, "validate", combined)["tx"]] == [0,8,24,40]
+    for i, flags in enumerate([
+        ["--tx-pdo","0x1a00@3","--tx-pdo","0x1a01@4"],
+        ["--rx-pdo","none"], ["--tx-pdo","0x1a00@2"],
+        ["--tx-pdo","0x1a00@3","--tx-pdo","0x1a00@3"],
+        ["--tx-pdo","0x1a03@3"], ["--tx-pdo","0x1aff@3"],
+    ]):
+        out = destination / f"invalid-choice-{i}.json"
+        cli_call(cli, "select-pdos", default, *flags, "--out", out, success=False)
+        assert not out.exists()
+    # A mandatory PDO without a default SM can be listed, then explicitly assigned.
+    text = esi.read_text(encoding="utf-8").replace('Sm="2" Mandatory="true"', 'Mandatory="true"')
+    unassigned = destination / "mandatory-unassigned.xml"
+    unassigned.write_text(text, encoding="utf-8")
+    assert cli_call(cli, "esi-list", unassigned)[0]["source"]["default_tx_bytes"] is None
+    explicit = destination / "explicit.json"
+    cli_call(cli, "esi-import", unassigned, "--device", 0, "--rx-pdo", "0x1600@2", "--out", explicit)
+    assert cli_call(cli, "validate", explicit)["rx"][0]["source"] == "override"
+    # Frozen older profiles still load without catalog fields.
+    legacy = json.loads(json.dumps(profile)); legacy.pop("esi_pdo_selection"); legacy["esi"].pop("pdo_catalog")
+    legacy_path = destination / "legacy.json"; legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert cli_call(cli, "validate", legacy_path)["esi_pdo_selection"] is None
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -565,6 +642,9 @@ def main():
     sync_destination = destination / "sync-modes"
     sync_destination.mkdir()
     verify_sync_modes(cli, sync_destination)
+    pdo_destination = destination / "pdo-choices"
+    pdo_destination.mkdir()
+    verify_pdo_choices(cli, pdo_destination)
 
     if options.gui:
         assert os.name == "nt"

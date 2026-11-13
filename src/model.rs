@@ -36,6 +36,8 @@ pub struct EsiSource {
     #[serde(default)]
     pub dc_modes: Vec<crate::sync_review::DcMode>,
     #[serde(default)]
+    pub pdo_catalog: Vec<crate::pdo_catalog::Definition>,
+    #[serde(default)]
     pub notes: Vec<String>,
 }
 
@@ -230,6 +232,7 @@ pub struct Profile {
     pub expected_identity: Option<Identity>,
     pub esi: Option<EsiSource>,
     pub staged_esi_dc_mode: Option<usize>,
+    pub esi_pdo_selection: Option<crate::pdo_catalog::Selection>,
     pub sync_unit_cycle_ns: Option<u32>,
     pub requested_cycle_us: u64,
     pub input_loss_timeout_ms: u64,
@@ -253,6 +256,7 @@ impl Default for Profile {
             expected_identity: None,
             esi: None,
             staged_esi_dc_mode: None,
+            esi_pdo_selection: None,
             sync_unit_cycle_ns: None,
             requested_cycle_us: 1000,
             input_loss_timeout_ms: 1000,
@@ -290,6 +294,7 @@ impl Profile {
         );
         if let Some(esi) = &self.esi {
             ensure!(esi.dc_modes.len() <= 64, "ESI has more than 64 DC modes");
+            crate::pdo_catalog::validate_catalog(&esi.pdo_catalog)?;
             for mode in &esi.dc_modes {
                 mode.validate()?;
             }
@@ -303,6 +308,25 @@ impl Profile {
             "sync-unit assumption requires a staged ESI DC mode"
         );
         crate::sync_review::review(self, None)?;
+        if let Some(selection) = &self.esi_pdo_selection {
+            let esi = self
+                .esi
+                .as_ref()
+                .context("PDO selection requires ESI provenance")?;
+            ensure!(
+                self.expected_identity.as_ref() == Some(&esi.identity),
+                "PDO selection requires the exact ESI identity baseline"
+            );
+            ensure!(
+                !esi.pdo_catalog.is_empty(),
+                "PDO selection requires a retained ESI catalog"
+            );
+            let built = crate::pdo_catalog::build(&esi.pdo_catalog, selection)?;
+            ensure!(
+                (self.tx_bytes, self.rx_bytes) == (built.tx_bytes, built.rx_bytes),
+                "PDO selection image lengths differ from editable profile; rebuild or detach the selection"
+            );
+        }
         for (len, fields) in [(self.tx_bytes, &self.tx), (self.rx_bytes, &self.rx)] {
             ensure!(
                 len <= MAX_PAYLOAD && fields.len() <= MAX_FIELDS,

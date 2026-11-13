@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.6">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored PDO choice fixture</Name></Vendor>
+  <Descriptions><Devices><Device>
+    <Type ProductCode="#x00000001" RevisionNo="#x00000001">VirtualCoeChoices</Type>
+    <Name>Authored selectable PDOs</Name>
+    <RxPdo Sm="2" Mandatory="true" Fixed="true">
+      <Index>#x1600</Index><Name>Required setpoint</Name>
+      <Entry Fixed="true"><Index>#x7000</Index><SubIndex>1</SubIndex><BitLen>16</BitLen><Name>Staged setpoint</Name><DataType>INT</DataType></Entry>
+    </RxPdo>
+    <TxPdo Sm="3" Fixed="true">
+      <Index>#x1A00</Index><Name>Default eight-byte input</Name><Exclude>#x1A01</Exclude>
+      <Entry><Index>#x6000</Index><SubIndex>1</SubIndex><BitLen>16</BitLen><Name>Counter</Name><DataType>UINT</DataType></Entry>
+      <Entry><Index>#x6000</Index><SubIndex>2</SubIndex><BitLen>1</BitLen><Name>Sensor active</Name><DataType>BOOL</DataType></Entry>
+      <Entry><Index>0</Index><BitLen>15</BitLen></Entry>
+      <Entry><Index>#x6000</Index><SubIndex>3</SubIndex><BitLen>32</BitLen><Name>Scaled counter</Name><DataType>REAL</DataType></Entry>
+    </TxPdo>
+    <TxPdo Sm="-1" Fixed="true">
+      <Index>#x1A01</Index><Name>Alternative eight-byte input</Name><Exclude>#x1A00</Exclude>
+      <Entry><Index>#x6010</Index><SubIndex>1</SubIndex><BitLen>16</BitLen><Name>Alternative counter</Name><DataType>UINT</DataType></Entry>
+      <Entry><Index>0</Index><BitLen>48</BitLen></Entry>
+    </TxPdo>
+    <TxPdo>
+      <Index>#x1A02</Index><Name>Optional status byte</Name>
+      <Entry><Index>#x6001</Index><SubIndex>1</SubIndex><BitLen>8</BitLen><Name>Optional status</Name><DataType>USINT</DataType></Entry>
+    </TxPdo>
+    <TxPdo>
+      <Index DependOnSlot="true">#x1A03</Index><Name>Module-dependent example</Name>
+      <Entry><Index>#x6002</Index><BitLen>8</BitLen><Name>Module status</Name><DataType>USINT</DataType></Entry>
+    </TxPdo>
+  </Device></Devices></Descriptions>
+</EtherCATInfo>

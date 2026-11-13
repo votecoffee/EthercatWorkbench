@@ -143,11 +143,95 @@
         ]
       }
     ],
+    "pdo_catalog": [
+      {
+        "direction": "rx",
+        "index": 5632,
+        "name": "PDO",
+        "default_sm": 2,
+        "mandatory": false,
+        "fixed": false,
+        "virtual_pdo": false,
+        "excludes": [],
+        "entries": [
+          {
+            "index": 28672,
+            "subindex": 1,
+            "width": 16,
+            "name": "Staged setpoint",
+            "data_type": "INT",
+            "fixed": false
+          }
+        ],
+        "notes": [],
+        "unsupported": false
+      },
+      {
+        "direction": "tx",
+        "index": 6656,
+        "name": "PDO",
+        "default_sm": 3,
+        "mandatory": false,
+        "fixed": false,
+        "virtual_pdo": false,
+        "excludes": [],
+        "entries": [
+          {
+            "index": 24576,
+            "subindex": 1,
+            "width": 16,
+            "name": "Counter",
+            "data_type": "UINT",
+            "fixed": false
+          },
+          {
+            "index": 24576,
+            "subindex": 2,
+            "width": 1,
+            "name": "Sensor active",
+            "data_type": "BOOL",
+            "fixed": false
+          },
+          {
+            "index": 0,
+            "subindex": 0,
+            "width": 15,
+            "name": "Entry",
+            "data_type": "",
+            "fixed": false
+          },
+          {
+            "index": 24576,
+            "subindex": 3,
+            "width": 32,
+            "name": "Scaled counter",
+            "data_type": "REAL",
+            "fixed": false
+          }
+        ],
+        "notes": [],
+        "unsupported": false
+      }
+    ],
     "notes": [
       "Imported 4 ESI DC modes for offline review; none will be applied to hardware"
     ]
   },
   "staged_esi_dc_mode": 2,
+  "esi_pdo_selection": {
+    "tx": [
+      {
+        "index": 6656,
+        "sm": 3
+      }
+    ],
+    "rx": [
+      {
+        "index": 5632,
+        "sm": 2
+      }
+    ]
+  },
   "sync_unit_cycle_ns": 1000000,
   "requested_cycle_us": 1000,
   "input_loss_timeout_ms": 1000,

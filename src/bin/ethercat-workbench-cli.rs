@@ -46,7 +46,24 @@ enum Command {
         /// Manual sync-unit period assumption for resolving ESI factors; does not set host or device timing.
         #[arg(long, requires = "dc_mode")]
         sync_unit_cycle_ns: Option<u32>,
+        /// Replace this direction's default choices; repeat INDEX@SM in desired order, or use none.
+        #[arg(long)]
+        tx_pdo: Vec<String>,
+        #[arg(long)]
+        rx_pdo: Vec<String>,
     },
+    /// Build a new offline profile from a retained ESI catalog. Sends no bus writes.
+    SelectPdos {
+        profile: PathBuf,
+        #[arg(long)]
+        tx_pdo: Vec<String>,
+        #[arg(long)]
+        rx_pdo: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Show the full expected offline assignment, including padding and SyncManagers.
+    ReviewPdos { profile: PathBuf },
     /// Review a staged ESI DC mode, optionally comparing a saved run report. Performs no bus operations.
     ReviewSync {
         profile: PathBuf,
@@ -120,6 +137,31 @@ fn output(value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn pdo_arguments(
+    values: &[String],
+    default: Vec<ethercat_workbench::pdo_catalog::Assignment>,
+) -> Result<Vec<ethercat_workbench::pdo_catalog::Assignment>> {
+    use ethercat_workbench::pdo_catalog::Assignment;
+    if values.is_empty() {
+        return Ok(default);
+    }
+    if values.len() == 1 && values[0] == "none" {
+        return Ok(Vec::new());
+    }
+    values
+        .iter()
+        .map(|value| {
+            let (index, sm) = value
+                .split_once('@')
+                .context("PDO choice must be INDEX@SM, or none alone")?;
+            Ok(Assignment {
+                index: u16::try_from(esi::number(index)?)?,
+                sm: u8::try_from(esi::number(sm)?)?,
+            })
+        })
+        .collect()
+}
+
 #[derive(Deserialize)]
 struct SavedSyncReport {
     synchronization: Option<ethercat_workbench::sync::Synchronization>,
@@ -148,17 +190,55 @@ fn main() -> Result<()> {
             out,
             dc_mode,
             sync_unit_cycle_ns,
+            tx_pdo,
+            rx_pdo,
         } => {
             let devices = esi::load(&file)?;
             let selected = devices
                 .get(device)
                 .context("ESI device index out of range")?;
             let mut profile = Profile::default();
-            selected.apply(&mut profile);
+            let mut selection =
+                ethercat_workbench::pdo_catalog::defaults(&selected.source.pdo_catalog);
+            selection.tx = pdo_arguments(&tx_pdo, selection.tx)?;
+            selection.rx = pdo_arguments(&rx_pdo, selection.rx)?;
+            selected.apply_selection(&mut profile, selection)?;
             profile.staged_esi_dc_mode = dc_mode;
             profile.sync_unit_cycle_ns = sync_unit_cycle_ns;
             profile.save(&out)?;
             output(&selected.notes)
+        }
+        Command::SelectPdos {
+            profile,
+            tx_pdo,
+            rx_pdo,
+            out,
+        } => {
+            let mut profile = Profile::load(&profile)?;
+            let esi = profile.esi.as_ref().context("profile has no ESI catalog")?;
+            let mut selection = profile
+                .esi_pdo_selection
+                .clone()
+                .unwrap_or_else(|| ethercat_workbench::pdo_catalog::defaults(&esi.pdo_catalog));
+            selection.tx = pdo_arguments(&tx_pdo, selection.tx)?;
+            selection.rx = pdo_arguments(&rx_pdo, selection.rx)?;
+            ethercat_workbench::pdo_catalog::apply(&mut profile, selection)?;
+            profile.save(&out)?;
+            output(&profile)
+        }
+        Command::ReviewPdos { profile } => {
+            let profile = Profile::load(&profile)?;
+            let esi = profile.esi.as_ref().context("profile has no ESI catalog")?;
+            let selection = profile
+                .esi_pdo_selection
+                .as_ref()
+                .context("profile has no attached ESI PDO selection")?;
+            let built = ethercat_workbench::pdo_catalog::build(&esi.pdo_catalog, selection)?;
+            output(
+                &serde_json::json!({"applied":false,"esi_file_name":esi.file_name,"esi_sha256":esi.sha256,
+                "identity":esi.identity,"selection":selection,"tx":built.tx_layout,"rx":built.rx_layout,
+                "tx_bytes":built.tx_bytes,"rx_bytes":built.rx_bytes,"boundary":"Offline expectation only; no assignment writes were sent"}),
+            )
         }
         Command::ReviewSync { profile, readback } => {
             let profile = Profile::load(&profile)?;
