@@ -119,6 +119,28 @@ def gui_trial(gui, profile, destination, scheduler, seconds):
 
 
 
+def audit_capture(cli, report_path, base, report):
+    receipt = cli_call(cli, "verify-capture", report_path, base)
+    assert receipt["report_sha256"] == hashlib.sha256(report_path.read_bytes()).hexdigest()
+    assert receipt["profile_sha256"] == report["context"]["profile_sha256"]
+    assert receipt["rows"] == report["capture"]["written"]
+    assert receipt["selected"] == report["capture"]["selected"]
+    assert receipt["valid_exchanges"] == report["valid"]
+    assert receipt["invalid_exchanges"] == report["cycles"] - report["valid"]
+    assert receipt["reply_timeouts"] == report["timeouts"]
+    assert receipt["wkc_mismatches"] == report["wkc_mismatches"]
+    assert receipt["state_mismatches"] == report["state_mismatches"]
+    assert receipt["transport_errors"] == report["transport_errors"]
+    assert receipt["logger_overruns"] == report["capture"]["overruns"]
+    assert receipt["connection_generation"] == report["connection_generation"]
+    assert receipt["run_error"] == report["error"] and receipt["run_cancelled"] == report["cancelled"]
+    for part in receipt["parts"]:
+        path = Path(part["file"])
+        assert part["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert part["bytes"] == path.stat().st_size
+    return receipt
+
+
 def verify_virtual(cli, profile, destination, reports, model="coe"):
     model_flags = ["--virtual-model", model]
     prefix = "virtual" if model == "coe" else f"virtual-{model}"
@@ -127,6 +149,7 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
         flags = ["--on-change"] if on_change else []
         report = cli_call(cli, "run", profile, "--backend", "virtual", *model_flags, "--seconds", 1, "--csv", base, *flags)
         (destination / (base.stem + ".json")).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        audit_capture(cli, destination / (base.stem + ".json"), base, report)
         assert report["error"] is None and report["valid"] >= 100, report
         assert report["cycles"] == report["valid"] + report["timeouts"], report
         assert report["wkc_mismatches"] == report["state_mismatches"] == 0, report
@@ -360,6 +383,7 @@ def verify_input_loss(cli, profile, destination, model="coe"):
                           "--input-loss-timeout-ms", limit, "--seconds", 1, "--generation", 17,
                           "--csv", base, *(["--on-change"] if change else []), success=ok)
         (destination / (name + ".json")).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        audit_capture(cli, destination / (name + ".json"), base, report)
         health = report["input_health"]
         audit = report["virtual_esc"]
         assert report["input_loss_timeout_ms"] == limit
@@ -611,6 +635,15 @@ def verify_comparison(cli, destination):
     assert any("CSV bytes" in w for w in result["warnings"])
     assert not any("fewer than three" in w for w in result["warnings"])
     (destination / "comparison.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    for index, path in enumerate(paths):
+        audit_capture(cli, path, destination / f"trial-{index}.csv", trials[index])
+    audited = cli_call(cli, "compare-runs", paths[0], paths[1],
+        "--csv", destination / "trial-0.csv", "--csv", destination / "trial-1.csv")
+    assert len(audited["csv_audits"]) == 2 and all(r["rows"] > 0 for r in audited["csv_audits"])
+    assert not any("CSV bytes and field values are not inspected" in w for w in audited["warnings"])
+    assert "one --csv base per report" in cli_call(cli, "compare-runs", paths[0], paths[1],
+        "--csv", destination / "trial-0.csv", success=False)
+    (destination / "audited-comparison.json").write_text(json.dumps(audited, indent=2), encoding="utf-8")
     assert "duplicate report" in cli_call(cli, "compare-runs", paths[0], paths[0], success=False)
     assert "capture-start order" in cli_call(cli, "compare-runs", paths[1], paths[0], success=False)
     assert "both deadline and relative" in cli_call(cli, "compare-runs", paths[0], paths[2], success=False)
@@ -665,6 +698,126 @@ def verify_comparison(cli, destination):
     with oversized.open("wb") as stream: stream.truncate(16 * 1024 * 1024 + 1)
     assert "exceeds 16 MiB" in cli_call(cli, "compare-runs", paths[0], oversized, success=False)
     (destination / "dc-comparison.json").write_text(json.dumps(dc, indent=2), encoding="utf-8")
+
+
+def verify_capture_audit(cli, destination, comparison):
+    original = json.loads((comparison / "trial-0.json").read_text(encoding="utf-8"))
+    _, entries = rows(comparison / "trial-0.csv")
+    names = list(entries[0])
+    clone = lambda value: json.loads(json.dumps(value))
+
+    def fixture(name, records=None, change=None, eol="\n", bom=False):
+        folder = destination / name; folder.mkdir()
+        report = clone(original)
+        report["context"]["profile"]["rotate_rows"] = 0
+        if records is None: records = clone(entries)
+        report["capture"].update(parts=1, written=len(records), selected=len(records), overruns=0)
+        report["error"] = "Authored offline CSV audit fixture; not a measured fault"
+        if change: change(report)
+        ctx = report["context"]
+        ctx["profile_sha256"] = hashlib.sha256(json.dumps(ctx["profile"], ensure_ascii=False,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
+        common = dict(ctx["profile"]); common["scheduler"] = "deadline"
+        ctx["comparison_sha256"] = hashlib.sha256(json.dumps(common, ensure_ascii=False,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
+        path = folder / "report.json"; path.write_text(json.dumps(report), encoding="utf-8")
+        base = folder / "capture.csv"
+        with base.open("w", encoding="utf-8-sig" if bom else "utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=names, lineterminator=eol)
+            writer.writeheader(); writer.writerows(records)
+        return path, base, report
+
+    gap_rows = clone(entries)
+    removed = {0, len(gap_rows)//2, len(gap_rows)-1}
+    gap_rows = [row for i,row in enumerate(gap_rows) if i not in removed]
+    def losses(r): r["capture"].update(selected=len(entries),overruns=3)
+    path, base, r = fixture("queue-gaps", gap_rows, losses)
+    audit = audit_capture(cli,path,base,r)
+    assert [audit[k] for k in ["leading_index_gap","interior_index_gaps","trailing_index_gap"]] == [1,1,1]
+    assert audit["logger_overruns"] == 3 and any("run failed" in w for w in audit["warnings"])
+
+    path, base, r = fixture("crlf-bom", eol="\r\n", bom=True)
+    audit = audit_capture(cli,path,base,r)
+    assert audit["parts"][0]["eol"] == "CRLF" and audit["parts"][0]["utf8_bom"] is True
+    extra = base.with_name("capture.0002.csv"); extra.write_bytes(b"preserve unrelated later file\n")
+    assert audit_capture(cli,path,base,r)["rows"] == len(entries)
+    assert extra.read_bytes() == b"preserve unrelated later file\n"
+
+    def invalid_input(r):
+        r.update(valid=0,replies=r["cycles"],timeouts=0,wkc_mismatches=r["cycles"],state_mismatches=0)
+    path, base, r = fixture("zero-valid", [], invalid_input)
+    assert audit_capture(cli,path,base,r)["rows"] == 0
+    path, base, r = fixture("cancelled", change=lambda r:r.update(cancelled=True))
+    assert audit_capture(cli,path,base,r)["run_cancelled"] is True
+
+    repeated = clone(entries[:2])
+    for name in names[5:]: repeated[1][name] = repeated[0][name]
+    as_change = lambda r: r["context"]["profile"].update(mode="change")
+    path, base, r = fixture("change-repeat", repeated, as_change)
+    assert "repeats identical" in cli_call(cli,"verify-capture",path,base,success=False)
+    for row in repeated: row["Scaled counter"] = "NaN"
+    path, base, r = fixture("change-nan", repeated, as_change)
+    audit = audit_capture(cli,path,base,r)
+    assert audit["non_finite_values"] == 2 and audit["ambiguous_nan_repeats"] == 1
+
+    for case, expected in [("generation","generation"),("utc","UTC anchor"),("sample","out of order"),
+            ("elapsed","out of order"),("cycle","outside report bounds"),("unsigned","field width"),
+            ("boolean","true or false"),("float","canonical f32"),("header","header differs"),
+            ("newline","final newline"),("mixed-eol","mixed CSV"),("quotes","quoting"),
+            ("blank","blank CSV"),("oversized","exceeds 1 MiB"),("incomplete","capture is incomplete")]:
+        records = clone(entries)
+        if case == "generation": records[0]["connection_generation"] = "999"
+        elif case == "utc": records[0]["capture_start_utc"] = "2025-01-01T00:00:00Z"
+        elif case == "sample": records[1]["sample_index"] = records[0]["sample_index"]
+        elif case == "elapsed": records[1]["elapsed_us"] = "0"
+        elif case == "cycle": records[0]["cycle_index"] = str(original["cycles"]+original["missed_deadlines"]+1)
+        elif case == "unsigned": records[0]["Counter"] = "65536"
+        elif case == "boolean": records[0]["Sensor active"] = "TRUE"
+        elif case == "float": records[0]["Scaled counter"] = "1e999"
+        path, base, r = fixture(case, records)
+        data = base.read_bytes()
+        if case == "header": base.write_bytes(data.replace(b"Counter",b"Different",1))
+        elif case == "newline": base.write_bytes(data[:-1])
+        elif case == "mixed-eol": base.write_bytes(data.replace(b"\n",b"\r\n",1))
+        elif case == "quotes": base.write_bytes(data.replace(b"capture_start_utc",b'"capture_start_utc"',1))
+        elif case == "blank": base.write_bytes(data+b"\n")
+        elif case == "oversized": base.write_bytes(b"A"*(1024*1024+1))
+        elif case == "incomplete":
+            r["capture"]["written"] -= 1; path.write_text(json.dumps(r),encoding="utf-8")
+        error = cli_call(cli,"verify-capture",path,base,success=False)
+        assert expected in error,(case,error)
+
+    # Metadata ordering persists across rotation boundaries and comparison reads actual CSV bytes.
+    report_path = comparison / "trial-0.json"
+    corrupt = destination / "rotated"; corrupt.mkdir()
+    rotated_base = corrupt / "capture.csv"
+    sources = sorted(comparison.glob("trial-0.*.csv"))
+    for index, source in enumerate(sources,1):
+        target = corrupt / f"capture.{index:04}.csv"
+        target.write_bytes(source.read_bytes())
+    second = corrupt / "capture.0002.csv"
+    assert second.exists()
+    with second.open(encoding="utf-8",newline="") as stream: records = list(csv.DictReader(stream))
+    records[0]["sample_index"] = "1"
+    with second.open("w",encoding="utf-8",newline="") as stream:
+        writer=csv.DictWriter(stream,fieldnames=names,lineterminator="\n"); writer.writeheader(); writer.writerows(records)
+    assert "out of order" in cli_call(cli,"verify-capture",report_path,rotated_base,success=False)
+    assert "out of order" in cli_call(cli,"compare-runs",report_path,comparison/"trial-1.json",
+        "--csv",rotated_base,"--csv",comparison/"trial-1.csv",success=False)
+
+    # Exercise native writer quoting and multiple decoded kinds, including signed/endian and raw fields.
+    profile = clone(original["context"]["profile"])
+    profile["tx"] = [
+        {"name":'Counter, "µs"',"bit":0,"width":16},
+        {"name":"Signed swapped","bit":0,"width":16,"kind":"signed","swap_bytes_in_words":True},
+        {"name":"Double","bit":0,"width":64,"kind":"f64"},
+        {"name":"Payload","bit":0,"width":64,"kind":"raw"}]
+    typed_profile=destination/"typed.json"; typed_profile.write_text(json.dumps(profile),encoding="utf-8")
+    base=destination/"typed.csv"; path=destination/"typed-report.json"
+    r=cli_call(cli,"run",typed_profile,"--seconds",1,"--csv",base,"--report",path)
+    receipt=audit_capture(cli,path,base,r)
+    assert receipt["fields"] == [f["name"] for f in profile["tx"]]
+    (destination/"typed-audit.json").write_text(json.dumps(receipt,indent=2),encoding="utf-8")
 
 
 def main():
@@ -819,6 +972,9 @@ def main():
     comparison_destination = destination / "comparison"
     comparison_destination.mkdir()
     verify_comparison(cli, comparison_destination)
+    audit_destination = destination / "capture-audit"
+    audit_destination.mkdir()
+    verify_capture_audit(cli, audit_destination, comparison_destination)
 
     if options.gui:
         assert os.name == "nt"

@@ -78,7 +78,12 @@ enum Command {
     CompareRuns {
         #[arg(required = true, num_args = 2..=32)]
         reports: Vec<PathBuf>,
+        /// Audit one CSV base per report, repeated in report order.
+        #[arg(long)]
+        csv: Vec<PathBuf>,
     },
+    /// Audit the CSV parts declared by a saved run report, without bus operations.
+    VerifyCapture { report: PathBuf, csv: PathBuf },
     /// Decode an offline payload using the profile.
     Decode {
         profile: PathBuf,
@@ -184,8 +189,16 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Nics => output(&ethercat_workbench::live::nics()?),
         Command::Scan { nic } => output(&ethercat_workbench::live::scan(&nic)?),
-        Command::CompareRuns { reports } => {
-            output(&ethercat_workbench::benchmark::compare_files(&reports)?)
+        Command::CompareRuns { reports, csv } => {
+            let result = if csv.is_empty() {
+                ethercat_workbench::benchmark::compare_files(&reports)?
+            } else {
+                ethercat_workbench::benchmark::compare_with_captures(&reports, &csv)?
+            };
+            output(&result)
+        }
+        Command::VerifyCapture { report, csv } => {
+            output(&ethercat_workbench::capture_audit::verify(&report, &csv)?)
         }
         Command::EsiList { file } => {
             let entries = esi::load(&file)?;

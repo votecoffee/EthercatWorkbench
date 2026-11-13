@@ -35,6 +35,7 @@ try {
         'LICENSE' = 'LICENSE'
         'docs/ethercrab-review.md' = 'docs/ethercrab-review.md'
         'docs/benchmark-comparison.md' = 'docs/benchmark-comparison.md'
+        'docs/capture-audit.md' = 'docs/capture-audit.md'
         'samples/synthetic.esi.xml' = 'samples/synthetic.esi.xml'
         'samples/pdo-choices.esi.xml' = 'samples/pdo-choices.esi.xml'
         'samples/pdo-choices.json' = 'samples/pdo-choices.json'

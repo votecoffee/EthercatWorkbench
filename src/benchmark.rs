@@ -42,7 +42,7 @@ pub struct RunContext {
     pub csv_enabled: bool,
 }
 
-fn hash(bytes: &[u8]) -> String {
+pub(crate) fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
@@ -80,7 +80,7 @@ impl RunContext {
         Ok((exact, hash(&serde_json::to_vec(&common)?)))
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(self.schema == 1, "unsupported run-context schema");
         ensure!(!self.app_version.is_empty(), "missing application version");
         self.profile.validate()?;
@@ -93,13 +93,10 @@ impl RunContext {
             (1..=86_400_000_000).contains(&self.duration_limit_us),
             "invalid run duration limit"
         );
-        ensure!(
-            self.csv_enabled,
-            "comparison requires CSV logging in every trial"
-        );
+        ensure!(self.csv_enabled, "run context requires enabled CSV logging");
         ensure!(
             self.profile.tx.iter().any(|field| field.log),
-            "comparison requires selected CSV fields"
+            "run context requires selected CSV fields"
         );
         Ok(())
     }
@@ -368,6 +365,7 @@ pub struct Comparison {
     pub pdo_verification: Option<Value>,
     pub trials: Vec<Trial>,
     pub schedules: Vec<ScheduleSummary>,
+    pub csv_audits: Option<Vec<crate::capture_audit::Audit>>,
     pub warnings: Vec<String>,
 }
 
@@ -375,15 +373,7 @@ pub fn compare_files(files: &[PathBuf]) -> Result<Comparison> {
     ensure!((2..=32).contains(&files.len()), "select 2–32 saved reports");
     let mut inputs = Vec::new();
     for file in files {
-        let mut bytes = Vec::new();
-        File::open(file)?
-            .take(MAX_REPORT_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() as u64 <= MAX_REPORT_BYTES,
-            "report exceeds 16 MiB: {}",
-            file.display()
-        );
+        let bytes = read_report_bytes(file)?;
         let report: SavedRun =
             serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
                 .with_context(|| format!("parse report {}", file.display()))?;
@@ -393,6 +383,42 @@ pub fn compare_files(files: &[PathBuf]) -> Result<Comparison> {
         inputs.push((file.clone(), hash(&bytes), report));
     }
     compare(inputs)
+}
+
+pub(crate) fn read_report_bytes(file: &std::path::Path) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(file)?
+        .take(MAX_REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= MAX_REPORT_BYTES,
+        "report exceeds 16 MiB: {}",
+        file.display()
+    );
+    Ok(bytes)
+}
+
+pub fn compare_with_captures(files: &[PathBuf], bases: &[PathBuf]) -> Result<Comparison> {
+    ensure!(
+        files.len() == bases.len(),
+        "provide one --csv base per report, in the same order"
+    );
+    let mut result = compare_files(files)?;
+    let mut audits = Vec::new();
+    for ((file, base), trial) in files.iter().zip(bases).zip(&result.trials) {
+        let audit = crate::capture_audit::verify(file, base)?;
+        ensure!(
+            audit.report_sha256 == trial.sha256,
+            "report changed during comparison"
+        );
+        audits.push(audit);
+    }
+    result
+        .warnings
+        .retain(|w| !w.starts_with("Capture counters are checked;"));
+    result.warnings.push("CSV structure, typed text and metadata are audited; PDO meaning and original payload bits are not independently verified.".into());
+    result.csv_audits = Some(audits);
+    Ok(result)
 }
 
 fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
@@ -410,7 +436,7 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
         common_profile_settings: settings, duration_limit_us: base.duration_limit_us,
         devices: first.devices.clone(), synchronization_settings: sync.clone(),
         pdo_verification: first.pdo_verification.clone(),
-        trials: Vec::new(), schedules: Vec::new(),
+        trials: Vec::new(), schedules: Vec::new(), csv_audits: None,
         warnings: vec![
             "Host send/dequeue spacing is not wire timing or device synchronization accuracy.".into(),
             "Capture counters are checked; CSV bytes and field values are not inspected by compare-runs.".into(),

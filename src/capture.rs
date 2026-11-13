@@ -23,7 +23,7 @@ struct Sample {
     data: [u8; MAX_PAYLOAD],
 }
 
-const METADATA: [&str; 5] = [
+pub(crate) const METADATA: [&str; 5] = [
     "capture_start_utc",
     "elapsed_us",
     "sample_index",
@@ -196,7 +196,7 @@ impl Drop for Capture {
 
 type Writer = csv::Writer<std::fs::File>;
 
-fn part(base: &Path, index: u64, rotate: u64, fields: &[Field]) -> Result<Writer> {
+pub(crate) fn part_path(base: &Path, index: u64, rotate: u64) -> Result<PathBuf> {
     let path = if rotate == 0 {
         base.to_owned()
     } else {
@@ -209,6 +209,11 @@ fn part(base: &Path, index: u64, rotate: u64, fields: &[Field]) -> Result<Writer
         path.set_file_name(name);
         path
     };
+    Ok(path)
+}
+
+fn part(base: &Path, index: u64, rotate: u64, fields: &[Field]) -> Result<Writer> {
+    let path = part_path(base, index, rotate)?;
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)

@@ -27,7 +27,7 @@ Each report must describe a successful, uncancelled run with at least two valid 
 
 Output retains each trial's input-file hash, UTC anchor, generation, elapsed interval, cycles, replies, valid samples, timeouts, missed deadlines, WKC/AL mismatches, ignored frames, CSV counters and full send/receive p50/p95/p99/longest-gap values. Each scheduler summary gives the minimum, median and maximum of its individual run p99 values. It does not pool histograms or infer a combined percentile. Warnings flag fewer than three trials per scheduler, nonalternating order, invalid exchanges and logger overruns. Logger losses remain visible and do not prevent comparison when the capture counters account for them.
 
-The command inspects saved JSON counters, not the CSV bytes or the correctness of field values. Input-file hashes bind the result to particular saved bytes. The JSON and hashes are editable evidence, not signed runtime attestation. Results do not select a winner or grant bench acceptance.
+By default the command inspects saved JSON counters and sets `csv_audits` to null. Repeat `--csv BASE` once per report to stream and hash the CSV parts and check their headers, typed text and metadata. The [CSV audit rules](capture-audit.md) describe this additional evidence. Neither mode independently verifies original payload bits or physical field meaning. Input-file hashes bind the result to particular saved bytes. The JSON and hashes are editable evidence, not signed runtime attestation. Results do not select a winner or grant bench acceptance.
 
 ## Physical bench procedure
 
