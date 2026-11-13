@@ -2,6 +2,8 @@ use eframe::egui;
 use ethercat_workbench::{
     benchmark::Comparison,
     capture_audit::Audit,
+    model::Profile,
+    pcap_inspect,
     review::{Controller, Input, Outcome, State, Task},
 };
 use std::path::{Path, PathBuf};
@@ -26,6 +28,9 @@ pub struct Panel {
     controller: Controller,
     export: String,
     message: String,
+    pcap_path: String,
+    station: String,
+    preview_limit: usize,
 }
 impl Default for Panel {
     fn default() -> Self {
@@ -35,6 +40,9 @@ impl Default for Panel {
             controller: Controller::default(),
             export: String::new(),
             message: String::new(),
+            pcap_path: String::new(),
+            station: "0x1000".into(),
+            preview_limit: 16,
         }
     }
 }
@@ -59,9 +67,9 @@ impl Panel {
         };
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui, bus_busy: bool) {
+    pub fn draw(&mut self, ui: &mut egui::Ui, bus_busy: bool, profile: &Profile) {
         ui.label(
-            "Review completed run reports and CSV files. These actions do not access the bus.",
+            "Review saved run reports, CSV files or Ethernet PCAP. These actions do not access the bus.",
         );
         if bus_busy {
             ui.label("Stop the active bus or discovery job before starting a file review.");
@@ -83,6 +91,35 @@ impl Panel {
         {
             self.cancel();
         }
+        ui.collapsing("Inspect a saved Ethernet PCAP", |ui| {
+            ui.label("Uses a frozen copy of the current commissioning profile. Identity, station and field meanings are offline expectations.");
+            ui.label(format!("Current profile · {} · {} input bytes · {} fields", profile.name, profile.tx_bytes, profile.tx.len()));
+            ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Classic PCAP");
+                    ui.add(egui::TextEdit::singleline(&mut self.pcap_path)
+                        .hint_text(".local/bench.pcap").desired_width(410.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Expected station");
+                    ui.add(egui::TextEdit::singleline(&mut self.station).desired_width(90.0));
+                    ui.label("Payload previews (0–64)");
+                    ui.add(egui::DragValue::new(&mut self.preview_limit).range(0..=64));
+                });
+                let station = ethercat_workbench::esi::number(self.station.trim())
+                    .ok().and_then(|v| u16::try_from(v).ok()).filter(|v| (1..=0xfffe).contains(v));
+                if station.is_none() { ui.label("Station must be 1–65534, in decimal or 0x hex."); }
+                if ui.add_enabled(!self.pcap_path.trim().is_empty() && station.is_some(),
+                    egui::Button::new("Inspect PCAP with current profile")).clicked() {
+                    self.start(Task::InspectPcap {
+                        file: PathBuf::from(self.pcap_path.trim()), profile: Box::new(profile.clone()),
+                        station: station.expect("validated station"), preview_limit: self.preview_limit,
+                    });
+                }
+            });
+            ui.label("Up to 64 MiB. PCAPNG and VLAN decoding are unsupported. Capture timestamps remain separate from application cycle timing.");
+        });
+        ui.separator();
         let mut audit = None;
         let mut move_row = None;
         let mut remove = None;
@@ -132,6 +169,7 @@ impl Panel {
             let inputs = match &completed.task {
                 Task::Audit(input) => std::slice::from_ref(input),
                 Task::Compare { inputs, .. } => inputs.as_slice(),
+                Task::InspectPcap { .. } => &[],
             };
             ui.collapsing("Inputs used", |ui| {
                 let used_csv = matches!(
@@ -150,10 +188,20 @@ impl Panel {
                         ui.label(format!("CSV base · {}", csv.display()));
                     }
                 }
+                if let Task::InspectPcap { file, profile, station, preview_limit } = &completed.task {
+                    ui.label(format!("PCAP · {}", file.display()));
+                    ui.label(format!("Frozen commissioning profile · {} · {} input bytes · station {station:#06x} · preview limit {preview_limit}",
+                        profile.name, profile.tx_bytes));
+                    if let Some(identity) = &profile.expected_identity {
+                        ui.label(format!("Expected identity · {identity}"));
+                    }
+                    ui.label("Export JSON for the complete frozen profile, including ESI provenance and field transformations.");
+                }
             });
             match &completed.outcome {
                 Outcome::Audit(result) => show_audit(ui, result),
                 Outcome::Comparison(result) => show_comparison(ui, result),
+                Outcome::Pcap(result) => show_pcap(ui, result),
             }
             ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
                 ui.horizontal(|ui| {
@@ -190,6 +238,153 @@ fn warnings(ui: &mut egui::Ui, warnings: &[String]) {
                 ui.label(warning);
             }
         });
+}
+
+fn show_pcap(ui: &mut egui::Ui, report: &pcap_inspect::Report) {
+    let counts = &report.counts;
+    ui.strong(format!(
+        "{} saved packets · {} recognized returned frames · {} valid SAFEOP frames",
+        counts.packets, counts.replies, counts.valid_safeop_replies
+    ));
+    ui.label("Frame counts are independent; duplicates are retained. This result does not establish fresh exchanges or device identity.");
+    ui.label(format!(
+        "Capture timestamp precision · {} · first UTC {}",
+        report.timestamp_resolution,
+        report.capture_first_utc.as_deref().unwrap_or("unavailable")
+    ));
+    ui.label(format!(
+        "Expected station {:#06x} · input WKC {} · profile requested period {} µs",
+        report.station_address, report.expected_input_wkc, report.profile.requested_cycle_us
+    ));
+    egui::Grid::new("pcap-counts").striped(true).show(ui, |ui| {
+        for (label, value) in [
+            ("Recognized requests", counts.requests),
+            ("Recognized returned frames", counts.replies),
+            ("Valid SAFEOP returned frames", counts.valid_safeop_replies),
+            ("Input WKC mismatches", counts.wkc_mismatches),
+            ("AL status/WKC mismatches", counts.al_mismatches),
+            ("Unmatched EtherCAT", counts.unmatched_ethercat),
+            ("Other packets", counts.other_packets),
+            ("Snapshot-truncated packets", counts.snapshot_truncated),
+            ("VLAN packets (not decoded)", counts.vlan_packets),
+            (
+                "Capture timestamp regressions",
+                counts.timestamp_regressions,
+            ),
+        ] {
+            ui.label(label);
+            ui.label(value.to_string());
+            ui.end_row();
+        }
+    });
+    ui.label("Recorded capture spacing in nanoseconds; capture precision does not establish timing accuracy.");
+    if counts.timestamp_regressions != 0 {
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            "Capture timestamps regress; all spacing summaries are unavailable.",
+        );
+    }
+    egui::ScrollArea::horizontal()
+        .id_salt("pcap-spacing")
+        .show(ui, |ui| {
+            egui::Grid::new("pcap-spacing-grid")
+                .striped(true)
+                .show(ui, |ui| {
+                    for text in ["Frames", "Gaps", "p50 ns", "p95 ns", "p99 ns", "Longest ns"] {
+                        ui.strong(text);
+                    }
+                    ui.end_row();
+                    for (name, spacing) in [
+                        ("Requests", &report.request_spacing),
+                        ("Returned", &report.reply_spacing),
+                        ("Valid SAFEOP returned", &report.valid_reply_spacing),
+                    ] {
+                        ui.label(name);
+                        ui.label(
+                            spacing
+                                .as_ref()
+                                .map_or("unavailable".into(), |s| s.count.to_string()),
+                        );
+                        for value in [
+                            spacing.as_ref().and_then(|s| s.p50_ns),
+                            spacing.as_ref().and_then(|s| s.p95_ns),
+                            spacing.as_ref().and_then(|s| s.p99_ns),
+                            spacing.as_ref().and_then(|s| s.longest_gap_ns),
+                        ] {
+                            ui.label(value.map_or("unavailable".into(), |v| v.to_string()));
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+    ui.collapsing("Capture and profile hashes", |ui| {
+        ui.label(format!(
+            "{} · {} bytes · app {}",
+            report.file, report.file_bytes, report.app_version
+        ));
+        ui.monospace(&report.file_sha256);
+        ui.label(format!("Frozen profile · {}", report.profile.name));
+        ui.monospace(&report.profile_sha256);
+        if let Some(esi) = &report.profile.esi {
+            ui.label(format!("ESI · {} · {}", esi.file_name, esi.device));
+            ui.monospace(&esi.sha256);
+        }
+    });
+    warnings(ui, &report.notes);
+    ui.collapsing(
+        format!(
+            "{} returned-frame payload previews (limit {})",
+            report.preview.len(),
+            report.preview_limit
+        ),
+        |ui| {
+            for packet in &report.preview {
+                ui.collapsing(
+                    format!(
+                        "Packet {} · sequence {} · {}",
+                        packet.packet_index,
+                        packet.sequence,
+                        if packet.valid_safeop {
+                            "valid SAFEOP"
+                        } else {
+                            "invalid input quality"
+                        }
+                    ),
+                    |ui| {
+                        if !packet.valid_safeop {
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                "Decoded bytes below are from a frame with invalid input quality.",
+                            );
+                        }
+                        ui.label(format!(
+                            "Capture timestamp {} ns since Unix epoch · input WKC {} · AL WKC {}",
+                            packet.timestamp_unix_ns, packet.input_wkc, packet.al_wkc
+                        ));
+                        let al =
+                            ethercat_workbench::esc::al_status(packet.al_status, packet.al_code);
+                        ui.label(format!(
+                            "AL {:#06x} · {} · code {:#06x}: {}",
+                            packet.al_status, al.state, packet.al_code, al.description
+                        ));
+                        ui.monospace(&packet.payload_hex);
+                        egui::Grid::new("pcap-values").striped(true).show(ui, |ui| {
+                            for text in ["Field", "Profile source", "Decoded value"] {
+                                ui.strong(text);
+                            }
+                            ui.end_row();
+                            for value in &packet.values {
+                                ui.label(&value.field);
+                                ui.label(format!("{:?}", value.source));
+                                ui.label(value.value.as_deref().unwrap_or("unavailable"));
+                                ui.end_row();
+                            }
+                        });
+                    },
+                );
+            }
+        },
+    );
 }
 
 fn show_audit(ui: &mut egui::Ui, audit: &Audit) {
@@ -351,4 +546,139 @@ fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
         }
     });
     warnings(ui, &result.warnings);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Pure egui layout: no native window, desktop input, screenshot or GPU.
+    fn text_from_layout(mut draw: impl FnMut(&mut egui::Ui)) -> String {
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|memory| memory.set_everything_is_visible(true));
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 5000.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| draw(ui));
+            },
+        );
+        fn collect(shape: &egui::epaint::Shape, text: &mut String) {
+            match shape {
+                egui::epaint::Shape::Text(shape) => {
+                    text.push_str(&shape.galley.job.text);
+                    text.push('\n');
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        for shape in output.shapes {
+            collect(&shape.shape, &mut text);
+        }
+        text
+    }
+
+    #[test]
+    fn pcap_layout_labels_invalid_payloads_and_unavailable_capture_spacing() {
+        let report = pcap_inspect::Report {
+            schema: 1,
+            app_version: env!("CARGO_PKG_VERSION").into(),
+            file: "Authored UI fixture".into(),
+            file_bytes: 100,
+            file_sha256: "0".repeat(64),
+            profile: Profile {
+                name: "Frozen profile".into(),
+                tx_bytes: 1,
+                ..Default::default()
+            },
+            profile_sha256: "1".repeat(64),
+            station_address: 0x1000,
+            expected_input_wkc: 1,
+            timestamp_resolution: "nanoseconds".into(),
+            capture_first_utc: None,
+            first_timestamp_unix_ns: Some(100),
+            last_timestamp_unix_ns: Some(90),
+            counts: pcap_inspect::Counts {
+                packets: 2,
+                replies: 2,
+                timestamp_regressions: 1,
+                al_mismatches: 2,
+                ..Default::default()
+            },
+            request_spacing: None,
+            reply_spacing: None,
+            valid_reply_spacing: None,
+            preview_limit: 1,
+            preview: vec![pcap_inspect::Preview {
+                packet_index: 1,
+                timestamp_unix_ns: 100,
+                sequence: 8,
+                input_wkc: 1,
+                al_wkc: 1,
+                al_status: 0x14,
+                al_code: 0x1d,
+                valid_safeop: false,
+                payload_hex: "2A".into(),
+                values: vec![pcap_inspect::Value {
+                    field: "Authored value".into(),
+                    source: ethercat_workbench::model::Source::Manual,
+                    value: Some("42".into()),
+                }],
+            }],
+            notes: vec!["Authored file evidence; hardware validity is unknown.".into()],
+        };
+        let text = text_from_layout(|ui| show_pcap(ui, &report));
+        for expected in [
+            "2 saved packets",
+            "0 valid SAFEOP",
+            "all spacing summaries are unavailable",
+            "invalid input quality",
+            "Decoded bytes below",
+            "Authored value",
+            "42",
+            "2A",
+            "Frozen profile",
+            "Recorded capture spacing in nanoseconds",
+            "hardware validity is unknown",
+        ] {
+            assert!(
+                text.contains(expected),
+                "missing {expected:?} from layout: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn pcap_editor_layout_retains_bus_exclusion_and_invalid_station_guidance() {
+        let mut panel = Panel {
+            station: "0x10000".into(),
+            ..Default::default()
+        };
+        let profile = Profile::default();
+        let text = text_from_layout(|ui| panel.draw(ui, true, &profile));
+        assert!(!panel.is_running());
+        for expected in [
+            "Stop the active bus",
+            "frozen copy",
+            "Station must be 1–65534",
+            "PCAPNG and VLAN decoding are unsupported",
+            "Inspect PCAP with current profile",
+        ] {
+            assert!(
+                text.contains(expected),
+                "missing {expected:?} from layout: {text}"
+            );
+        }
+    }
 }

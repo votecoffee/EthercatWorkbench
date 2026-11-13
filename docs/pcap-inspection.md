@@ -1,6 +1,6 @@
 # Offline Ethernet capture inspection
 
-Version 0.14 adds a headless inspector for saved **classic Ethernet PCAP 2.4** files. It reads a bounded file using Rust file I/O, without loading Npcap, opening a NIC or transmitting packets. The GUI's existing offline hex decoder remains available; PCAP inspection currently uses the CLI.
+Saved **classic Ethernet PCAP 2.4** files can be inspected through the CLI (since 0.14) and the desktop saved-file review panel (since 0.15). The inspector reads a bounded file using Rust file I/O, without loading Npcap, opening a NIC or transmitting packets. The desktop runs the same inspector on its cancellable file worker and retains a frozen copy of the current commissioning profile. See [desktop instructions](desktop-review.md#inspect-ethernet-pcap) for inputs, quality/timing views and export.
 
 ```powershell
 .\ethercat-workbench-cli.exe inspect-pcap .local/bench.json .local/bench.pcap --station 0x1000 --preview 16 --out .local/inspection.json
@@ -34,4 +34,6 @@ Capture timestamps use the clock and placement of the capture tool. The file doe
 - A packet whose captured length is smaller than its declared original length is counted as snapshot-truncated and never decoded, even if its available bytes include the PDO. A physically truncated record or partial record header rejects the file.
 - `--preview` is 0–64, default 16. All recognized frames contribute to counts and available spacing summaries; only the first requested number of returned frames retain payloads. Field names are bounded to 16 KiB combined for this report. There is no decoded CSV export or conversion into live/replay runs.
 
-The verification workflow generates all binary PCAP fixtures under ignored `.local/`. No vendor capture is committed. Coverage is authored-file evidence; inspection of a selected physical device's capture remains pending.
+The desktop checks cancellation between 64 KiB file reads, packet records and 64 KiB raw-file hash chunks, and before publishing a result. A blocking file-system call, profile validation/serialization or one packet decode may delay cancellation. A cancelled job exports no partial result, and a success that finishes before cancellation is polled is discarded. The CLI retains its synchronous interface and the same JSON schema.
+
+The verification workflow generates all binary PCAP fixtures under ignored `.local/`. No vendor capture is committed. Coverage includes the desktop worker, frozen settings, cancellation, new-file exports and pure egui layouts with no native window or desktop input. Inspection of a selected physical device's capture and native GUI interaction remain pending.

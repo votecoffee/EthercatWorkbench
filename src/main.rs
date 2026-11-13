@@ -740,8 +740,11 @@ impl eframe::App for App {
                         });
                 });
                 egui::CollapsingHeader::new("4  Saved run review").show(ui, |ui| {
-                    self.review
-                        .draw(ui, self.session.is_some() || self.scan.is_some())
+                    self.review.draw(
+                        ui,
+                        self.session.is_some() || self.scan.is_some(),
+                        &self.profile,
+                    )
                 });
             });
         });

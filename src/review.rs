@@ -1,5 +1,5 @@
 //! Background saved-file review, shared with the desktop without owning any bus state.
-use crate::{benchmark, capture_audit};
+use crate::{benchmark, capture_audit, model::Profile, pcap_inspect};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{
@@ -29,12 +29,30 @@ pub struct Input {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Task {
     Audit(Input),
-    Compare { inputs: Vec<Input>, audit_csv: bool },
+    Compare {
+        inputs: Vec<Input>,
+        audit_csv: bool,
+    },
+    InspectPcap {
+        file: PathBuf,
+        profile: Box<Profile>,
+        station: u16,
+        preview_limit: usize,
+    },
 }
 
 impl Task {
     pub fn validate(&self) -> Result<()> {
         let (inputs, csv) = match self {
+            Self::InspectPcap {
+                file,
+                profile,
+                station,
+                preview_limit,
+            } => {
+                ensure!(!file.as_os_str().is_empty(), "enter a PCAP file path");
+                return pcap_inspect::validate_settings(profile, *station, *preview_limit);
+            }
             Self::Audit(input) => (std::slice::from_ref(input), true),
             Self::Compare { inputs, audit_csv } => {
                 ensure!(
@@ -66,6 +84,18 @@ impl Task {
         self.validate()?;
         check_cancel(Some(stop))?;
         let outcome = match self {
+            Self::InspectPcap {
+                file,
+                profile,
+                station,
+                preview_limit,
+            } => Outcome::Pcap(Box::new(pcap_inspect::inspect_cancelable(
+                file,
+                profile,
+                *station,
+                *preview_limit,
+                stop,
+            )?)),
             Self::Audit(input) => Outcome::Audit(Box::new(capture_audit::verify_cancelable(
                 &input.report,
                 input.csv.as_deref().context("CSV base missing")?,
@@ -94,6 +124,7 @@ impl Task {
 pub enum Outcome {
     Audit(Box<capture_audit::Audit>),
     Comparison(Box<benchmark::Comparison>),
+    Pcap(Box<pcap_inspect::Report>),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -318,6 +349,44 @@ mod tests {
                 csv: Some(self.0.join("capture.csv")),
             })
         }
+
+        fn pcap_task(&self) -> Task {
+            let fixture: serde_json::Value =
+                serde_json::from_str(include_str!("../samples/synthetic-replay.json")).unwrap();
+            let exchanges = fixture["exchanges"].as_array().unwrap();
+            let records = [
+                exchanges[0]["request_hex"].as_str().unwrap(),
+                exchanges[0]["received_hex"][0].as_str().unwrap(),
+                exchanges[2]["received_hex"][0].as_str().unwrap(),
+                exchanges[3]["received_hex"][0].as_str().unwrap(),
+            ];
+            let mut bytes = vec![
+                0xd4, 0xc3, 0xb2, 0xa1, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 0, 1, 0,
+                0, 0,
+            ];
+            for (index, raw) in records.iter().enumerate() {
+                let packet = hex::decode(raw).unwrap();
+                for number in [
+                    1_700_000_000,
+                    index as u32 * 1000,
+                    packet.len() as u32,
+                    packet.len() as u32,
+                ] {
+                    bytes.extend(number.to_le_bytes());
+                }
+                bytes.extend(packet);
+            }
+            let file = self.0.join("capture.pcap");
+            std::fs::write(&file, bytes).unwrap();
+            Task::InspectPcap {
+                file,
+                profile: Box::new(
+                    serde_json::from_str(include_str!("../samples/synthetic.json")).unwrap(),
+                ),
+                station: 0x1000,
+                preview_limit: 16,
+            }
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -329,6 +398,8 @@ mod tests {
                 "trial-1.json",
                 "trial-0.csv",
                 "trial-1.csv",
+                "capture.pcap",
+                "pcap-result.json",
             ] {
                 let _ = std::fs::remove_file(self.0.join(name));
             }
@@ -388,6 +459,120 @@ mod tests {
                 .to_string()
                 .contains("cancelled")
         );
+    }
+
+    #[test]
+    fn pcap_job_freezes_the_profile_and_exports_the_same_schema_as_the_cli() {
+        let fixture = Fixture::new();
+        let mut edited = fixture.pcap_task();
+        let original = edited.clone();
+        let mut controller = Controller::default();
+        controller.start(edited.clone()).unwrap();
+        if let Task::InspectPcap {
+            file,
+            profile,
+            station,
+            preview_limit,
+        } = &mut edited
+        {
+            *file = "different.pcap".into();
+            profile.name = "Later edits".into();
+            profile.tx[0].name = "Different field".into();
+            *station = 42;
+            *preview_limit = 0;
+        }
+        finish(&mut controller);
+        assert_eq!(controller.state(), State::Complete);
+        let completed = controller.completed().unwrap();
+        assert_eq!(completed.task, original);
+        assert_ne!(completed.task, edited);
+        let Outcome::Pcap(report) = &completed.outcome else {
+            panic!("expected PCAP")
+        };
+        assert_eq!(report.counts.requests, 1);
+        assert_eq!(report.counts.replies, 3);
+        assert_eq!(report.counts.valid_safeop_replies, 1);
+        assert_eq!(report.counts.wkc_mismatches, 1);
+        assert_eq!(report.counts.al_mismatches, 1);
+        assert_eq!(report.preview[0].values[0].value.as_deref(), Some("4"));
+        assert_eq!(report.preview[0].values[0].field, "Counter");
+        assert_eq!(report.profile.name, "Synthetic fixture");
+        let Task::InspectPcap {
+            file,
+            profile,
+            station,
+            preview_limit,
+        } = &original
+        else {
+            unreachable!()
+        };
+        let cli = pcap_inspect::inspect(file, profile, *station, *preview_limit).unwrap();
+        assert_eq!(
+            serde_json::to_value(&completed.outcome).unwrap(),
+            serde_json::to_value(cli).unwrap()
+        );
+        let source = std::fs::read(file).unwrap();
+        let output = fixture.0.join("pcap-result.json");
+        controller.save_new(&output).unwrap();
+        let saved = std::fs::read(&output).unwrap();
+        assert!(saved.ends_with(b"\n") && !saved.starts_with(&[0xef, 0xbb, 0xbf]));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&saved).unwrap(),
+            serde_json::to_value(&completed.outcome).unwrap()
+        );
+        assert!(controller.save_new(&output).is_err());
+        assert_eq!(std::fs::read(output).unwrap(), saved);
+        assert_eq!(std::fs::read(file).unwrap(), source);
+    }
+
+    #[test]
+    fn validates_pcap_jobs_before_replacing_a_completed_result() {
+        let fixture = Fixture::new();
+        let original = fixture.pcap_task();
+        let mut controller = Controller::default();
+        controller.start(original.clone()).unwrap();
+        finish(&mut controller);
+        for invalid in 0..4 {
+            let mut task = original.clone();
+            if let Task::InspectPcap {
+                file,
+                profile,
+                station,
+                preview_limit,
+            } = &mut task
+            {
+                match invalid {
+                    0 => *file = PathBuf::new(),
+                    1 => profile.tx_bytes = 0,
+                    2 => *station = 0xffff,
+                    _ => *preview_limit = 65,
+                }
+            }
+            assert!(controller.start(task).is_err());
+            assert_eq!(controller.state(), State::Complete);
+            assert_eq!(controller.completed().unwrap().task, original);
+        }
+    }
+
+    #[test]
+    fn a_cancelled_pcap_job_publishes_no_partial_or_late_result() {
+        let fixture = Fixture::new();
+        let task = fixture.pcap_task();
+        let stop = AtomicBool::new(true);
+        assert!(
+            task.execute(&stop)
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        let mut controller = Controller::default();
+        controller.start(task).unwrap();
+        controller.cancel();
+        finish(&mut controller);
+        assert_eq!(controller.state(), State::Cancelled);
+        assert!(controller.completed().is_none() && controller.error().is_none());
+        let output = fixture.0.join("pcap-result.json");
+        assert!(controller.save_new(&output).is_err() && !output.exists());
     }
 
     #[test]

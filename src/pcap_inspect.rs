@@ -6,7 +6,8 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use hdrhistogram::Histogram;
 use serde::Serialize;
-use std::{fs::File, io::Read, path::Path};
+use sha2::{Digest, Sha256};
+use std::{fs::File, io::Read, path::Path, sync::atomic::AtomicBool};
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PACKETS: u64 = 1_000_000;
@@ -128,14 +129,54 @@ pub fn inspect(
     station: u16,
     preview_limit: usize,
 ) -> Result<Report> {
+    inspect_with_stop(path, profile, station, preview_limit, None)
+}
+
+pub fn inspect_cancelable(
+    path: &Path,
+    profile: &Profile,
+    station: u16,
+    preview_limit: usize,
+    stop: &AtomicBool,
+) -> Result<Report> {
+    inspect_with_stop(path, profile, station, preview_limit, Some(stop))
+}
+
+fn read_bytes(mut reader: impl Read, stop: Option<&AtomicBool>) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 65_536];
+    loop {
+        crate::review::check_cancel(stop)?;
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        ensure!(
+            bytes.len() + count <= MAX_BYTES as usize,
+            "PCAP exceeds 64 MiB"
+        );
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+    crate::review::check_cancel(stop)?;
+    Ok(bytes)
+}
+
+fn inspect_with_stop(
+    path: &Path,
+    profile: &Profile,
+    station: u16,
+    preview_limit: usize,
+    stop: Option<&AtomicBool>,
+) -> Result<Report> {
+    crate::review::check_cancel(stop)?;
+    validate_settings(profile, station, preview_limit)?;
     let file = File::open(path).with_context(|| format!("open PCAP {}", path.display()))?;
     let before = file.metadata()?;
     ensure!(
         before.is_file() && before.len() <= MAX_BYTES,
         "PCAP must be a regular file of at most 64 MiB"
     );
-    let mut bytes = Vec::new();
-    (&file).take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+    let bytes = read_bytes(&file, stop)?;
     let after = file.metadata()?;
     ensure!(
         bytes.len() as u64 == before.len()
@@ -143,12 +184,17 @@ pub fn inspect(
             && before.modified()? == after.modified()?,
         "PCAP changed while reading"
     );
-    let mut report = parse(&bytes, profile, station, preview_limit)?;
+    let mut report = parse_with_stop(&bytes, profile, station, preview_limit, stop)?;
     report.file = path.display().to_string();
+    crate::review::check_cancel(stop)?;
     Ok(report)
 }
 
-fn parse(bytes: &[u8], profile: &Profile, station: u16, preview_limit: usize) -> Result<Report> {
+pub(crate) fn validate_settings(
+    profile: &Profile,
+    station: u16,
+    preview_limit: usize,
+) -> Result<()> {
     profile.validate()?;
     ensure!(
         profile.tx_bytes > 0,
@@ -163,6 +209,18 @@ fn parse(bytes: &[u8], profile: &Profile, station: u16, preview_limit: usize) ->
         profile.tx.iter().map(|f| f.name.len()).sum::<usize>() <= 16_384,
         "PCAP preview field names exceed 16 KiB"
     );
+    Ok(())
+}
+
+fn parse_with_stop(
+    bytes: &[u8],
+    profile: &Profile,
+    station: u16,
+    preview_limit: usize,
+    stop: Option<&AtomicBool>,
+) -> Result<Report> {
+    crate::review::check_cancel(stop)?;
+    validate_settings(profile, station, preview_limit)?;
     ensure!(
         bytes.len() >= 24 && bytes.len() as u64 <= MAX_BYTES,
         "PCAP header truncated or file exceeds 64 MiB"
@@ -216,6 +274,7 @@ fn parse(bytes: &[u8], profile: &Profile, station: u16, preview_limit: usize) ->
     let mut previous = None;
     let mut offset = 24;
     while offset < bytes.len() {
+        crate::review::check_cancel(stop)?;
         ensure!(
             counts.packets < MAX_PACKETS,
             "PCAP exceeds one million packets"
@@ -332,14 +391,21 @@ fn parse(bytes: &[u8], profile: &Profile, station: u16, preview_limit: usize) ->
     if counts.replies > preview.len() as u64 {
         notes.push("Payload preview is limited; all recognized frames contributed to counts and available spacing summaries.".into());
     }
+    let mut hash = Sha256::new();
+    for chunk in bytes.chunks(65_536) {
+        crate::review::check_cancel(stop)?;
+        hash.update(chunk);
+    }
+    let profile_sha256 = crate::benchmark::hash(&serde_json::to_vec(profile)?);
+    crate::review::check_cancel(stop)?;
     Ok(Report {
         schema: 1,
         app_version: env!("CARGO_PKG_VERSION").into(),
         file: String::new(),
         file_bytes: bytes.len() as u64,
-        file_sha256: crate::benchmark::hash(bytes),
+        file_sha256: hex::encode(hash.finalize()),
         profile: profile.clone(),
-        profile_sha256: crate::benchmark::hash(&serde_json::to_vec(profile)?),
+        profile_sha256,
         station_address: station,
         expected_input_wkc: 1,
         timestamp_resolution: if nano { "nanoseconds" } else { "microseconds" }.into(),
@@ -366,6 +432,58 @@ fn parse(bytes: &[u8], profile: &Profile, station: u16, preview_limit: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(
+        bytes: &[u8],
+        profile: &Profile,
+        station: u16,
+        preview_limit: usize,
+    ) -> Result<Report> {
+        parse_with_stop(bytes, profile, station, preview_limit, None)
+    }
+
+    #[test]
+    fn cancellation_stops_chunked_reads_and_prevents_parsing_or_file_access() {
+        use std::sync::atomic::Ordering::Relaxed;
+        struct Reader<'a> {
+            stop: &'a AtomicBool,
+            reads: usize,
+        }
+        impl Read for Reader<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                assert_eq!(self.reads, 1, "cancellation must prevent the next read");
+                bytes.fill(0);
+                self.stop.store(true, Relaxed);
+                Ok(bytes.len())
+            }
+        }
+        let stop = AtomicBool::new(false);
+        assert!(
+            read_bytes(
+                Reader {
+                    stop: &stop,
+                    reads: 0
+                },
+                Some(&stop)
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+        );
+        assert!(
+            parse_with_stop(&[], &profile(), 0x1000, 16, Some(&stop))
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        assert!(
+            inspect_cancelable(Path::new("missing.pcap"), &profile(), 0x1000, 16, &stop)
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+    }
 
     fn profile() -> Profile {
         serde_json::from_str(include_str!("../samples/synthetic.json")).unwrap()

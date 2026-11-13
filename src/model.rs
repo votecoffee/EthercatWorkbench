@@ -223,7 +223,7 @@ pub enum LogMode {
     Change,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
     pub version: u32,
