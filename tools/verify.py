@@ -189,8 +189,11 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
         assert esc["dc_enable_requests"] == esc["dc_clock_distribution"] == 0
         if model != "sii":
             assert sync["tx_sync_type"]["value"] == sync["rx_sync_type"]["value"] == 0
+            assert sync["coe_cycle"]["tx"] == dict(object_index=0x1c33, cycle_ns=dict(value=2_000_000, unavailable=None), minimum_cycle_ns=dict(value=0, unavailable=None))
+            assert sync["coe_cycle"]["rx"] == dict(object_index=0x1c32, cycle_ns=dict(value=1_000_000, unavailable=None), minimum_cycle_ns=dict(value=250_000, unavailable=None))
         else:
             assert sync["tx_sync_type"] is sync["rx_sync_type"] is None
+            assert sync.get("coe_cycle") is None
         assert esc["sync_manager_writes"] == (20 if model != "sii" else 18) and esc["fmmu_writes"] == 18
         assert esc["logical_reads"] == report["cycles"]
         assert esc["coe_downloads"] == esc["logical_writes"] == esc["physical_output_writes"] == esc["op_requests"] == 0
@@ -1454,6 +1457,57 @@ def verify_http(cli, destination):
     return reports
 
 
+def verify_coe_cycle(cli, destination):
+    """Setup-only cycle diagnostics; optional aborts differ from malformed values."""
+    expected = dict(tx=dict(object_index=0x1c33, cycle_ns=dict(value=2_000_000, unavailable=None), minimum_cycle_ns=dict(value=0, unavailable=None)),
+                    rx=dict(object_index=0x1c32, cycle_ns=dict(value=1_000_000, unavailable=None), minimum_cycle_ns=dict(value=250_000, unavailable=None)))
+    results = []
+    for model, sample in [("coe", "virtual.json"), ("coe-normal", "virtual-normal.json"), ("coe-segmented", "virtual-segmented.json")]:
+        for fault in [None, "sync-timing-unavailable", "sync-timing-size"]:
+            base = destination / f"{model}-{fault or 'complete'}"
+            flags = ["--virtual-fault", fault] if fault else []
+            good = fault != "sync-timing-size"
+            r = cli_call(cli, "run", ROOT / "samples" / sample, "--backend", "virtual", "--virtual-model", model,
+                         *flags, "--seconds", 1, "--csv", base.with_suffix(".csv"), "--report", base.with_suffix(".json"), success=good)
+            # Failed setup still preserves a structured receipt at its reserved report path.
+            if not good:
+                r = json.loads(base.with_suffix(".json").read_bytes())
+            assert r["stopped_al"] == [1, 0]
+            values = r["synchronization"]["coe_cycle"]
+            assert r["requested_cycle_us"] == 1000
+            if not fault:
+                assert values == expected and r["valid"] > 100 and r["error"] is None
+                assert values["tx"]["cycle_ns"]["value"] != r["requested_cycle_us"] * 1000
+                assert "CoE setup ns" in r["device_sync"]
+            elif good:
+                assert r["error"] is None and r["valid"] > 100
+                for direction in ["tx", "rx"]:
+                    for field in ["cycle_ns", "minimum_cycle_ns"]:
+                        assert values[direction][field]["value"] is None
+                        assert "aborted" in values[direction][field]["unavailable"]
+            else:
+                assert r["cycles"] == 0 and r["error"] and r["virtual_esc"]["state_requests"] == [1, 2, 1]
+                assert values["tx"]["cycle_ns"]["value"] is None and values["tx"]["cycle_ns"]["unavailable"]
+            assert all(r["virtual_esc"][k] == 0 for k in ["op_requests", "logical_writes", "physical_output_writes", "coe_downloads", "dc_enable_requests", "dc_clock_distribution"])
+            if good:
+                audit_capture(cli, base.with_suffix(".json"), base.with_suffix(".csv"), r)
+            results.append(r)
+    # Longer acquisition must not cause more mailbox uploads; snapshots are setup observations.
+    extended = cli_call(cli, "run", ROOT / "samples/virtual.json", "--backend", "virtual", "--seconds", 2)
+    assert extended["virtual_esc"]["coe_uploads"] == results[0]["virtual_esc"]["coe_uploads"]
+    assert extended["synchronization"]["coe_cycle"] == expected
+    # Old saved timing metadata remains usable without inventing current cycle values.
+    path = destination / "older-no-coe-cycle.json"
+    staged = destination / "staged-mode.json"
+    cli_call(cli, "esi-import", ROOT / "samples/mode-sync-managers.esi.xml", "--device", 0, "--dc-mode", 0, "--out", staged)
+    # The authored mode fixture has DC identity 3; use the matching identity from a DC model.
+    dc = cli_call(cli, "run", ROOT / "samples/virtual-dc.json", "--backend", "virtual", "--virtual-model", "coe-dc", "--seconds", 1)
+    dc["synchronization"].pop("coe_cycle"); path.write_text(json.dumps(dc), encoding="utf-8")
+    reviewed = cli_call(cli, "review-sync", staged, "--readback", path)
+    assert reviewed["applied"] is False and all(s["sync_type"]["state"] == "matched" for s in reviewed["sync_managers"])
+    (destination / "coe-cycle-checks.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -1467,6 +1521,9 @@ def main():
     assert ".local" in destination.parts, "keep synthetic captures under .local"
     destination.mkdir(parents=True, exist_ok=False)
     cli = bin_dir / "ethercat-workbench-cli.exe"
+    cycle_destination = destination / "coe-cycle"
+    cycle_destination.mkdir()
+    verify_coe_cycle(cli, cycle_destination)
     shared_destination = destination / "shared-memory"
     shared_destination.mkdir()
     verify_shared_memory(cli, ROOT, shared_destination, cli_call)

@@ -50,6 +50,8 @@ For saved PCAPNG containing several capture interfaces, use `inspect-pcap .local
 
 ## Interpret timing, quality and losses
 
+Optional `synchronization.coe_cycle` values are setup-only CoE cycle/minimum snapshots, in nanoseconds, with exact object indexes and explicit unavailable reasons. They are not refreshed by cyclic I/O and do not automatically change host timing. The [timing guide](esi-sync-review.md#coe-cycle-and-minimum-cycle-snapshots) covers zero, missing values, optional aborts and malformed-reply cleanup.
+
 The requested host period (1,000 us is a bench target), configured/discovered synchronization/DC settings, host send/receive spacing and saved capture timestamps are different evidence. Deadline scheduling skips elapsed slots; stock relative scheduling rebases its next dispatch. Neither gives Windows hard real-time guarantees.
 
 The logger can record every valid exchange, including unchanged values, or selected-bit changes. Its bounded preallocated queue and batched writer are separate from cyclic I/O. Rows retain UTC capture start, near-receive monotonic elapsed microseconds, sample index, connection generation and cycle index. Compare expected/actual WKC, AL status/code, reply timeouts, transport errors, missed deadlines and logger overruns separately. An input-loss policy stops sustained unusable input and performs the approved cleanup; there is no automatic reinitialization or reconnect.

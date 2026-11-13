@@ -63,6 +63,8 @@ pub enum VirtualFault {
     SegmentAbort,
     MailboxCounter,
     SegmentInitialData,
+    SyncTimingUnavailable,
+    SyncTimingSize,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -511,8 +513,18 @@ impl VirtualEsc {
             let data = if self.fault == VirtualFault::MailboxAbort
                 || (self.fault == VirtualFault::ReadbackUnavailable
                     && self.process_configuration_valid())
+                || (self.fault == VirtualFault::SyncTimingUnavailable
+                    && self.process_configuration_valid()
+                    && matches!(index, 0x1c32 | 0x1c33)
+                    && matches!(sub, 2 | 5))
             {
                 None
+            } else if self.fault == VirtualFault::SyncTimingSize
+                && self.process_configuration_valid()
+                && index == 0x1c33
+                && sub == 2
+            {
+                Some(vec![0, 0])
             } else if index == 0x1008 && sub == 0 {
                 Some(b"Workbench CoE transfer fixture".to_vec())
             } else if index == 0x2000 && sub == 0 {
@@ -627,6 +639,10 @@ impl VirtualEsc {
             (0x1a00, 0) => (4, 1),
             (0x1a00, 1..=4) => (entries[usize::from(sub - 1)], 4),
             (0x1c32 | 0x1c33, 1) => (0, 2),
+            (0x1c32, 2) => (1_000_000, 4),
+            (0x1c33, 2) => (2_000_000, 4),
+            (0x1c32, 5) => (250_000, 4),
+            (0x1c33, 5) => (0, 4),
             _ => return None,
         })
     }

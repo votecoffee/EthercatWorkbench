@@ -556,6 +556,25 @@ fn safeop_on(
                             .await,
                     ));
                 }
+                let mut cycles = crate::sync::CoeCycleReadback::default();
+                for (bytes, index, target) in [
+                    (profile.tx_bytes, 0x1c33, &mut cycles.tx),
+                    (profile.rx_bytes, 0x1c32, &mut cycles.rx),
+                ] {
+                    if bytes != 0 {
+                        let client = uploader.as_mut().expect("CoE uploader");
+                        *target = Some(crate::sync::CoeCycleParameters {
+                            object_index: index,
+                            cycle_ns: RegisterRead::from_result(
+                                client.u32(&sd, &main, stop, index, 2).await,
+                            ),
+                            minimum_cycle_ns: RegisterRead::from_result(
+                                client.u32(&sd, &main, stop, index, 5).await,
+                            ),
+                        });
+                    }
+                }
+                sync.coe_cycle = Some(cycles);
             }
             if sd.dc_support().any() {
                 sync.dc.system_time_offset_ns = Some(RegisterRead::from_result(
@@ -567,6 +586,8 @@ fn safeop_on(
             }
             Ok::<_, anyhow::Error>(sync)
         })?;
+        // Retain partial setup observations if a later uploader-integrity check fails.
+        report.synchronization = Some(sync.clone());
         if let Some(client) = &mut uploader {
             let name = port.drive(
                 &mut tx,
@@ -598,6 +619,8 @@ fn safeop_on(
         } else {
             "Device sync type unavailable (CoE absent)".into()
         };
+        report.device_sync.push_str(" / ");
+        report.device_sync.push_str(&sync.coe_cycle_summary());
         report.dc_sync = sync.dc.summary();
         report.synchronization = Some(sync);
         let readback = port.drive(&mut tx, &mut rx, Some(stop), async {

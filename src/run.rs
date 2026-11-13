@@ -788,6 +788,100 @@ pub fn spawn(
 mod cycle_tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn coe_cycle_setup_observations_preserve_optional_failures_and_reject_bad_primitive_sizes() {
+        use crate::virtual_esc::{VirtualFault, VirtualModel};
+        for (model, fault) in [
+            (VirtualModel::Coe, VirtualFault::None),
+            (VirtualModel::CoeNormal, VirtualFault::None),
+            (VirtualModel::CoeSegmented, VirtualFault::None),
+            (VirtualModel::Sii, VirtualFault::None),
+            (VirtualModel::Coe, VirtualFault::SyncTimingUnavailable),
+            (VirtualModel::Coe, VirtualFault::SyncTimingSize),
+        ] {
+            let profile: Profile = serde_json::from_str(match model {
+                VirtualModel::Sii => include_str!("../samples/virtual-sii.json"),
+                VirtualModel::CoeNormal => include_str!("../samples/virtual-normal.json"),
+                VirtualModel::CoeSegmented => include_str!("../samples/virtual-segmented.json"),
+                _ => include_str!("../samples/virtual.json"),
+            })
+            .unwrap();
+            let report = run(
+                profile,
+                RunOptions {
+                    frontend: crate::benchmark::Frontend::Cli,
+                    mode: Mode::Virtual { model, fault },
+                    duration: Duration::from_millis(50),
+                    csv: None,
+                    generation: 1,
+                },
+                &AtomicBool::new(false),
+                &Mutex::new(Snapshot::default()),
+            );
+            assert_eq!(
+                report.stopped_al,
+                Some((1, 0)),
+                "{model:?} {fault:?}: {:?}",
+                report.error
+            );
+            let sync = report.synchronization.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "{model:?} {fault:?}: setup observations missing: {:?}",
+                    report.error
+                )
+            });
+            if model == VirtualModel::Sii {
+                assert!(sync.coe_cycle.is_none());
+            } else {
+                let cycle = sync.coe_cycle.as_ref().unwrap();
+                let tx = cycle.tx.as_ref().unwrap();
+                let rx = cycle.rx.as_ref().unwrap();
+                assert_eq!((tx.object_index, rx.object_index), (0x1c33, 0x1c32));
+                if fault == VirtualFault::None {
+                    assert_eq!(
+                        (
+                            tx.cycle_ns.value,
+                            tx.minimum_cycle_ns.value,
+                            rx.cycle_ns.value,
+                            rx.minimum_cycle_ns.value
+                        ),
+                        (Some(2_000_000), Some(0), Some(1_000_000), Some(250_000))
+                    );
+                } else {
+                    assert!(tx.cycle_ns.value.is_none() && tx.cycle_ns.unavailable.is_some());
+                }
+            }
+            if fault == VirtualFault::SyncTimingSize {
+                assert!(report.error.is_some());
+                assert_eq!(report.cycles, 0);
+                assert_eq!(
+                    report.virtual_esc.as_ref().unwrap().state_requests,
+                    vec![1, 2, 1]
+                );
+            } else {
+                assert!(
+                    report.error.is_none(),
+                    "{model:?} {fault:?}: {:?}",
+                    report.error
+                );
+                assert!(report.valid > 0);
+            }
+            let audit = report.virtual_esc.as_ref().unwrap();
+            assert_eq!(
+                (
+                    audit.op_requests,
+                    audit.coe_downloads,
+                    audit.logical_writes,
+                    audit.physical_output_writes,
+                    audit.dc_enable_requests,
+                    audit.dc_clock_distribution
+                ),
+                (0, 0, 0, 0, 0, 0)
+            );
+        }
+    }
+
     #[test]
     fn occupied_http_port_fails_before_virtual_device_setup() {
         let occupied = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
