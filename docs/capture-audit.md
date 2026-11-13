@@ -9,6 +9,8 @@
 
 Pass the original CSV base path, including `.csv`, even when rotation produced only `trial.0001.csv`, `trial.0002.csv`, and so on. With rotation disabled, the base file is read directly. Parts are derived from the report's rotation setting and part count. Every declared part is required, and its row count must match the rotation and written totals. Files outside that declared sequence are not inspected or removed. A header-only capture with zero valid samples can pass structural auditing; it does not establish usable input.
 
+The desktop **4 Saved run review** panel provides the same audit through **Audit this capture**, with background file analysis and a new-file export. See [desktop review](desktop-review.md).
+
 ## Checked evidence
 
 - The report's profile hashes, CSV-enabled setting, selected fields, timing settings and exchange counters must be consistent. Selected, written and overrun counts must balance, and every-valid mode must have selected all reported valid exchanges.

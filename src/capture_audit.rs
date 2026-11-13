@@ -1,6 +1,6 @@
 //! Read-only audit of a completed capture's declared CSV parts.
 use crate::{
-    benchmark::{RunContext, hash, read_report_bytes},
+    benchmark::{RunContext, hash, read_report_bytes_with_stop},
     capture::{CaptureStats, METADATA, part_path},
     model::{Field, Kind, LogMode, Scheduler},
 };
@@ -11,6 +11,7 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
 const MAX_RECORD: u64 = 1024 * 1024;
@@ -84,14 +85,18 @@ pub struct Audit {
     pub warnings: Vec<String>,
 }
 
-struct Hashed {
+struct Hashed<'a> {
     file: File,
     digest: Sha256,
     bytes: u64,
     limit: u64,
+    stop: Option<&'a AtomicBool>,
 }
-impl Read for Hashed {
+impl Read for Hashed<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.stop.is_some_and(|stop| stop.load(Relaxed)) {
+            return Err(io::Error::other("saved-file review cancelled"));
+        }
         let n = self.file.read(buf)?;
         self.bytes += n as u64;
         if self.bytes > self.limit {
@@ -280,12 +285,25 @@ impl Cursor {
 }
 
 pub fn verify(report: &Path, base: &Path) -> Result<Audit> {
+    verify_with_stop(report, base, None)
+}
+
+pub(crate) fn verify_cancelable(report: &Path, base: &Path, stop: &AtomicBool) -> Result<Audit> {
+    verify_with_stop(report, base, Some(stop))
+}
+
+pub(crate) fn verify_with_stop(
+    report: &Path,
+    base: &Path,
+    stop: Option<&AtomicBool>,
+) -> Result<Audit> {
+    crate::review::check_cancel(stop)?;
     ensure!(
         base.extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("csv")),
         "CSV base must end in .csv"
     );
-    let report_bytes = read_report_bytes(report)?;
+    let report_bytes = read_report_bytes_with_stop(report, stop)?;
     let saved: SavedCapture = serde_json::from_slice(
         report_bytes
             .strip_prefix(b"\xef\xbb\xbf")
@@ -382,6 +400,7 @@ pub fn verify(report: &Path, base: &Path) -> Result<Audit> {
         fields: &fields,
         header: &header,
         max_cycle,
+        stop,
     };
     let mut total_bytes = 0;
     let mut cursor = Cursor::default();
@@ -431,6 +450,7 @@ pub fn verify(report: &Path, base: &Path) -> Result<Audit> {
     if cursor.non_finite > 0 {
         warnings.push("Capture contains non-finite floating point values; NaN text cannot retain NaN payload bits.".into());
     }
+    crate::review::check_cancel(stop)?;
     Ok(Audit {
         schema: 1,
         auditor_version: env!("CARGO_PKG_VERSION").into(),
@@ -475,6 +495,7 @@ struct Contract<'a> {
     fields: &'a [&'a Field],
     header: &'a [&'a str],
     max_cycle: u64,
+    stop: Option<&'a AtomicBool>,
 }
 
 fn inspect(
@@ -484,6 +505,7 @@ fn inspect(
     limit: u64,
     cursor: &mut Cursor,
 ) -> Result<Part> {
+    crate::review::check_cancel(contract.stop)?;
     let file = File::open(path)?;
     let initial = file.metadata()?;
     ensure!(
@@ -495,6 +517,7 @@ fn inspect(
         digest: Sha256::new(),
         bytes: 0,
         limit,
+        stop: contract.stop,
     };
     let mut reader = BufReader::new(hashed);
     let mut line = Vec::new();
@@ -503,6 +526,7 @@ fn inspect(
     let start_rows = cursor.rows;
     let mut is_header = true;
     loop {
+        crate::review::check_cancel(contract.stop)?;
         line.clear();
         if reader
             .by_ref()

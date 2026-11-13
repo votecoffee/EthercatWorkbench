@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, fs::File, io::Read, path::PathBuf};
+use std::{collections::HashSet, fs::File, io::Read, path::PathBuf, sync::atomic::AtomicBool};
 
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -370,10 +370,15 @@ pub struct Comparison {
 }
 
 pub fn compare_files(files: &[PathBuf]) -> Result<Comparison> {
+    compare_files_inner(files, None)
+}
+
+fn compare_files_inner(files: &[PathBuf], stop: Option<&AtomicBool>) -> Result<Comparison> {
+    crate::review::check_cancel(stop)?;
     ensure!((2..=32).contains(&files.len()), "select 2–32 saved reports");
     let mut inputs = Vec::new();
     for file in files {
-        let bytes = read_report_bytes(file)?;
+        let bytes = read_report_bytes_with_stop(file, stop)?;
         let report: SavedRun =
             serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
                 .with_context(|| format!("parse report {}", file.display()))?;
@@ -382,31 +387,69 @@ pub fn compare_files(files: &[PathBuf]) -> Result<Comparison> {
             .with_context(|| format!("check report {}", file.display()))?;
         inputs.push((file.clone(), hash(&bytes), report));
     }
-    compare(inputs)
+    crate::review::check_cancel(stop)?;
+    let result = compare(inputs)?;
+    crate::review::check_cancel(stop)?;
+    Ok(result)
 }
 
-pub(crate) fn read_report_bytes(file: &std::path::Path) -> Result<Vec<u8>> {
+pub(crate) fn read_report_bytes_with_stop(
+    file: &std::path::Path,
+    stop: Option<&AtomicBool>,
+) -> Result<Vec<u8>> {
+    crate::review::check_cancel(stop)?;
     let mut bytes = Vec::new();
-    File::open(file)?
-        .take(MAX_REPORT_BYTES + 1)
-        .read_to_end(&mut bytes)?;
+    let mut reader =
+        File::open(file).with_context(|| format!("open saved report {}", file.display()))?;
+    let mut buffer = [0u8; 8192];
+    while bytes.len() as u64 <= MAX_REPORT_BYTES {
+        crate::review::check_cancel(stop)?;
+        let limit = buffer
+            .len()
+            .min((MAX_REPORT_BYTES + 1 - bytes.len() as u64) as usize);
+        let n = reader.read(&mut buffer[..limit])?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..n]);
+    }
     ensure!(
         bytes.len() as u64 <= MAX_REPORT_BYTES,
         "report exceeds 16 MiB: {}",
         file.display()
     );
+    crate::review::check_cancel(stop)?;
     Ok(bytes)
 }
 
 pub fn compare_with_captures(files: &[PathBuf], bases: &[PathBuf]) -> Result<Comparison> {
+    compare_with_captures_inner(files, bases, None)
+}
+
+pub(crate) fn compare_cancelable(
+    files: &[PathBuf],
+    bases: Option<&[PathBuf]>,
+    stop: &AtomicBool,
+) -> Result<Comparison> {
+    match bases {
+        Some(bases) => compare_with_captures_inner(files, bases, Some(stop)),
+        None => compare_files_inner(files, Some(stop)),
+    }
+}
+
+fn compare_with_captures_inner(
+    files: &[PathBuf],
+    bases: &[PathBuf],
+    stop: Option<&AtomicBool>,
+) -> Result<Comparison> {
     ensure!(
         files.len() == bases.len(),
         "provide one --csv base per report, in the same order"
     );
-    let mut result = compare_files(files)?;
+    let mut result = compare_files_inner(files, stop)?;
     let mut audits = Vec::new();
     for ((file, base), trial) in files.iter().zip(bases).zip(&result.trials) {
-        let audit = crate::capture_audit::verify(file, base)?;
+        let audit = crate::capture_audit::verify_with_stop(file, base, stop)?;
         ensure!(
             audit.report_sha256 == trial.sha256,
             "report changed during comparison"
@@ -418,6 +461,7 @@ pub fn compare_with_captures(files: &[PathBuf], bases: &[PathBuf]) -> Result<Com
         .retain(|w| !w.starts_with("Capture counters are checked;"));
     result.warnings.push("CSV structure, typed text and metadata are audited; PDO meaning and original payload bits are not independently verified.".into());
     result.csv_audits = Some(audits);
+    crate::review::check_cancel(stop)?;
     Ok(result)
 }
 

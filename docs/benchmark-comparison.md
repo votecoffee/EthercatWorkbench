@@ -29,6 +29,10 @@ Output retains each trial's input-file hash, UTC anchor, generation, elapsed int
 
 By default the command inspects saved JSON counters and sets `csv_audits` to null. Repeat `--csv BASE` once per report to stream and hash the CSV parts and check their headers, typed text and metadata. The [CSV audit rules](capture-audit.md) describe this additional evidence. Neither mode independently verifies original payload bits or physical field meaning. Input-file hashes bind the result to particular saved bytes. The JSON and hashes are editable evidence, not signed runtime attestation. Results do not select a winner or grant bench acceptance.
 
+## Desktop review
+
+The **4 Saved run review** panel can compare the same reports without the CLI, with optional CSV audits, per-trial timing/loss tables and new-file JSON export. See [desktop review](desktop-review.md) for worker and cancellation behavior.
+
 ## Physical bench procedure
 
 Once the device and NIC are selected, retain the model, revision, serial, ESI hash, NIC/driver, Windows configuration, wiring and the independent method of varying or observing the chosen input in ignored `.local/`. Review the existing approval scope for ESC setup, SAFEOP and INIT before starting a physical run. OP, PDO downloads and live outputs require their separate approval and remain unimplemented.

@@ -93,6 +93,8 @@ Completed reports include a versioned snapshot of the effective profile, applica
 
 Use `verify-capture .local/trial.json .local/trial.csv` to audit a saved capture directly. It streams the declared parts, checks exact headers and typed text, validates timestamps/generation/indexes across rotation, and accounts for logger overruns separately from invalid exchanges. It returns raw-byte hashes and retains failed/cancelled run outcomes. The [CSV audit rules](docs/capture-audit.md) describe the writer dialect, bounds, NaN ambiguity and limits of saved-file evidence.
 
+The desktop's **4 Saved run review** panel runs those audits and comparisons on a separate file worker. Enter report/CSV paths, order trials, inspect per-run timing/loss tables and export the result to a new JSON file. Captured run outcomes and input hashes remain visible. Review jobs are exclusive with bus/discovery starts and support cooperative cancellation; completed results retain their original inputs when editor paths change. [Desktop review instructions](docs/desktop-review.md) describe the controls and evidence limits.
+
 See the [EtherCrab source review](docs/ethercrab-review.md), [verification results](VERIFICATION.md), and [roadmap](ROADMAP.md).
 
 ## Maintainers
@@ -101,7 +103,7 @@ See the [EtherCrab source review](docs/ethercrab-review.md), [verification resul
 
 ## Contributing
 
-Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.11.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.12.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
 
 ## License
 

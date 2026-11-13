@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod gui_review;
+
 use clap::Parser;
 use eframe::egui;
 use ethercat_workbench::{
@@ -79,6 +81,7 @@ struct App {
     report_path: Option<PathBuf>,
     report_save: String,
     deferred_close: bool,
+    review: gui_review::Panel,
 }
 
 impl App {
@@ -112,6 +115,7 @@ impl App {
             report_path: args.report,
             report_save: String::new(),
             deferred_close: false,
+            review: gui_review::Panel::default(),
         };
         if let Some(path) = args.profile {
             app.profile_path = path.to_string_lossy().into_owned();
@@ -134,6 +138,11 @@ impl App {
     }
 
     fn start(&mut self, mode: Mode) {
+        if self.review.is_running() {
+            self.message =
+                "Wait for or cancel the saved-file review before starting the bus".into();
+            return;
+        }
         self.approved = false;
         self.generation += 1;
         let stop = Arc::new(AtomicBool::new(false));
@@ -157,6 +166,7 @@ impl App {
     }
 
     fn refresh(&mut self, ctx: &egui::Context) {
+        self.review.refresh(ctx);
         if self
             .scan
             .as_ref()
@@ -606,6 +616,9 @@ impl eframe::App for App {
             self.auto_start = false;
             self.start(Mode::Simulate { faults: false });
         }
+        if ctx.input(|input| input.viewport().close_requested()) {
+            self.review.cancel();
+        }
         if ctx.input(|input| input.viewport().close_requested())
             && let Some(session) = &self.session
         {
@@ -655,7 +668,7 @@ impl eframe::App for App {
                         }
                     });
                 }
-                ui.add_enabled_ui(self.session.is_none(), |ui| {
+                ui.add_enabled_ui(self.session.is_none() && !self.review.is_running(), |ui| {
                     egui::CollapsingHeader::new("1  Profile and ESI")
                         .default_open(true)
                         .show(ui, |ui| self.profile_controls(ui));
@@ -708,6 +721,10 @@ impl eframe::App for App {
                                 ui.colored_label(egui::Color32::LIGHT_RED, format!("{error:#}"));
                             }
                         });
+                });
+                egui::CollapsingHeader::new("4  Saved run review").show(ui, |ui| {
+                    self.review
+                        .draw(ui, self.session.is_some() || self.scan.is_some())
                 });
             });
         });
