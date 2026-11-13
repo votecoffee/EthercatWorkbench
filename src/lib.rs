@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod capture;
 pub mod esi;
 pub mod health;

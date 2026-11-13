@@ -572,6 +572,101 @@ def verify_pdo_choices(cli, destination):
     assert cli_call(cli, "validate", legacy_path)["esi_pdo_selection"] is None
 
 
+def verify_comparison(cli, destination):
+    profile = ROOT / "samples/synthetic.json"
+    paths, trials = [], []
+    for index, scheduler in enumerate(["deadline", "relative"] * 3):
+        base = destination / f"trial-{index}.csv"
+        path = destination / f"trial-{index}.json"
+        report = cli_call(cli, "run", profile, "--scheduler", scheduler, "--seconds", 1, "--csv", base,
+                          "--report", path)
+        assert json.loads(path.read_text(encoding="utf-8")) == report
+        assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
+        verify_csv(report, base)
+        ctx = report["context"]
+        assert ctx["schema"] == 1 and ctx["frontend"] == "cli" and ctx["csv_enabled"] is True
+        assert ctx["source"] == {"kind": "synthetic", "faults": False}
+        assert ctx["duration_limit_us"] == 1_000_000
+        assert report["cyclic_elapsed_us"] >= 1_000_000 - ctx["profile"]["requested_cycle_us"]
+        raw_profile = json.dumps(ctx["profile"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assert ctx["profile_sha256"] == hashlib.sha256(raw_profile).hexdigest()
+        common = dict(ctx["profile"]); common["scheduler"] = "deadline"
+        assert ctx["comparison_sha256"] == hashlib.sha256(
+            json.dumps(common, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        paths.append(path); trials.append(report)
+    result = cli_call(cli, "compare-runs", *paths)
+    assert len(result["trials"]) == 6 and [g["trials"] for g in result["schedules"]] == [3, 3]
+    assert result["source"] == {"kind": "synthetic", "faults": False}
+    assert "scheduler" not in result["common_profile_settings"]
+    for index, row in enumerate(result["trials"]):
+        original = trials[index]
+        assert row["sha256"] == hashlib.sha256(paths[index].read_bytes()).hexdigest()
+        assert row["send_spacing"] == original["send_spacing"]
+        assert row["receive_spacing"] == original["receive_spacing"]
+        assert row["capture"] == original["capture"] and row["cyclic_elapsed_us"] == original["cyclic_elapsed_us"]
+    for group in result["schedules"]:
+        p99 = sorted(r["receive_spacing"]["p99_us"] for r in trials if r["scheduler"] == group["scheduler"])
+        assert group["receive_p99_us"] == {"min": p99[0], "median": p99[1], "max": p99[2]}
+    assert any("Offline fixture" in w for w in result["warnings"])
+    assert any("CSV bytes" in w for w in result["warnings"])
+    assert not any("fewer than three" in w for w in result["warnings"])
+    (destination / "comparison.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    assert "duplicate report" in cli_call(cli, "compare-runs", paths[0], paths[0], success=False)
+    assert "capture-start order" in cli_call(cli, "compare-runs", paths[1], paths[0], success=False)
+    assert "both deadline and relative" in cli_call(cli, "compare-runs", paths[0], paths[2], success=False)
+    before = paths[0].read_bytes()
+    base = destination / "report-collision.csv"
+    assert "reserve new report" in cli_call(cli, "run", profile, "--seconds", 1, "--csv", base,
+        "--report", paths[0], success=False)
+    assert paths[0].read_bytes() == before and not list(destination.glob("report-collision*.csv"))
+    bom = destination / "utf8-bom.json"
+    bom.write_bytes(b"\xef\xbb\xbf" + paths[1].read_bytes())
+    assert len(cli_call(cli, "compare-runs", paths[0], bom)["trials"]) == 2
+    for mutation, expected in [("legacy", "no versioned run context"), ("profile", "hash mismatch"),
+            ("frontend", "configuration differs"), ("faults", "configuration differs"),
+            ("cancelled", "cancelled"), ("counter", "capture counters"), ("csv", "CSV logging"),
+            ("spacing", "spacing measurements"), ("replay", "playback timing"), ("schema", "unsupported run-context")]:
+        changed = json.loads(json.dumps(trials[1]))
+        if mutation == "legacy": changed.pop("context")
+        elif mutation == "profile": changed["context"]["profile"]["tx"][0]["name"] += " changed"
+        elif mutation == "frontend": changed["context"]["frontend"] = "gui"
+        elif mutation == "faults": changed["context"]["source"]["faults"] = True
+        elif mutation == "cancelled": changed["cancelled"] = True
+        elif mutation == "counter": changed["capture"]["written"] -= 1
+        elif mutation == "csv": changed["context"]["csv_enabled"] = False
+        elif mutation == "spacing": changed["receive_spacing"]["count"] -= 1
+        elif mutation == "schema": changed["context"]["schema"] = 2
+        else: changed["context"]["source"] = {"kind": "replay", "fixture": "unused.json"}
+        path = destination / f"bad-{mutation}.json"
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        assert expected in cli_call(cli, "compare-runs", paths[0], path, success=False), mutation
+
+    # Exercise actual DC startup twice: measured offsets may vary, settings must agree.
+    dc_paths = []
+    for index, scheduler in enumerate(["deadline", "relative"]):
+        base = destination / f"dc-{scheduler}.csv"
+        report = cli_call(cli, "run", ROOT / "samples/virtual-dc.json", "--backend", "virtual",
+            "--virtual-model", "coe-dc", "--scheduler", scheduler, "--seconds", 1, "--csv", base)
+        verify_csv(report, base, virtual=True)
+        assert report["stopped_al"] == [1, 0]
+        path = destination / f"dc-{index}.json"
+        path.write_text(json.dumps(report), encoding="utf-8"); dc_paths.append(path)
+    dc = cli_call(cli, "compare-runs", *dc_paths)
+    assert dc["source"] == {"kind": "virtual", "model": "CoeDc", "fault": "None"}
+    assert "system_time_offset_ns" not in dc["synchronization_settings"]["dc"]
+    assert dc["synchronization_settings"]["dc"]["activation"]["value"] == 0
+    assert "configuration differs" in cli_call(cli, "compare-runs", paths[0], dc_paths[0], success=False)
+    changed = json.loads(dc_paths[1].read_text(encoding="utf-8"))
+    changed["pdo_verification"]["readback"]["tx"]["sync_managers"][0]["pdos"][0]["entries"][0] ^= 1
+    altered_pdo = destination / "different-device-pdo.json"
+    altered_pdo.write_text(json.dumps(changed), encoding="utf-8")
+    assert "PDO assignment readback" in cli_call(cli, "compare-runs", dc_paths[0], altered_pdo, success=False)
+    oversized = destination / "oversized-report.json"
+    with oversized.open("wb") as stream: stream.truncate(16 * 1024 * 1024 + 1)
+    assert "exceeds 16 MiB" in cli_call(cli, "compare-runs", paths[0], oversized, success=False)
+    (destination / "dc-comparison.json").write_text(json.dumps(dc, indent=2), encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -720,6 +815,10 @@ def main():
     pdo_destination = destination / "pdo-choices"
     pdo_destination.mkdir()
     verify_pdo_choices(cli, pdo_destination)
+
+    comparison_destination = destination / "comparison"
+    comparison_destination.mkdir()
+    verify_comparison(cli, comparison_destination)
 
     if options.gui:
         assert os.name == "nt"

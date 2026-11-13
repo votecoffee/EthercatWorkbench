@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use hdrhistogram::Histogram;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
     sync::{
@@ -33,7 +33,7 @@ pub struct DeviceInfo {
     pub al_code: u16,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Spacing {
     pub count: u64,
     pub p50_us: Option<u64>,
@@ -82,6 +82,8 @@ impl Gaps {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
+    pub context: Option<Arc<crate::benchmark::RunContext>>,
+    pub cyclic_elapsed_us: u64,
     pub backend: String,
     pub requested_cycle_us: u64,
     pub input_loss_timeout_ms: u64,
@@ -187,6 +189,7 @@ impl BenchApproval {
 }
 
 pub struct RunOptions {
+    pub frontend: crate::benchmark::Frontend,
     pub mode: Mode,
     pub duration: Duration,
     pub csv: Option<PathBuf>,
@@ -252,6 +255,9 @@ fn run_inner(
         options.generation > 0,
         "connection generation must be positive"
     );
+    report.context = Some(Arc::new(crate::benchmark::RunContext::new(
+        profile, &options,
+    )?));
     match options.mode {
         Mode::Simulate { faults } => {
             report.backend = "Synthetic fixture".into();
@@ -472,6 +478,7 @@ fn cycle(
         }
         Ok(())
     })();
+    report.cyclic_elapsed_us = start.elapsed().as_micros() as u64;
     health.refresh(&mut report.input_health, Instant::now());
     if result.is_ok() && !stop.load(Relaxed) {
         result = check_input_loss(&report.input_health, profile.input_loss_timeout_ms);
@@ -629,6 +636,7 @@ mod cycle_tests {
             ..Profile::default()
         };
         let options = RunOptions {
+            frontend: crate::benchmark::Frontend::Cli,
             mode: Mode::Simulate { faults: false },
             duration: Duration::from_secs(1),
             csv: None,

@@ -2,7 +2,7 @@ use crate::model::{Field, LogMode, MAX_PAYLOAD, Profile};
 use anyhow::{Context, Result, ensure};
 use chrono::{SecondsFormat, Utc};
 use crossbeam_queue::ArrayQueue;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs::OpenOptions,
     path::{Path, PathBuf},
@@ -39,7 +39,7 @@ struct Shared {
     parts: AtomicU64,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CaptureStats {
     pub selected: u64,
     pub written: u64,

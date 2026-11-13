@@ -74,6 +74,11 @@ enum Command {
     Validate { profile: PathBuf },
     /// Compare saved CoE PDO readback with an ESI or manual profile.
     VerifyPdo { profile: PathBuf, readback: PathBuf },
+    /// Compare saved timing trials with matching settings except for their scheduler. No bus operations.
+    CompareRuns {
+        #[arg(required = true, num_args = 2..=32)]
+        reports: Vec<PathBuf>,
+    },
     /// Decode an offline payload using the profile.
     Decode {
         profile: PathBuf,
@@ -92,6 +97,9 @@ enum Command {
         seconds: u64,
         #[arg(long)]
         csv: Option<PathBuf>,
+        /// New UTF-8 JSON report file. Existing paths are rejected before starting the run.
+        #[arg(long)]
+        report: Option<PathBuf>,
         #[arg(long, value_enum)]
         scheduler: Option<Schedule>,
         #[arg(long)]
@@ -176,6 +184,9 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Nics => output(&ethercat_workbench::live::nics()?),
         Command::Scan { nic } => output(&ethercat_workbench::live::scan(&nic)?),
+        Command::CompareRuns { reports } => {
+            output(&ethercat_workbench::benchmark::compare_files(&reports)?)
+        }
         Command::EsiList { file } => {
             let entries = esi::load(&file)?;
             let list: Vec<_> = entries.iter().enumerate().map(|(index, entry)| {
@@ -303,6 +314,7 @@ fn main() -> Result<()> {
             backend,
             seconds,
             csv,
+            report: report_path,
             scheduler,
             on_change,
             input_loss_timeout_ms,
@@ -404,6 +416,18 @@ fn main() -> Result<()> {
             if let Some(timeout) = input_loss_timeout_ms {
                 profile.input_loss_timeout_ms = timeout;
             }
+            let report_file = report_path
+                .as_ref()
+                .map(|path| {
+                    ensure!(
+                        path.extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("json")),
+                        "report path must end in .json"
+                    );
+                    std::fs::File::create_new(path)
+                        .with_context(|| format!("reserve new report {}", path.display()))
+                })
+                .transpose()?;
             let stop = Arc::new(AtomicBool::new(false));
             ctrlc::set_handler({
                 let stop = stop.clone();
@@ -413,6 +437,7 @@ fn main() -> Result<()> {
             let report = run::run(
                 profile,
                 RunOptions {
+                    frontend: ethercat_workbench::benchmark::Frontend::Cli,
                     mode,
                     duration: Duration::from_secs(seconds),
                     csv,
@@ -421,6 +446,12 @@ fn main() -> Result<()> {
                 &stop,
                 &Mutex::new(Snapshot::default()),
             );
+            if let Some(mut file) = report_file {
+                use std::io::Write;
+                serde_json::to_writer_pretty(&mut file, &report)?;
+                writeln!(file)?;
+                file.sync_all().context("flush saved run report")?;
+            }
             output(&report)?;
             if let Some(error) = report.error {
                 bail!("{error}");

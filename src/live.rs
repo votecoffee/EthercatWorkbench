@@ -1040,6 +1040,7 @@ mod cancellation_tests {
         let report = run::run(
             profile,
             RunOptions {
+                frontend: crate::benchmark::Frontend::Cli,
                 mode: Mode::Virtual {
                     model: VirtualModel::Coe,
                     fault: VirtualFault::None,

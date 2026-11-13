@@ -140,6 +140,7 @@ impl App {
         let view = Arc::new(Mutex::new(Snapshot::default()));
         let csv = (!self.csv.trim().is_empty()).then(|| PathBuf::from(self.csv.trim()));
         let opts = RunOptions {
+            frontend: ethercat_workbench::benchmark::Frontend::Gui,
             mode,
             csv,
             duration: Duration::from_secs(self.seconds),
@@ -953,6 +954,20 @@ fn write_report(path: &Path, report: &Report) -> anyhow::Result<()> {
 fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
     let r = &snapshot.report;
     ui.strong(format!("{}  {}", snapshot.phase, r.backend));
+    if let Some(context) = &r.context {
+        ui.collapsing("Saved trial settings", |ui| {
+            let elapsed = if r.cyclic_elapsed_us == 0 {
+                "pending".into()
+            } else {
+                format!("{} µs", r.cyclic_elapsed_us)
+            };
+            ui.label(format!(
+                "Workbench {} · {:?} · duration limit {} µs · final cyclic interval {}",
+                context.app_version, context.frontend, context.duration_limit_us, elapsed
+            ));
+            ui.monospace(serde_json::to_string_pretty(context).unwrap_or_default());
+        });
+    }
     if let Some(error) = &r.error {
         ui.colored_label(egui::Color32::LIGHT_RED, error);
     }
