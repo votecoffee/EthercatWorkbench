@@ -16,6 +16,7 @@ pub mod pdo_catalog;
 mod replay;
 pub mod review;
 pub mod run;
+pub mod shared_memory;
 mod sii;
 pub mod sync;
 pub mod sync_review;

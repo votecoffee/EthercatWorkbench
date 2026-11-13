@@ -249,6 +249,8 @@ pub struct Profile {
     pub http: Option<crate::http_feed::Config>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mqtt: Option<crate::mqtt_feed::Config>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_memory: Option<crate::shared_memory::Config>,
 }
 
 impl Default for Profile {
@@ -275,6 +277,7 @@ impl Default for Profile {
             staged_rx_hex: String::new(),
             http: None,
             mqtt: None,
+            shared_memory: None,
         }
     }
 }
@@ -291,6 +294,9 @@ impl Profile {
         }
         if let Some(mqtt) = &self.mqtt {
             mqtt.validate()?;
+        }
+        if let Some(memory) = &self.shared_memory {
+            memory.validate()?;
         }
         if self.http.is_some() || self.mqtt.is_some() {
             ensure!(

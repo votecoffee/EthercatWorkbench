@@ -164,6 +164,9 @@ enum Command {
         /// Enable publish-only MQTT on a local broker at 127.0.0.1:PORT.
         #[arg(long)]
         mqtt_port: Option<u16>,
+        /// Enable a read-only Windows latest raw input snapshot under this name.
+        #[arg(long)]
+        shared_memory: Option<String>,
         /// Confirm approval for ESC initialization, SAFEOP and return to INIT on one isolated device.
         #[arg(long)]
         approve_esc_writes: bool,
@@ -436,6 +439,7 @@ fn main() -> Result<()> {
             generation,
             http_port,
             mqtt_port,
+            shared_memory,
             approve_esc_writes,
         } => {
             ensure!(
@@ -522,6 +526,12 @@ fn main() -> Result<()> {
             }
             if let Some(port) = mqtt_port {
                 profile.mqtt.get_or_insert_with(Default::default).port = port;
+            }
+            if let Some(name) = shared_memory {
+                profile
+                    .shared_memory
+                    .get_or_insert_with(Default::default)
+                    .name = name;
             }
             if let Some(scheduler) = scheduler {
                 profile.scheduler = match scheduler {

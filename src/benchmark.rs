@@ -145,6 +145,7 @@ struct SavedRun {
     error: Option<String>,
     http: Option<crate::http_feed::Stats>,
     mqtt: Option<crate::mqtt_feed::Stats>,
+    shared_memory: Option<crate::shared_memory::Stats>,
 }
 
 impl SavedRun {
@@ -153,6 +154,30 @@ impl SavedRun {
             "report has no versioned run context; collect a new trial with Workbench 0.10 or later",
         )?;
         ctx.validate()?;
+        ensure!(
+            self.shared_memory.is_some() == ctx.profile.shared_memory.is_some(),
+            "Shared memory report/configuration disagree"
+        );
+        if let Some(memory) = &self.shared_memory {
+            ensure!(
+                !memory.active
+                    && memory.offered == self.cycles
+                    && memory
+                        .drained
+                        .checked_add(memory.queue_drops)
+                        .and_then(|n| n.checked_add(memory.queue_pending))
+                        == Some(memory.offered)
+                    && memory
+                        .coalesced
+                        .checked_add(memory.written_events)
+                        .and_then(|n| n.checked_add(memory.unsent_events))
+                        == Some(memory.drained)
+                    && memory.unsent_events <= 1
+                    && memory.writes <= memory.publication_attempts
+                    && memory.lock_misses <= memory.publication_attempts,
+                "Shared memory counters are inconsistent or still active"
+            );
+        }
         ensure!(
             self.mqtt.is_some() == ctx.profile.mqtt.is_some(),
             "MQTT feed report/configuration disagree"
@@ -364,6 +389,7 @@ pub struct Trial {
     pub capture: CaptureStats,
     pub http: Option<crate::http_feed::Stats>,
     pub mqtt: Option<crate::mqtt_feed::Stats>,
+    pub shared_memory: Option<crate::shared_memory::Stats>,
 }
 
 #[derive(Debug, Serialize)]
@@ -606,6 +632,18 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
         {
             result.warnings.push(format!("Trial {} has MQTT feed loss, unsent input, network errors or worker failure; coalescing and TCP write completion are independent of CSV/bus quality and do not prove consumer delivery.",file.display()));
         }
+        if let Some(memory) = &r.shared_memory
+            && (memory.queue_drops > 0
+                || memory.queue_pending > 0
+                || memory.unsent_events > 0
+                || memory.lock_misses > 0
+                || memory.abandoned_recoveries > 0
+                || !memory.shutdown_written
+                || memory.worker_failed
+                || memory.worker_error.is_some())
+        {
+            result.warnings.push(format!("Trial {} has shared memory loss, contention, abandoned mutex recovery, incomplete inactive publication or worker failure; inspect independent counters. A copy does not prove reader delivery.",file.display()));
+        }
         result.trials.push(Trial {
             file: file.clone(),
             sha256: sha256.clone(),
@@ -626,6 +664,7 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
             capture: cap.clone(),
             http: r.http.clone(),
             mqtt: r.mqtt.clone(),
+            shared_memory: r.shared_memory.clone(),
         });
     }
     for scheduler in [Scheduler::Deadline, Scheduler::Relative] {
@@ -802,6 +841,53 @@ mod tests {
                 .to_string()
                 .contains("configuration differs")
         );
+    }
+
+    #[test]
+    fn shared_comparison_preserves_contention_and_rejects_bad_accounting() {
+        let enable = |run: &mut SavedRun| {
+            let ctx = run.context.as_mut().unwrap();
+            ctx.profile.shared_memory = Some(crate::shared_memory::Config::default());
+            (ctx.profile_sha256, ctx.comparison_sha256) = RunContext::hashes(&ctx.profile).unwrap();
+            run.shared_memory = Some(crate::shared_memory::Stats {
+                offered: 1000,
+                drained: 997,
+                queue_drops: 3,
+                coalesced: 990,
+                written_events: 6,
+                unsent_events: 1,
+                lock_misses: 10,
+                publication_attempts: 20,
+                writes: 10,
+                ..Default::default()
+            });
+        };
+        let mut runs = vec![
+            fixture(Scheduler::Deadline, 0, 100),
+            fixture(Scheduler::Relative, 1, 200),
+        ];
+        for run in &mut runs {
+            enable(run);
+        }
+        let result = compare(inputs(runs)).unwrap();
+        assert_eq!(
+            result.trials[0].shared_memory.as_ref().unwrap().lock_misses,
+            10
+        );
+        assert_eq!(result.trials[0].capture.overruns, 0);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("shared memory loss"))
+        );
+        let mut bad = fixture(Scheduler::Deadline, 0, 100);
+        enable(&mut bad);
+        bad.shared_memory.as_mut().unwrap().coalesced += 1;
+        assert!(bad.checked().is_err());
+        bad.shared_memory.as_mut().unwrap().coalesced -= 1;
+        bad.shared_memory.as_mut().unwrap().queue_drops += 1;
+        assert!(bad.checked().is_err());
     }
 
     #[test]

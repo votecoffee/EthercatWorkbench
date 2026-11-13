@@ -451,6 +451,9 @@ fn show_audit(ui: &mut egui::Ui, audit: &Audit) {
 
 fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
     for (index, trial) in result.trials.iter().enumerate() {
+        if let Some(memory) = &trial.shared_memory {
+            ui.label(format!("Trial {} shared memory · queue drops {} · coalesced {} · unsent {} · writes {} · busy {} · abandoned {} · worker failed {}",index+1,memory.queue_drops,memory.coalesced,memory.unsent_events,memory.writes,memory.lock_misses,memory.abandoned_recoveries,memory.worker_failed));
+        }
         if let Some(mqtt) = &trial.mqtt {
             ui.label(format!("Trial {} MQTT · queue drops {} · coalesced {} · unsent {} · TCP writes {} · errors {} · worker failed {}",
                 index+1,mqtt.queue_drops,mqtt.coalesced,mqtt.unsent_events,mqtt.write_completions,mqtt.errors,mqtt.worker_failed));

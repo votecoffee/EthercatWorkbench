@@ -16,8 +16,10 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 if __package__:
     from .mqtt_fixture import verify_mqtt
+    from .shared_fixture import verify_shared_memory
 else:
     from mqtt_fixture import verify_mqtt
+    from shared_fixture import verify_shared_memory
 
 
 def cli_call(cli, *args, success=True):
@@ -1279,6 +1281,9 @@ def main():
     assert ".local" in destination.parts, "keep synthetic captures under .local"
     destination.mkdir(parents=True, exist_ok=False)
     cli = bin_dir / "ethercat-workbench-cli.exe"
+    shared_destination = destination / "shared-memory"
+    shared_destination.mkdir()
+    verify_shared_memory(cli, ROOT, shared_destination, cli_call)
     mqtt_destination = destination / "mqtt"
     mqtt_destination.mkdir()
     verify_mqtt(cli, ROOT, mqtt_destination, cli_call)

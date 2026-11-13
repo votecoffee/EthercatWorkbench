@@ -455,6 +455,26 @@ impl App {
     }
 
     fn bench_controls(&mut self, ui: &mut egui::Ui) {
+        let mut memory_enabled = self.profile.shared_memory.is_some();
+        if ui
+            .checkbox(&mut memory_enabled, "Enable Windows shared-memory input")
+            .changed()
+        {
+            self.profile.shared_memory = memory_enabled.then(Default::default);
+        }
+        if let Some(config) = &mut self.profile.shared_memory {
+            ui.horizontal(|ui| {
+                ui.label("Local snapshot name");
+                ui.text_edit_singleline(&mut config.name);
+                ui.label("Publish ms");
+                ui.add(egui::DragValue::new(&mut config.period_ms).range(1..=60000));
+                ui.label("Freshness ms");
+                ui.add(egui::DragValue::new(&mut config.freshness_ms).range(1..=60000));
+                ui.label("Queue");
+                ui.add(egui::DragValue::new(&mut config.queue_capacity).range(1..=8192));
+            });
+            ui.small("Latest raw input/status; a reader holding the mutex causes skipped publications, without waiting on cyclic I/O.");
+        }
         let mut mqtt_enabled = self.profile.mqtt.is_some();
         if ui
             .checkbox(&mut mqtt_enabled, "Enable read-only MQTT input publisher")
@@ -1111,6 +1131,12 @@ fn write_report(path: &Path, report: &Report) -> anyhow::Result<()> {
 
 fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
     let r = &snapshot.report;
+    if let Some(memory) = &r.shared_memory {
+        ui.label(format!("Shared memory {} · active {} · offered {} · queue drops {} · coalesced {} · unsent {} · writes {} · busy {} · abandoned {} · worker failed {}",memory.mapping,memory.active,memory.offered,memory.queue_drops,memory.coalesced,memory.unsent_events,memory.writes,memory.lock_misses,memory.abandoned_recoveries,memory.worker_failed));
+        if let Some(error) = &memory.worker_error {
+            ui.colored_label(egui::Color32::LIGHT_RED, format!("Shared memory: {error}"));
+        }
+    }
     if let Some(mqtt) = &r.mqtt {
         ui.label(format!("MQTT {} · topic {} · active {} · connected {} · offered {} · queue drops {} · coalesced {} · unsent {} · TCP writes {} · errors {} · worker failed {}",
             mqtt.address,mqtt.topic,mqtt.active,mqtt.connected,mqtt.offered,mqtt.queue_drops,mqtt.coalesced,mqtt.unsent_events,mqtt.write_completions,mqtt.errors,mqtt.worker_failed));

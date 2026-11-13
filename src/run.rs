@@ -120,6 +120,7 @@ pub struct Report {
     pub error: Option<String>,
     pub http: Option<crate::http_feed::Stats>,
     pub mqtt: Option<crate::mqtt_feed::Stats>,
+    pub shared_memory: Option<crate::shared_memory::Stats>,
 }
 
 #[derive(Clone, Debug)]
@@ -261,12 +262,24 @@ fn run_inner(
     report.context = Some(Arc::new(crate::benchmark::RunContext::new(
         profile, &options,
     )?));
-    let mut http = profile
+    let http = profile
         .http
         .as_ref()
         .map(crate::http_feed::Bound::bind)
         .transpose()?;
-    report.http = http.as_ref().map(crate::http_feed::Bound::stats);
+    let shared_memory = profile
+        .shared_memory
+        .as_ref()
+        .map(crate::shared_memory::Bound::bind)
+        .transpose()?;
+    report.shared_memory = shared_memory
+        .as_ref()
+        .map(crate::shared_memory::Bound::stats);
+    let mut bindings = Bindings {
+        http,
+        shared_memory,
+    };
+    report.http = bindings.http.as_ref().map(crate::http_feed::Bound::stats);
     if options.frontend == crate::benchmark::Frontend::Cli
         && let Some(http) = &report.http
     {
@@ -296,7 +309,7 @@ fn run_inner(
                 stop,
                 view,
                 report,
-                &mut http,
+                &mut bindings,
             )
         }
         Mode::Replay { ref fixture } => {
@@ -313,7 +326,7 @@ fn run_inner(
                 tx_bytes: Some(profile.tx_bytes),
                 ..DeviceInfo::default()
             }];
-            cycle(replay, profile, &options, stop, view, report, &mut http)?;
+            cycle(replay, profile, &options, stop, view, report, &mut bindings)?;
             ensure!(
                 Some(report.cycles as usize) == report.replay_exchanges || stop.load(Relaxed),
                 "replay duration expired before all recorded exchanges were processed"
@@ -331,7 +344,7 @@ fn run_inner(
                     stop,
                     view,
                     report,
-                    |bus, report| cycle(bus, profile, &options, stop, view, report, &mut http),
+                    |bus, report| cycle(bus, profile, &options, stop, view, report, &mut bindings),
                 )
             }
             #[cfg(not(windows))]
@@ -345,7 +358,7 @@ fn run_inner(
             {
                 report.backend = "EtherCrab / Npcap LRD SAFEOP".into();
                 crate::live::safeop(profile, approved, stop, view, report, |bus, report| {
-                    cycle(bus, profile, &options, stop, view, report, &mut http)
+                    cycle(bus, profile, &options, stop, view, report, &mut bindings)
                 })
             }
             #[cfg(not(windows))]
@@ -357,6 +370,12 @@ fn run_inner(
     }
 }
 
+#[derive(Default)]
+struct Bindings {
+    http: Option<crate::http_feed::Bound>,
+    shared_memory: Option<crate::shared_memory::Bound>,
+}
+
 fn cycle(
     mut bus: impl Bus,
     profile: &Profile,
@@ -364,16 +383,35 @@ fn cycle(
     stop: &AtomicBool,
     view: &Mutex<Snapshot>,
     report: &mut Report,
-    http_bound: &mut Option<crate::http_feed::Bound>,
+    bindings: &mut Bindings,
 ) -> Result<()> {
-    let mut http = match http_bound
+    let mut shared_memory = match bindings
+        .shared_memory
+        .take()
+        .map(|bound| crate::shared_memory::Hub::start(bound, profile, report))
+        .transpose()
+    {
+        Ok(memory) => memory,
+        Err(error) => {
+            let cleanup = bus.stop().map(|al| report.stopped_al = al);
+            return combine(Err(error), cleanup);
+        }
+    };
+    let mut http = match bindings
+        .http
         .take()
         .map(|bound| crate::http_feed::Hub::start(bound, profile, report))
         .transpose()
     {
         Ok(http) => http,
         Err(error) => {
+            if let Some(memory) = &shared_memory {
+                memory.deactivate();
+            }
             let cleanup = bus.stop().map(|al| report.stopped_al = al);
+            if let Some(memory) = shared_memory.take() {
+                report.shared_memory = Some(memory.finish());
+            }
             return combine(Err(error), cleanup);
         }
     };
@@ -388,9 +426,15 @@ fn cycle(
             if let Some(http) = &http {
                 http.deactivate();
             }
+            if let Some(memory) = &shared_memory {
+                memory.deactivate();
+            }
             let cleanup = bus.stop().map(|al| report.stopped_al = al);
             if let Some(http) = http.take() {
                 report.http = Some(http.finish());
+            }
+            if let Some(memory) = shared_memory.take() {
+                report.shared_memory = Some(memory.finish());
             }
             return combine(Err(error), cleanup);
         }
@@ -409,12 +453,18 @@ fn cycle(
             if let Some(mqtt) = &mqtt {
                 mqtt.deactivate();
             }
+            if let Some(memory) = &shared_memory {
+                memory.deactivate();
+            }
             let cleanup = bus.stop().map(|al| report.stopped_al = al);
             if let Some(http) = http.take() {
                 report.http = Some(http.finish());
             }
             if let Some(mqtt) = mqtt.take() {
                 report.mqtt = Some(mqtt.finish());
+            }
+            if let Some(memory) = shared_memory.take() {
+                report.shared_memory = Some(memory.finish());
             }
             return combine(Err(error), cleanup);
         }
@@ -483,6 +533,9 @@ fn cycle(
                     }
                     if let Some(mqtt) = mqtt.as_mut() {
                         mqtt.offer(observation);
+                    }
+                    if let Some(memory) = shared_memory.as_mut() {
+                        memory.offer(observation);
                     }
                     return Err(error.context("cyclic Ethernet transport failed"));
                 }
@@ -562,6 +615,9 @@ fn cycle(
             if let Some(mqtt) = mqtt.as_mut() {
                 mqtt.offer(observation);
             }
+            if let Some(memory) = shared_memory.as_mut() {
+                memory.offer(observation);
+            }
             if !valid {
                 check_input_loss(&report.input_health, profile.input_loss_timeout_ms)?;
             }
@@ -570,6 +626,8 @@ fn cycle(
                     update(report, &sends, &receives, capture.as_ref());
                     report.http = http.as_ref().map(crate::http_feed::Hub::stats);
                     report.mqtt = mqtt.as_ref().map(crate::mqtt_feed::Hub::stats);
+                    report.shared_memory =
+                        shared_memory.as_ref().map(crate::shared_memory::Hub::stats);
                     snapshot.report.clone_from(report);
                     snapshot.phase = "Cycling".into();
                     publish_payload(&mut snapshot, last, profile.tx_bytes, health.last_valid);
@@ -597,6 +655,10 @@ fn cycle(
         mqtt.deactivate();
         report.mqtt = Some(mqtt.stats());
     }
+    if let Some(memory) = &shared_memory {
+        memory.deactivate();
+        report.shared_memory = Some(memory.stats());
+    }
     if let Ok(mut snapshot) = view.try_lock() {
         snapshot.phase = "Stopping cyclic input".into();
         snapshot.report.clone_from(report);
@@ -615,6 +677,9 @@ fn cycle(
     }
     if let Some(mqtt) = mqtt.take() {
         report.mqtt = Some(mqtt.finish());
+    }
+    if let Some(memory) = shared_memory.take() {
+        report.shared_memory = Some(memory.finish());
     }
     if let Ok(mut snapshot) = view.lock() {
         publish_payload(&mut snapshot, last, profile.tx_bytes, health.last_valid);
@@ -757,6 +822,37 @@ mod cycle_tests {
         assert!(report.virtual_esc.is_none());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn occupied_shared_name_fails_before_virtual_device_setup() {
+        let config = crate::shared_memory::Config {
+            name: format!("rust_preflight_{}", std::process::id()),
+            ..Default::default()
+        };
+        let _bound = crate::shared_memory::Bound::bind(&config).unwrap();
+        let mut profile: Profile =
+            serde_json::from_str(include_str!("../samples/virtual.json")).unwrap();
+        profile.shared_memory = Some(config);
+        let report = run(
+            profile,
+            RunOptions {
+                frontend: crate::benchmark::Frontend::Cli,
+                mode: Mode::Virtual {
+                    model: crate::virtual_esc::VirtualModel::Coe,
+                    fault: crate::virtual_esc::VirtualFault::None,
+                },
+                duration: Duration::from_millis(100),
+                csv: None,
+                generation: 1,
+            },
+            &AtomicBool::new(false),
+            &Mutex::new(Snapshot::default()),
+        );
+        assert!(report.error.unwrap().contains("name already exists"));
+        assert_eq!(report.cycles, 0);
+        assert!(report.virtual_esc.is_none());
+    }
+
     struct FailingBus<'a> {
         view: &'a Mutex<Snapshot>,
         calls: u64,
@@ -795,6 +891,9 @@ mod cycle_tests {
             if let Some(mqtt) = &snapshot.report.mqtt {
                 assert!(!mqtt.active);
             }
+            if let Some(memory) = &snapshot.report.shared_memory {
+                assert!(!memory.active);
+            }
             self.stopped.store(true, Relaxed);
             anyhow::bail!("authored INIT cleanup failure")
         }
@@ -820,6 +919,10 @@ mod cycle_tests {
                 port: broker.local_addr().unwrap().port(),
                 ..Default::default()
             }),
+            shared_memory: with_http.then_some(crate::shared_memory::Config {
+                name: format!("rust_cleanup_{}", std::process::id()),
+                ..Default::default()
+            }),
             ..Profile::default()
         };
         let options = RunOptions {
@@ -840,7 +943,7 @@ mod cycle_tests {
             expected_wkc: 1,
             ..Report::default()
         };
-        let mut http = profile
+        let http = profile
             .http
             .as_ref()
             .map(crate::http_feed::Bound::bind)
@@ -853,7 +956,15 @@ mod cycle_tests {
             &AtomicBool::new(false),
             &view,
             &mut report,
-            &mut http,
+            &mut Bindings {
+                http,
+                shared_memory: profile
+                    .shared_memory
+                    .as_ref()
+                    .map(crate::shared_memory::Bound::bind)
+                    .transpose()
+                    .unwrap(),
+            },
         )
         .unwrap_err();
         let text = format!("{error:#}");
@@ -881,6 +992,12 @@ mod cycle_tests {
             assert_eq!(feed.offered, 2);
             assert_eq!(feed.drained, 2);
             assert_eq!(feed.queue_pending, 0);
+        }
+        if let Some(memory) = report.shared_memory {
+            assert!(!memory.active && !memory.worker_failed && memory.shutdown_written);
+            assert_eq!(memory.offered, 2);
+            assert_eq!(memory.drained, 2);
+            assert_eq!(memory.queue_pending, 0);
         }
     }
 }

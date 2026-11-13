@@ -33,6 +33,8 @@ By default the command inspects saved JSON counters and sets `csv_audits` to nul
 
 Version 0.19 also retains independent [MQTT counters](mqtt-input-feed.md). Final inactive/disconnected reports must balance queue and coalescing/attempt domains. Network errors, dropped/unsent input and worker failures produce separate warnings; normal latest-value coalescing is visible without becoming CSV or bus loss. TCP writes do not prove subscriber delivery. Enabled MQTT settings must match between trials; use separate compatible groups for enabled/disabled workloads.
 
+Version 0.20 also retains independent [shared-memory counters](shared-input-feed.md), including coalescing, mutex misses/recovery, queue loss and inactive-publication outcome. Final reports must balance both event domains and be inactive. Contention, loss, recovery, worker failure or a skipped inactive copy produces a separate warning; successful copies do not prove reader delivery. Enabled settings must match between scheduler trials.
+
 ## Desktop review
 
 The **4 Saved run review** panel can compare the same reports without the CLI, with optional CSV audits, per-trial timing/loss tables and new-file JSON export. See [desktop review](desktop-review.md) for worker and cancellation behavior.
