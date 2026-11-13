@@ -703,6 +703,14 @@ mod tests {
         section.extend((-1i64).to_le_bytes());
         let idb = block(1, vec![1, 0, 0, 0, 255, 255, 0, 0]);
         let mut bytes = [block(0x0a0d0d0a, section), idb.clone(), idb].concat();
+        let mut statistics = Vec::new();
+        for word in [1u32, 0, 20000] {
+            statistics.extend(word.to_le_bytes());
+        }
+        statistics.extend(5u16.to_le_bytes());
+        statistics.extend(8u16.to_le_bytes());
+        statistics.extend(7u64.to_le_bytes());
+        bytes.extend(block(5, statistics));
         // Independent block writer using the already-authored Ethernet frames. The first
         // frame is excluded, so exported preview indexes must still refer to the whole file.
         let mut offset = 24;
@@ -748,6 +756,16 @@ mod tests {
         assert_eq!(report.counts.packets, 4);
         assert_eq!(report.preview[0].packet_index, 3);
         let m = report.pcapng.as_ref().unwrap();
+        assert_eq!(report.counts.timestamp_regressions, 0);
+        assert_eq!(m.statistics.len(), 1);
+        assert_eq!(
+            (
+                m.statistics[0].block_index,
+                m.statistics[0].interface_id,
+                m.statistics[0].interface_dropped
+            ),
+            (4, 1, Some(7))
+        );
         assert_eq!(
             (m.interface_id, m.total_packets, m.skipped_packets),
             (1, 5, 1)

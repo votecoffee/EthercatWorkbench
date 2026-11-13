@@ -5,6 +5,22 @@ use std::sync::atomic::AtomicBool;
 
 pub(crate) const MAX_SNAPLEN: u32 = 262_144;
 const MAX_INTERFACES: usize = 32;
+const MAX_STATISTICS: usize = 128;
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct InterfaceStatistics {
+    pub block_index: u64,
+    pub interface_id: u32,
+    pub timestamp_unix_ns: u64,
+    pub start_timestamp_unix_ns: Option<u64>,
+    pub end_timestamp_unix_ns: Option<u64>,
+    pub received: Option<u64>,
+    pub interface_dropped: Option<u64>,
+    pub filter_accepted: Option<u64>,
+    pub os_dropped: Option<u64>,
+    pub user_delivered: Option<u64>,
+    pub notes: Vec<String>,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct InterfaceMetadata {
@@ -32,6 +48,7 @@ pub struct PcapngMetadata {
     pub total_packets: u64,
     pub skipped_packets: u64,
     pub interfaces: Vec<InterfaceMetadata>,
+    pub statistics: Vec<InterfaceStatistics>,
 }
 
 #[derive(Debug)]
@@ -51,6 +68,14 @@ pub(crate) struct Packet<'a> {
 #[derive(Clone, Copy)]
 struct Order(bool);
 impl Order {
+    fn unsigned(self, bytes: &[u8]) -> u64 {
+        let value = bytes.try_into().expect("validated 8-byte scalar");
+        if self.0 {
+            u64::from_le_bytes(value)
+        } else {
+            u64::from_be_bytes(value)
+        }
+    }
     fn word(self, bytes: &[u8], at: usize) -> u16 {
         let value = [bytes[at], bytes[at + 1]];
         if self.0 {
@@ -217,10 +242,72 @@ fn options(
 fn unique(seen: &mut u8, mask: u8, value: &[u8], length: usize) -> Result<()> {
     ensure!(
         *seen & mask == 0 && value.len() == length,
-        "duplicate or wrong-sized PCAPNG timing/FCS/flags option"
+        "duplicate or wrong-sized PCAPNG timing/FCS/flags/statistics option"
     );
     *seen |= mask;
     Ok(())
+}
+
+fn timestamp(order: Order, bytes: &[u8], at: usize, interface: &InterfaceMetadata) -> Result<u64> {
+    // PCAPNG timestamps are two ordered u32 words, unlike its scalar u64 counters.
+    let ticks = ((order.number(bytes, at) as u64) << 32) | order.number(bytes, at + 4) as u64;
+    let value = ticks as i128
+        * if interface.timestamp_resolution_exponent == 6 {
+            1000
+        } else {
+            1
+        }
+        + interface.timestamp_offset_seconds as i128 * 1_000_000_000;
+    ensure!(
+        (0..=i64::MAX as i128).contains(&value),
+        "PCAPNG timestamp outside supported Unix nanosecond range"
+    );
+    Ok(value as u64)
+}
+
+fn statistics(
+    body: &[u8],
+    order: Order,
+    stop: Option<&AtomicBool>,
+    block_index: u64,
+    interface: &InterfaceMetadata,
+    skipped_options: &mut u64,
+) -> Result<InterfaceStatistics> {
+    let mut stats = InterfaceStatistics {
+        block_index,
+        interface_id: interface.interface_id,
+        timestamp_unix_ns: timestamp(order, body, 4, interface)?,
+        ..Default::default()
+    };
+    let mut seen = 0;
+    options(&body[12..], order, stop, |code, value| {
+        if (2..=8).contains(&code) {
+            unique(&mut seen, 1 << (code - 2), value, 8)?;
+            match code {
+                2 => stats.start_timestamp_unix_ns = Some(timestamp(order, value, 0, interface)?),
+                3 => stats.end_timestamp_unix_ns = Some(timestamp(order, value, 0, interface)?),
+                4 => stats.received = Some(order.unsigned(value)),
+                5 => stats.interface_dropped = Some(order.unsigned(value)),
+                6 => stats.filter_accepted = Some(order.unsigned(value)),
+                7 => stats.os_dropped = Some(order.unsigned(value)),
+                8 => stats.user_delivered = Some(order.unsigned(value)),
+                _ => unreachable!(),
+            }
+        } else {
+            *skipped_options += 1;
+        }
+        Ok(())
+    })?;
+    if stats
+        .start_timestamp_unix_ns
+        .zip(stats.end_timestamp_unix_ns)
+        .is_some_and(|(start, end)| end < start)
+    {
+        stats
+            .notes
+            .push("Declared end precedes declared start; capture interval is inconsistent.".into());
+    }
+    Ok(stats)
 }
 
 fn pcapng<'a>(
@@ -265,6 +352,7 @@ fn pcapng<'a>(
         total_packets: 0,
         skipped_packets: 0,
         interfaces: Vec::new(),
+        statistics: Vec::new(),
     };
     options(&section[16..], order, stop, |_, _| {
         metadata.skipped_options += 1;
@@ -365,18 +453,7 @@ fn pcapng<'a>(
                     metadata.skipped_options += 1;
                     Ok(())
                 })?;
-                let ticks = ((order.number(body, 4) as u64) << 32) | order.number(body, 8) as u64;
-                let timestamp = ticks as i128
-                    * if interface.timestamp_resolution_exponent == 6 {
-                        1000
-                    } else {
-                        1
-                    }
-                    + interface.timestamp_offset_seconds as i128 * 1_000_000_000;
-                ensure!(
-                    (0..=i64::MAX as i128).contains(&timestamp),
-                    "PCAPNG timestamp outside supported Unix nanosecond range"
-                );
+                let timestamp = timestamp(order, body, 4, interface)?;
                 ensure!(
                     metadata.total_packets < 1_000_000,
                     "capture exceeds one million packets"
@@ -386,13 +463,37 @@ fn pcapng<'a>(
                 if id == metadata.interface_id {
                     visit(Packet {
                         index: metadata.total_packets,
-                        timestamp: timestamp as u64,
+                        timestamp,
                         original,
                         bytes: &body[20..20 + captured],
                     })?;
                 } else {
                     metadata.skipped_packets += 1;
                 }
+            }
+            5 => {
+                ensure!(
+                    body.len() >= 12,
+                    "truncated PCAPNG interface statistics header"
+                );
+                ensure!(
+                    metadata.statistics.len() < MAX_STATISTICS,
+                    "PCAPNG exceeds 128 statistics snapshots"
+                );
+                let id = order.number(body, 0);
+                let interface = metadata.interfaces.get(id as usize).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "PCAPNG statistics references an interface without a prior descriptor"
+                    )
+                })?;
+                metadata.statistics.push(statistics(
+                    body,
+                    order,
+                    stop,
+                    metadata.blocks,
+                    interface,
+                    &mut metadata.skipped_options,
+                )?);
             }
             0 | 2 | 3 => {
                 bail!("invalid, obsolete or untimestamped PCAPNG packet block is unsupported")
@@ -812,6 +913,201 @@ mod tests {
         let stop = AtomicBool::new(true);
         assert!(
             selected_packets(&bytes, Some(&stop), Some(1), |_| Ok(()))
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+    }
+
+    fn timestamp_words(little: bool, ticks: u64) -> Vec<u8> {
+        [
+            number(little, (ticks >> 32) as u32).to_vec(),
+            number(little, ticks as u32).to_vec(),
+        ]
+        .concat()
+    }
+    fn stats_block(little: bool, id: u32, ticks: u64, opts: Vec<u8>) -> Vec<u8> {
+        block(
+            little,
+            5,
+            [
+                number(little, id).to_vec(),
+                timestamp_words(little, ticks),
+                opts,
+            ]
+            .concat(),
+        )
+    }
+
+    #[test]
+    fn statistics_preserve_word_order_wide_scalars_absence_zero_and_repeated_snapshots() {
+        for little in [false, true] {
+            for nano in [false, true] {
+                let ticks = 0x0000_0002_0102_0304;
+                let unit = if nano { 1 } else { 1000 };
+                let opts = [
+                    option(little, 9, &[if nano { 9 } else { 6 }]),
+                    option(little, 14, &signed(little, -2)),
+                ]
+                .concat();
+                let mut fields = option(little, 2, &timestamp_words(little, ticks - 1));
+                fields.extend(option(little, 3, &timestamp_words(little, ticks + 1)));
+                for (code, value) in [(4, u64::MAX), (5, 0), (6, u64::MAX - 1), (8, 42)] {
+                    let scalar = if little {
+                        value.to_le_bytes()
+                    } else {
+                        value.to_be_bytes()
+                    };
+                    fields.extend(option(little, code, &scalar));
+                }
+                fields.extend(option(little, 1, b"Authored comment"));
+                let bytes = [
+                    section(little),
+                    interface(little, opts),
+                    stats_block(little, 0, ticks, fields),
+                    packet(little, ticks, Vec::new()),
+                    stats_block(little, 0, ticks - 2, Vec::new()),
+                    stats_block(little, 0, ticks, option(little, 4, &[0; 8])),
+                ]
+                .concat();
+                let mut packet_index = 0;
+                let info = packets(&bytes, None, |p| {
+                    packet_index = p.index;
+                    Ok(())
+                })
+                .unwrap();
+                let m = info.pcapng.unwrap();
+                assert_eq!(packet_index, 1);
+                assert_eq!(
+                    (
+                        m.total_packets,
+                        m.skipped_packets,
+                        m.skipped_blocks,
+                        m.skipped_options
+                    ),
+                    (1, 0, 0, 1)
+                );
+                assert_eq!(m.statistics.len(), 3);
+                let s = &m.statistics[0];
+                assert_eq!(s.block_index, 3);
+                assert_eq!(s.timestamp_unix_ns, ticks * unit - 2_000_000_000);
+                assert_eq!(
+                    s.start_timestamp_unix_ns,
+                    Some((ticks - 1) * unit - 2_000_000_000)
+                );
+                assert_eq!(
+                    s.end_timestamp_unix_ns,
+                    Some((ticks + 1) * unit - 2_000_000_000)
+                );
+                assert_eq!(
+                    (
+                        s.received,
+                        s.interface_dropped,
+                        s.filter_accepted,
+                        s.os_dropped,
+                        s.user_delivered
+                    ),
+                    (Some(u64::MAX), Some(0), Some(u64::MAX - 1), None, Some(42))
+                );
+                assert_eq!(m.statistics[1].block_index, 5);
+                assert!(m.statistics[1].received.is_none());
+                assert_eq!(m.statistics[2].received, Some(0)); // Preserve a decrease, without delta or aggregation.
+                let json = serde_json::to_value(&m).unwrap();
+                assert_eq!(json["statistics"][0]["received"].as_u64(), Some(u64::MAX));
+                assert!(json["statistics"][1]["received"].is_null());
+            }
+        }
+    }
+
+    #[test]
+    fn statistics_validate_all_interfaces_headers_references_options_and_timestamp_ranges() {
+        let prefix = [
+            section(true),
+            interface(true, Vec::new()),
+            interface(true, Vec::new()),
+        ]
+        .concat();
+        let check = |stats: Vec<u8>| {
+            selected_packets(&[prefix.clone(), stats].concat(), None, Some(1), |_| Ok(()))
+        };
+        assert!(check(block(true, 5, vec![0; 8])).is_err());
+        assert!(check(stats_block(true, 2, 1, Vec::new())).is_err());
+        for code in 2..=8 {
+            assert!(check(stats_block(true, 0, 1, option(true, code, &[0; 7]))).is_err());
+            assert!(
+                check(stats_block(
+                    true,
+                    0,
+                    1,
+                    [option(true, code, &[0; 8]), option(true, code, &[0; 8])].concat()
+                ))
+                .is_err()
+            );
+        }
+        for code in [2, 3] {
+            assert!(
+                check(stats_block(
+                    true,
+                    0,
+                    1,
+                    option(true, code, &timestamp_words(true, u64::MAX))
+                ))
+                .is_err()
+            );
+        }
+        assert!(check(stats_block(true, 0, u64::MAX, Vec::new())).is_err());
+        let before_descriptor = [
+            section(true),
+            stats_block(true, 0, 1, Vec::new()),
+            interface(true, Vec::new()),
+        ]
+        .concat();
+        assert!(inspect(&before_descriptor).is_err());
+        let reversed = check(stats_block(
+            true,
+            0,
+            10,
+            [
+                option(true, 2, &timestamp_words(true, 9)),
+                option(true, 3, &timestamp_words(true, 8)),
+            ]
+            .concat(),
+        ))
+        .unwrap();
+        assert_eq!(reversed.pcapng.unwrap().statistics[0].notes.len(), 1);
+        let offset = [
+            section(true),
+            interface(true, option(true, 14, &signed(true, -2))),
+            stats_block(true, 0, 0, Vec::new()),
+        ]
+        .concat();
+        assert!(inspect(&offset).is_err());
+    }
+
+    #[test]
+    fn statistics_inventory_is_bounded_and_never_creates_packet_counts_or_timing() {
+        let mut bytes = [section(true), interface(true, Vec::new())].concat();
+        for _ in 0..128 {
+            bytes.extend(stats_block(true, 0, 1, Vec::new()));
+        }
+        let info = packets(&bytes, None, |_| {
+            panic!("statistics must not become packets")
+        })
+        .unwrap();
+        let m = info.pcapng.unwrap();
+        assert_eq!(m.statistics.len(), 128);
+        assert_eq!(m.total_packets, 0);
+        assert_eq!(m.interfaces[0].packets, 0);
+        bytes.extend(stats_block(true, 0, 1, Vec::new()));
+        assert!(
+            inspect(&bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("128 statistics")
+        );
+        let stop = AtomicBool::new(true);
+        assert!(
+            selected_packets(&bytes, Some(&stop), None, |_| Ok(()))
                 .unwrap_err()
                 .to_string()
                 .contains("cancelled")

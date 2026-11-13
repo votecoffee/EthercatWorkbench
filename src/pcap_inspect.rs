@@ -11,7 +11,7 @@ use std::{fs::File, io::Read, path::Path, sync::atomic::AtomicBool};
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PACKETS: u64 = 1_000_000;
-pub use crate::capture_file::{InterfaceMetadata, PcapngMetadata};
+pub use crate::capture_file::{InterfaceMetadata, InterfaceStatistics, PcapngMetadata};
 
 #[derive(Debug, Default, Serialize)]
 pub struct Counts {
@@ -324,8 +324,9 @@ fn parse_with_stop(
         "Requests and replies are counted independently, without pairing, deduplication, timeout inference, cycle indexes or deadline estimates. Duplicate frames are retained. Percentiles use a three-significant-digit histogram; longest gap is exact.".into(),
     ];
     if let Some(metadata) = &info.pcapng {
-        notes.push(format!("PCAPNG Ethernet interface {} selected from {} descriptors; {} packets on other interfaces excluded from counts, previews and timing. Signed timestamp offset {} seconds applied. {} blocks and {} options skipped without interpreting their contents, including any capture-tool statistics. Packet pairing, losses and interface identity remain unverified.",
+        notes.push(format!("PCAPNG Ethernet interface {} selected from {} descriptors; {} packets on other interfaces excluded from counts, previews and timing. Signed timestamp offset {} seconds applied. {} blocks and {} options skipped without interpreting their contents. Packet pairing and interface identity remain unverified.",
             metadata.interface_id, metadata.interfaces.len(), metadata.skipped_packets, metadata.timestamp_offset_seconds, metadata.skipped_blocks, metadata.skipped_options));
+        notes.push(format!("{} declared capture-tool statistics snapshots retained separately in file order, including other interfaces. Missing counters are unknown; repeated counters are not summed, differenced or reconciled with packet, EtherCAT, CSV or consumer counts. Declared zeros do not prove complete capture or qualified wire timing.",metadata.statistics.len()));
     }
     if !monotonic {
         notes.push("Capture timestamps regress; all spacing summaries are unavailable.".into());
@@ -353,7 +354,7 @@ fn parse_with_stop(
     let profile_sha256 = crate::benchmark::hash(&serde_json::to_vec(profile)?);
     crate::review::check_cancel(stop)?;
     Ok(Report {
-        schema: 3,
+        schema: 4,
         app_version: env!("CARGO_PKG_VERSION").into(),
         file: String::new(),
         file_bytes: bytes.len() as u64,

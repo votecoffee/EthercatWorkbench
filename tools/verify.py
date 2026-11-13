@@ -943,7 +943,7 @@ def verify_pcap(cli, destination):
             assert result["file_sha256"] == hashlib.sha256(data).hexdigest()
             assert result["file_bytes"] == len(data) and result["profile"]["requested_cycle_us"] == 1000
             assert result["timestamp_resolution"] == ("nanoseconds" if nano else "microseconds")
-            assert result["schema"] == 3 and result["capture_format"] == "pcap" and result["pcapng"] is None
+            assert result["schema"] == 4 and result["capture_format"] == "pcap" and result["pcapng"] is None
             assert result["counts"] == dict(packets=12, snapshot_truncated=1, ethercat=10,
                 requests=3, replies=5, valid_safeop_replies=3, wkc_mismatches=1, al_mismatches=1,
                 unmatched_ethercat=2, other_packets=2, vlan_packets=1, timestamp_regressions=0)
@@ -1027,7 +1027,7 @@ def verify_pcapng(cli, destination, classic_fixture):
                 path = destination / f"authored-{'le' if endian == '<' else 'be'}-{'ns' if nano else 'us'}-{offset}.pcapng"
                 path.write_bytes(data)
                 r = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--preview", 64)
-                assert r["schema"] == 3 and r["capture_format"] == "pcapng"
+                assert r["schema"] == 4 and r["capture_format"] == "pcapng"
                 assert r["file_sha256"] == hashlib.sha256(data).hexdigest() and r["file_bytes"] == len(data)
                 assert r["counts"] == reference["counts"]
                 assert all(r[k] == reference[k] for k in ["request_spacing", "reply_spacing", "valid_reply_spacing"])
@@ -1035,7 +1035,7 @@ def verify_pcapng(cli, destination, classic_fixture):
                 assert r["pcapng"] == dict(minor_version=0, declared_section_bytes=None, interface_id=0, link_type=1,
                     snaplen=65535, timestamp_resolution_exponent=9 if nano else 6, timestamp_offset_seconds=offset,
                     blocks=14, skipped_blocks=0, skipped_options=0, selection_explicit=False,
-                    total_packets=12, skipped_packets=0,
+                    total_packets=12, skipped_packets=0, statistics=[],
                     interfaces=[dict(interface_id=0, link_type=1, snaplen=65535, timestamp_resolution_exponent=9 if nano else 6,
                                      timestamp_offset_seconds=offset, packets=12)])
                 for expected, actual in zip(reference["preview"], r["preview"], strict=True):
@@ -1117,6 +1117,77 @@ def verify_pcapng(cli, destination, classic_fixture):
         assert not failed.exists()
         results.append(r)
     cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", classic_fixture, "--interface", 0, success=False)
+    # Interface Statistics Blocks have split-word timestamps but scalar u64 counters.
+    # Preserve declared snapshots; statistics must not change frame indexes or timing.
+    def statistics(endian, interface, ticks, counters=None, start=None, end=None, extra=b""):
+        opts = b""
+        for code, value in [(2, start), (3, end)]:
+            if value is not None:
+                opts += option(endian, code, struct.pack(endian + "II", value >> 32, value & 0xffffffff))
+        for code, value in (counters or {}).items():
+            opts += option(endian, code, struct.pack(endian + "Q", value))
+        return block(endian, 5, struct.pack(endian + "III", interface, ticks >> 32, ticks & 0xffffffff) + opts + extra)
+
+    for endian in ("<", ">"):
+        for nano in (False, True):
+            unit = 1 if nano else 1000
+            shb, idb, epbs = capture(endian, nano, -2, interface=1)
+            other_idb = block(endian, 1, struct.pack(endian + "HHI", 101, 0, 65535) + option(endian, 14, struct.pack(endian + "q", 3)))
+            first, last = records[0][0] // unit, records[-1][0] // unit
+            declared = statistics(endian, 1, last + 1000, {4: (1 << 64) - 1, 5: 0, 6: (1 << 64) - 2, 7: 5, 8: 42}, first, last,
+                                  option(endian, 1, b"Authored capture statistics"))
+            other = statistics(endian, 0, 4_000_000, {5: 99})
+            decreasing = statistics(endian, 1, first - 1, {4: 3, 5: 2}, last, first)
+            empty = statistics(endian, 1, first, {})
+            data = shb + other_idb + idb + other + declared + b"".join(epbs) + decreasing + empty
+            path = destination / f"statistics-{'le' if endian == '<' else 'be'}-{'ns' if nano else 'us'}.pcapng"
+            path.write_bytes(data)
+            export = path.with_suffix(".json")
+            r = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--interface", 1, "--preview", 64, "--out", export)
+            assert r == json.loads(export.read_bytes()) and r["schema"] == 4
+            assert r["counts"] == reference["counts"]
+            assert all(r[k] == reference[k] for k in ["request_spacing", "reply_spacing", "valid_reply_spacing"])
+            for expected, actual in zip(reference["preview"], r["preview"], strict=True):
+                assert actual == dict(expected, timestamp_unix_ns=expected["timestamp_unix_ns"] - 2_000_000_000)
+            m = r["pcapng"]; stats = m["statistics"]
+            assert m["total_packets"] == 12 and m["skipped_packets"] == m["skipped_blocks"] == 0 and m["skipped_options"] == 1
+            assert len(stats) == 4 and [s["block_index"] for s in stats] == [4, 5, 18, 19]
+            assert [s["interface_id"] for s in stats] == [0, 1, 1, 1]
+            assert stats[0]["timestamp_unix_ns"] == 7_000_000_000 and stats[0]["interface_dropped"] == 99
+            assert stats[1] == dict(block_index=5, interface_id=1, timestamp_unix_ns=(last + 1000) * unit - 2_000_000_000,
+                                   start_timestamp_unix_ns=first * unit - 2_000_000_000, end_timestamp_unix_ns=last * unit - 2_000_000_000,
+                                   received=(1 << 64) - 1, interface_dropped=0, filter_accepted=(1 << 64) - 2, os_dropped=5, user_delivered=42, notes=[])
+            assert stats[2]["received"] == 3 and stats[2]["interface_dropped"] == 2 and stats[2]["os_dropped"] is None
+            assert "end precedes" in stats[2]["notes"][0]
+            assert all(stats[3][k] is None for k in ["start_timestamp_unix_ns", "end_timestamp_unix_ns", "received", "interface_dropped", "filter_accepted", "os_dropped", "user_delivered"])
+            original_export = export.read_bytes()
+            cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--interface", 1, "--out", export, success=False)
+            assert export.read_bytes() == original_export and path.read_bytes() == data
+            # A structurally valid, inconsistent range is retained with a note; malformed
+            # statistics fail, including records belonging to an excluded interface.
+            bad_stats = {"short-header": block(endian, 5, bytes(8)), "missing-interface": statistics(endian, 2, 1),
+                         "header-time-range": statistics(endian, 0, (1 << 64) - 1)}
+            for code in range(2, 9):
+                bad_stats[f"wrong-size-{code}"] = statistics(endian, 0, 1, extra=option(endian, code, bytes(7)))
+                bad_stats[f"duplicate-{code}"] = statistics(endian, 0, 1, extra=option(endian, code, bytes(8)) * 2)
+            for code in (2, 3):
+                bad_stats[f"option-time-range-{code}"] = statistics(endian, 0, 1, extra=option(endian, code, struct.pack(endian + "II", 0xffffffff, 0xffffffff)))
+            for label, bad_record in bad_stats.items():
+                bad = destination / f"statistics-bad-{endian == '<'}-{nano}-{label}.pcapng"
+                bad.write_bytes(shb + other_idb + idb + bad_record + b"".join(epbs))
+                failed = bad.with_suffix(".json")
+                cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", bad, "--interface", 1, "--out", failed, success=False)
+                assert not failed.exists()
+            results.append(r)
+    shb, idb, _ = capture(selected=[])
+    snapshots = statistics("<", 0, 1) * 128
+    path = destination / "statistics-bound.pcapng"; path.write_bytes(shb + idb + snapshots)
+    r = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path)
+    assert len(r["pcapng"]["statistics"]) == 128 and r["counts"]["packets"] == 0 and r["first_timestamp_unix_ns"] is None
+    path = destination / "statistics-over-bound.pcapng"; path.write_bytes(shb + idb + snapshots + statistics("<", 0, 1))
+    cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, success=False)
+    path = destination / "statistics-before-descriptor.pcapng"; path.write_bytes(shb + statistics("<", 0, 1) + idb)
+    cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, success=False)
     (destination / "inspection-reports.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
 
 

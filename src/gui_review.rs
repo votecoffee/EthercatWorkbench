@@ -508,6 +508,7 @@ fn show_pcap(ui: &mut egui::Ui, report: &pcap_inspect::Report) {
             }
             ui.label("Interface IDs and clocks are recorded capture metadata, not confirmed physical NIC identities or synchronized clocks.");
         });
+        show_capture_statistics(ui, metadata);
     }
     ui.strong(format!(
         "{} saved packets · {} recognized returned frames · {} valid SAFEOP frames",
@@ -652,6 +653,89 @@ fn show_pcap(ui: &mut egui::Ui, report: &pcap_inspect::Report) {
             }
         },
     );
+}
+
+fn show_capture_statistics(ui: &mut egui::Ui, metadata: &pcap_inspect::PcapngMetadata) {
+    let selected = metadata
+        .statistics
+        .iter()
+        .filter(|s| s.interface_id == metadata.interface_id)
+        .count();
+    if selected == 0 {
+        ui.label("Capture tool statistics · unavailable for selected interface. Missing counters do not mean zero loss.");
+    } else {
+        ui.label(format!(
+            "Capture tool statistics · {selected} declared snapshots on selected interface {}",
+            metadata.interface_id
+        ));
+    }
+    let reported_losses = metadata
+        .statistics
+        .iter()
+        .filter(|s| {
+            s.interface_id == metadata.interface_id
+                && (s.interface_dropped.is_some_and(|v| v > 0)
+                    || s.os_dropped.is_some_and(|v| v > 0))
+        })
+        .count();
+    if reported_losses > 0 {
+        ui.colored_label(egui::Color32::YELLOW,format!("Declared capture drops in {reported_losses} selected-interface snapshots; inspect each record. Counters are not summed."));
+    }
+    ui.label("Capture-tool declarations only. Snapshots are separate; counters are not summed or reconciled with EtherCAT, CSV or consumer losses. Declared zero does not prove complete capture.");
+    ui.collapsing("Declared capture statistics (all interfaces)", |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("pcap-statistics")
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for s in &metadata.statistics {
+                    let selected = s.interface_id == metadata.interface_id;
+                    ui.strong(format!(
+                        "Block {} · interface {} · {}",
+                        s.block_index,
+                        s.interface_id,
+                        if selected {
+                            "SELECTED"
+                        } else {
+                            "excluded from frame analysis"
+                        }
+                    ));
+                    ui.label(format!(
+                        "Statistics timestamp · {} Unix ns · declared start {} · declared end {}",
+                        s.timestamp_unix_ns,
+                        s.start_timestamp_unix_ns
+                            .map_or("unavailable".into(), |v| v.to_string()),
+                        s.end_timestamp_unix_ns
+                            .map_or("unavailable".into(), |v| v.to_string())
+                    ));
+                    for (label, value) in [
+                        ("Received", s.received),
+                        ("Interface dropped", s.interface_dropped),
+                        ("Filter accepted", s.filter_accepted),
+                        ("OS dropped", s.os_dropped),
+                        ("User delivered", s.user_delivered),
+                    ] {
+                        ui.label(format!(
+                            "{label} · {}",
+                            value.map_or("unavailable".into(), |v| v.to_string())
+                        ));
+                    }
+                    if s.interface_dropped.is_some_and(|v| v > 0)
+                        || s.os_dropped.is_some_and(|v| v > 0)
+                    {
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            if selected {
+                                "Reported capture drops present on selected interface"
+                            } else {
+                                "Reported capture drops on excluded interface"
+                            },
+                        );
+                    }
+                    warnings(ui, &s.notes);
+                    ui.separator();
+                }
+            });
+    });
 }
 
 fn show_audit(ui: &mut egui::Ui, audit: &Audit) {
@@ -872,7 +956,7 @@ mod tests {
     #[test]
     fn pcap_layout_labels_invalid_payloads_and_unavailable_capture_spacing() {
         let report = pcap_inspect::Report {
-            schema: 3,
+            schema: 4,
             app_version: env!("CARGO_PKG_VERSION").into(),
             file: "Authored UI fixture".into(),
             file_bytes: 100,
@@ -898,6 +982,7 @@ mod tests {
                 blocks: 4,
                 skipped_blocks: 0,
                 skipped_options: 1,
+                statistics: Vec::new(),
                 selection_explicit: true,
                 total_packets: 5,
                 skipped_packets: 4,
@@ -1024,6 +1109,66 @@ mod tests {
             assert!(text.contains(label), "missing {label}: {text}");
         }
         assert!(!panel.is_running());
+    }
+
+    #[test]
+    fn capture_statistics_layout_keeps_declared_unknown_zero_and_excluded_losses_distinct() {
+        let mut metadata = pcap_inspect::PcapngMetadata {
+            minor_version: 0,
+            declared_section_bytes: None,
+            interface_id: 1,
+            link_type: 1,
+            snaplen: 65535,
+            timestamp_resolution_exponent: 9,
+            timestamp_offset_seconds: 0,
+            blocks: 4,
+            skipped_blocks: 0,
+            skipped_options: 0,
+            selection_explicit: true,
+            total_packets: 0,
+            skipped_packets: 0,
+            interfaces: Vec::new(),
+            statistics: vec![pcap_inspect::InterfaceStatistics {
+                block_index: 4,
+                interface_id: 1,
+                timestamp_unix_ns: 42,
+                received: Some(u64::MAX),
+                interface_dropped: Some(7),
+                os_dropped: None,
+                notes: vec!["Declared end precedes declared start".into()],
+                ..Default::default()
+            }],
+        };
+        let text = text_from_layout(|ui| show_capture_statistics(ui, &metadata));
+        for label in [
+            "1 declared snapshots on selected interface 1",
+            "18446744073709551615",
+            "Interface dropped · 7",
+            "OS dropped · unavailable",
+            "Reported capture drops present on selected interface",
+            "Declared capture drops in 1 selected-interface snapshots",
+            "not summed",
+            "Declared zero does not prove complete capture",
+            "Declared end precedes declared start",
+        ] {
+            assert!(text.contains(label), "missing {label}: {text}");
+        }
+        metadata.statistics[0].interface_dropped = Some(0);
+        metadata.statistics[0].os_dropped = Some(0);
+        let text = text_from_layout(|ui| show_capture_statistics(ui, &metadata));
+        assert!(text.contains("Interface dropped · 0") && text.contains("OS dropped · 0"));
+        assert!(!text.contains("Reported capture drops present"));
+        metadata.statistics[0].interface_id = 0;
+        metadata.statistics[0].interface_dropped = Some(7);
+        let text = text_from_layout(|ui| show_capture_statistics(ui, &metadata));
+        for label in [
+            "unavailable for selected interface",
+            "Missing counters do not mean zero loss",
+            "excluded from frame analysis",
+            "Reported capture drops on excluded interface",
+        ] {
+            assert!(text.contains(label), "missing {label}: {text}");
+        }
     }
 
     #[test]
