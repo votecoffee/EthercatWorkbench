@@ -518,26 +518,33 @@ fn safeop_on(
             al[2]
         );
         if dc_support.enhanced() {
-            let (activation, sync0, sync1) = port.drive(&mut tx, &mut rx, Some(stop), async {
-                Ok::<_, anyhow::Error>((
-                    RegisterRead::from_result(
-                        Command::fprd(station, 0x0981).receive::<u8>(&main).await,
-                    ),
-                    RegisterRead::from_result(
-                        Command::fprd(station, 0x09a0).receive::<u32>(&main).await,
-                    ),
-                    RegisterRead::from_result(
-                        Command::fprd(station, 0x09a4).receive::<u32>(&main).await,
-                    ),
-                ))
-            })?;
+            let (activation, assign, sync0, sync1) =
+                port.drive(&mut tx, &mut rx, Some(stop), async {
+                    Ok::<_, anyhow::Error>((
+                        RegisterRead::from_result(
+                            Command::fprd(station, 0x0981).receive::<u8>(&main).await,
+                        ),
+                        RegisterRead::from_result(
+                            Command::fprd(station, 0x0980).receive::<u16>(&main).await,
+                        ),
+                        RegisterRead::from_result(
+                            Command::fprd(station, 0x09a0).receive::<u32>(&main).await,
+                        ),
+                        RegisterRead::from_result(
+                            Command::fprd(station, 0x09a4).receive::<u32>(&main).await,
+                        ),
+                    ))
+                })?;
             let sync = report.synchronization.as_mut().expect("sync readback set");
             sync.dc.activation = Some(activation);
+            sync.dc.assign_activate = Some(assign);
             sync.dc.sync0_cycle_ns = Some(sync0);
             sync.dc.sync1_cycle_ns = Some(sync1);
             report.dc_sync = sync.dc.summary();
             sync.dc.confirm_disabled()?;
         }
+        report.sync_review =
+            crate::sync_review::review(profile, report.synchronization.as_ref())?.map(Arc::new);
         Ok(station)
     })();
 

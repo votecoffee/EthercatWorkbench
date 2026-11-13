@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "name": "Authored CoE/DC timing review",
+  "nic": "",
+  "expected_identity": {
+    "vendor": 16715776,
+    "product": 3,
+    "revision": 1
+  },
+  "esi": {
+    "file_name": "sync-modes.esi.xml",
+    "sha256": "2e854351d3ae2d7a7f5b7f957d7795da3033845cf2a4151e773de3a3f2d1b4eb",
+    "device": "Authored CoE/DC timing review",
+    "identity": {
+      "vendor": 16715776,
+      "product": 3,
+      "revision": 1
+    },
+    "default_tx_bytes": 8,
+    "default_rx_bytes": 2,
+    "dc_modes": [
+      {
+        "name": "FreeRun",
+        "description": "Authored disabled-SYNC register expectation",
+        "xml_path": "Device/Dc/OpMode",
+        "assign_activate": 0,
+        "cycle_sync0": {
+          "value_ns": 0,
+          "factor": null,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "shift_sync0": null,
+        "cycle_sync1": {
+          "value_ns": 0,
+          "factor": null,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "shift_sync1": null,
+        "notes": []
+      },
+      {
+        "name": "Sync0-Factor",
+        "description": "Requires an explicit sync-unit cycle assumption",
+        "xml_path": "Device/Dc/OpMode",
+        "assign_activate": 768,
+        "cycle_sync0": {
+          "value_ns": 0,
+          "factor": 1,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "shift_sync0": {
+          "value_ns": -1250,
+          "factor": null,
+          "input": true,
+          "input_delay_ns": 250,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "cycle_sync1": null,
+        "shift_sync1": null,
+        "notes": []
+      },
+      {
+        "name": "Sync01-NegativeFactors",
+        "description": null,
+        "xml_path": "Device/Dc/OpMode",
+        "assign_activate": 1792,
+        "cycle_sync0": {
+          "value_ns": 0,
+          "factor": -2,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "shift_sync0": {
+          "value_ns": -25000,
+          "factor": null,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "cycle_sync1": {
+          "value_ns": 0,
+          "factor": -2,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "shift_sync1": {
+          "value_ns": 0,
+          "factor": 1,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "notes": []
+      },
+      {
+        "name": "Fixed-Sync01",
+        "description": "Device/OpMode/Dc form with a literal SYNC0 cycle",
+        "xml_path": "Device/OpMode/Dc",
+        "assign_activate": 1792,
+        "cycle_sync0": {
+          "value_ns": 250000,
+          "factor": 1,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "shift_sync0": {
+          "value_ns": -1000,
+          "factor": null,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "cycle_sync1": {
+          "value_ns": 0,
+          "factor": 3,
+          "input": null,
+          "input_delay_ns": null,
+          "output_delay_ns": null,
+          "notes": []
+        },
+        "shift_sync1": null,
+        "notes": [
+          "Unsupported DC mode child Sm; mapping/vendor extensions require separate review"
+        ]
+      }
+    ],
+    "notes": [
+      "Imported 4 ESI DC modes for offline review; none will be applied to hardware"
+    ]
+  },
+  "staged_esi_dc_mode": 2,
+  "sync_unit_cycle_ns": 1000000,
+  "requested_cycle_us": 1000,
+  "input_loss_timeout_ms": 1000,
+  "scheduler": "deadline",
+  "mode": "every",
+  "queue_capacity": 4096,
+  "rotate_rows": 0,
+  "tx_bytes": 8,
+  "rx_bytes": 2,
+  "tx": [
+    {
+      "name": "Counter [1A00/6000:01]",
+      "bit": 0,
+      "width": 16,
+      "kind": "unsigned",
+      "big_endian": false,
+      "swap_bytes_in_words": false,
+      "reverse_words": false,
+      "log": true,
+      "source": "esi",
+      "pdo_index": 6656,
+      "object_index": 24576,
+      "subindex": 1
+    },
+    {
+      "name": "Sensor active [1A00/6000:02]",
+      "bit": 16,
+      "width": 1,
+      "kind": "bool",
+      "big_endian": false,
+      "swap_bytes_in_words": false,
+      "reverse_words": false,
+      "log": true,
+      "source": "esi",
+      "pdo_index": 6656,
+      "object_index": 24576,
+      "subindex": 2
+    },
+    {
+      "name": "Scaled counter [1A00/6000:03]",
+      "bit": 32,
+      "width": 32,
+      "kind": "f32",
+      "big_endian": false,
+      "swap_bytes_in_words": false,
+      "reverse_words": false,
+      "log": true,
+      "source": "esi",
+      "pdo_index": 6656,
+      "object_index": 24576,
+      "subindex": 3
+    }
+  ],
+  "rx": [
+    {
+      "name": "Staged setpoint [1600/7000:01]",
+      "bit": 0,
+      "width": 16,
+      "kind": "signed",
+      "big_endian": false,
+      "swap_bytes_in_words": false,
+      "reverse_words": false,
+      "log": false,
+      "source": "esi",
+      "pdo_index": 5632,
+      "object_index": 28672,
+      "subindex": 1
+    }
+  ],
+  "staged_rx_hex": ""
+}

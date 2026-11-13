@@ -5,7 +5,7 @@ use ethercat_workbench::{
     model::{LogMode, Profile, Scheduler, payload_hex},
     run::{self, BenchApproval, Mode, RunOptions, Snapshot},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
     sync::{
@@ -40,6 +40,18 @@ enum Command {
         device: usize,
         #[arg(long)]
         out: PathBuf,
+        /// Stage an ESI DC mode for offline review only (zero-based index).
+        #[arg(long)]
+        dc_mode: Option<usize>,
+        /// Manual sync-unit period assumption for resolving ESI factors; does not set host or device timing.
+        #[arg(long, requires = "dc_mode")]
+        sync_unit_cycle_ns: Option<u32>,
+    },
+    /// Review a staged ESI DC mode, optionally comparing a saved run report. Performs no bus operations.
+    ReviewSync {
+        profile: PathBuf,
+        #[arg(long)]
+        readback: Option<PathBuf>,
     },
     /// Parse and validate a saved profile.
     Validate { profile: PathBuf },
@@ -108,6 +120,16 @@ fn output(value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct SavedSyncReport {
+    synchronization: Option<ethercat_workbench::sync::Synchronization>,
+    devices: Vec<SavedSyncDevice>,
+}
+#[derive(Deserialize)]
+struct SavedSyncDevice {
+    identity: Option<ethercat_workbench::model::Identity>,
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Nics => output(&ethercat_workbench::live::nics()?),
@@ -120,15 +142,50 @@ fn main() -> Result<()> {
             }).collect();
             output(&list)
         }
-        Command::EsiImport { file, device, out } => {
+        Command::EsiImport {
+            file,
+            device,
+            out,
+            dc_mode,
+            sync_unit_cycle_ns,
+        } => {
             let devices = esi::load(&file)?;
             let selected = devices
                 .get(device)
                 .context("ESI device index out of range")?;
             let mut profile = Profile::default();
             selected.apply(&mut profile);
+            profile.staged_esi_dc_mode = dc_mode;
+            profile.sync_unit_cycle_ns = sync_unit_cycle_ns;
             profile.save(&out)?;
             output(&selected.notes)
+        }
+        Command::ReviewSync { profile, readback } => {
+            let profile = Profile::load(&profile)?;
+            let saved = readback
+                .map(|path| -> Result<_> {
+                    let file = std::fs::File::open(path)?;
+                    ensure!(
+                        file.metadata()?.len() <= 16 * 1024 * 1024,
+                        "saved report exceeds 16 MiB"
+                    );
+                    let saved: SavedSyncReport = serde_json::from_reader(file)?;
+                    ensure!(
+                        saved.devices.len() == 1
+                            && profile.expected_identity.is_some()
+                            && saved.devices[0].identity == profile.expected_identity,
+                        "saved synchronization report must identify one device matching the profile"
+                    );
+                    let mut sync = saved
+                        .synchronization
+                        .context("saved report has no synchronization readback")?;
+                    sync.source = format!("Saved run report ({})", sync.source);
+                    Ok(sync)
+                })
+                .transpose()?;
+            let review = ethercat_workbench::sync_review::review(&profile, saved.as_ref())?
+                .context("select an ESI DC mode for offline review first")?;
+            output(&review)
         }
         Command::Validate { profile } => output(&Profile::load(&profile)?),
         Command::VerifyPdo { profile, readback } => {

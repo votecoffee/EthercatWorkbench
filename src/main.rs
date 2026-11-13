@@ -278,6 +278,57 @@ impl App {
                 ));
             }
         }
+        if let Some(esi) = &self.profile.esi
+            && !esi.dc_modes.is_empty()
+        {
+            ui.label("ESI DC mode review (staged; runtime requests disabled SYNC)");
+            let selected = self
+                .profile
+                .staged_esi_dc_mode
+                .and_then(|i| esi.dc_modes.get(i))
+                .map_or("None selected", |m| m.name.as_str());
+            egui::ComboBox::from_id_salt("staged_dc_mode")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(
+                            &mut self.profile.staged_esi_dc_mode,
+                            None,
+                            "None selected",
+                        )
+                        .clicked()
+                    {
+                        self.profile.sync_unit_cycle_ns = None;
+                    }
+                    for (index, mode) in esi.dc_modes.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut self.profile.staged_esi_dc_mode,
+                            Some(index),
+                            format!("{index}: {}", mode.name),
+                        );
+                    }
+                });
+            if self.profile.staged_esi_dc_mode.is_some() {
+                ui.horizontal(|ui| {
+                    ui.label("Manual sync-unit assumption ns (0 = unspecified)");
+                    let mut value = self.profile.sync_unit_cycle_ns.unwrap_or(0);
+                    if ui.add(egui::DragValue::new(&mut value)).changed() {
+                        self.profile.sync_unit_cycle_ns = (value != 0).then_some(value);
+                    }
+                });
+                match ethercat_workbench::sync_review::review(&self.profile, None) {
+                    Ok(Some(review)) => {
+                        ui.collapsing("Staged ESI timing details", |ui| {
+                            ui.monospace(serde_json::to_string_pretty(&review).unwrap_or_default());
+                        });
+                    }
+                    Err(error) => {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
         ui.horizontal(|ui| {
             if let Some(identity) = &mut self.profile.expected_identity {
                 ui.label("Expected identity (vendor / product / revision)");
@@ -765,6 +816,14 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
         "Device sync · {}  |  DC · {}",
         r.device_sync, r.dc_sync
     ));
+    if let Some(review) = &r.sync_review {
+        ui.collapsing(
+            "Staged ESI DC mode versus run readback (not applied)",
+            |ui| {
+                ui.monospace(serde_json::to_string_pretty(review).unwrap_or_default());
+            },
+        );
+    }
     if let Some(sync) = &r.synchronization {
         ui.collapsing("Synchronization register readback", |ui| {
             ui.label(&sync.source);

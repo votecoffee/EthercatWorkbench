@@ -34,6 +34,8 @@ pub struct EsiSource {
     #[serde(default)]
     pub default_rx_bytes: Option<usize>,
     #[serde(default)]
+    pub dc_modes: Vec<crate::sync_review::DcMode>,
+    #[serde(default)]
     pub notes: Vec<String>,
 }
 
@@ -227,6 +229,8 @@ pub struct Profile {
     pub nic: String,
     pub expected_identity: Option<Identity>,
     pub esi: Option<EsiSource>,
+    pub staged_esi_dc_mode: Option<usize>,
+    pub sync_unit_cycle_ns: Option<u32>,
     pub requested_cycle_us: u64,
     pub input_loss_timeout_ms: u64,
     pub scheduler: Scheduler,
@@ -248,6 +252,8 @@ impl Default for Profile {
             nic: String::new(),
             expected_identity: None,
             esi: None,
+            staged_esi_dc_mode: None,
+            sync_unit_cycle_ns: None,
             requested_cycle_us: 1000,
             input_loss_timeout_ms: 1000,
             scheduler: Scheduler::Deadline,
@@ -282,6 +288,21 @@ impl Profile {
             self.input_loss_timeout_ms <= 60_000,
             "input loss timeout must be 0 (monitor only) or 1–60000 ms"
         );
+        if let Some(esi) = &self.esi {
+            ensure!(esi.dc_modes.len() <= 64, "ESI has more than 64 DC modes");
+            for mode in &esi.dc_modes {
+                mode.validate()?;
+            }
+        }
+        ensure!(
+            self.sync_unit_cycle_ns.is_none_or(|ns| ns > 0),
+            "sync-unit cycle assumption must be positive"
+        );
+        ensure!(
+            self.staged_esi_dc_mode.is_some() || self.sync_unit_cycle_ns.is_none(),
+            "sync-unit assumption requires a staged ESI DC mode"
+        );
+        crate::sync_review::review(self, None)?;
         for (len, fields) in [(self.tx_bytes, &self.tx), (self.rx_bytes, &self.rx)] {
             ensure!(
                 len <= MAX_PAYLOAD && fields.len() <= MAX_FIELDS,

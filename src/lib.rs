@@ -7,6 +7,7 @@ mod replay;
 pub mod run;
 mod sii;
 pub mod sync;
+pub mod sync_review;
 pub mod virtual_esc;
 mod wire;
 

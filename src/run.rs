@@ -90,6 +90,7 @@ pub struct Report {
     pub device_sync: String,
     pub dc_sync: String,
     pub synchronization: Option<crate::sync::Synchronization>,
+    pub sync_review: Option<Arc<crate::sync_review::Review>>,
     pub connection_generation: u64,
     pub cycles: u64,
     pub replies: u64,
@@ -206,6 +207,9 @@ pub fn run(
     };
     let result = run_inner(&profile, options, stop, view, &mut report);
     report.cancelled = stop.load(Relaxed);
+    if let Ok(review) = crate::sync_review::review(&profile, report.synchronization.as_ref()) {
+        report.sync_review = review.map(Arc::new);
+    }
     if let Some((status, code)) = report.stopped_al
         && let Some(device) = report.devices.first_mut()
     {
@@ -237,6 +241,7 @@ fn run_inner(
     report: &mut Report,
 ) -> Result<()> {
     profile.validate()?;
+    report.sync_review = crate::sync_review::review(profile, None)?.map(Arc::new);
     ensure!(profile.tx_bytes > 0, "a TxPDO image is required");
     ensure!(
         !options.duration.is_zero() && options.duration <= Duration::from_secs(86_400),

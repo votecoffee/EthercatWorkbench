@@ -176,7 +176,7 @@ impl VirtualEsc {
                         self.read(usize::from(register), data)?;
                         u16::from(
                             !(self.fault == VirtualFault::DcReadbackUnavailable
-                                && register == 0x0981),
+                                && (0x0980..=0x0981).contains(&register)),
                         )
                     }
                     0x02 | 0x05 | 0x08 => {
@@ -231,9 +231,12 @@ impl VirtualEsc {
             .checked_add(data.len())
             .filter(|end| *end <= self.registers.len());
         ensure!(end.is_some(), "virtual ESC register read outside memory");
-        if register == 0x0981 && self.fault == VirtualFault::DcActive {
+        if register <= 0x0981
+            && end.is_some_and(|end| end > 0x0981)
+            && self.fault == VirtualFault::DcActive
+        {
             data.fill(0);
-            data[0] = 3; // Authored unexpected device activation, no enable write was sent.
+            data[0x0981 - register] = 3; // Authored unexpected device activation, no enable write was sent.
         } else if register == 0x0508 {
             let word_address = usize::from(word(&self.registers[0x0504..]));
             let start = word_address * 2;

@@ -24,10 +24,16 @@ impl Device {
         profile.tx_bytes = self.tx_bytes;
         profile.rx_bytes = self.rx_bytes;
         profile.staged_rx_hex.clear();
+        profile.staged_esi_dc_mode = None;
+        profile.sync_unit_cycle_ns = None;
     }
 }
 
 pub fn load(path: &Path) -> Result<Vec<Device>> {
+    ensure!(
+        std::fs::metadata(path)?.len() <= 16 * 1024 * 1024,
+        "ESI exceeds 16 MiB"
+    );
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let file = path
         .file_name()
@@ -37,6 +43,7 @@ pub fn load(path: &Path) -> Result<Vec<Device>> {
 }
 
 pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
+    ensure!(bytes.len() <= 16 * 1024 * 1024, "ESI exceeds 16 MiB");
     let text = xml_text(bytes)?;
     let doc = Document::parse(&text).context("parse ESI XML (DTD disabled)")?;
     let root = doc.root_element();
@@ -75,18 +82,12 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
             }
             let (tx, tx_bytes) = fields(device, "TxPdo", &mut notes)?;
             let (rx, rx_bytes) = fields(device, "RxPdo", &mut notes)?;
-            if let Some(dc) = child(device, "Dc") {
-                let modes: Vec<_> = dc
-                    .children()
-                    .filter(|n| named(*n, "OpMode"))
-                    .filter_map(|mode| self::label(mode, "Name"))
-                    .collect();
-                if !modes.is_empty() {
-                    notes.push(format!(
-                        "ESI DC operating modes (descriptive): {}",
-                        modes.join(", ")
-                    ));
-                }
+            let dc_modes = dc_modes(device)?;
+            if !dc_modes.is_empty() {
+                notes.push(format!(
+                    "Imported {} ESI DC modes for offline review; none will be applied to hardware",
+                    dc_modes.len()
+                ));
             }
             Ok(Device {
                 source: EsiSource {
@@ -95,6 +96,7 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
                     device: label,
                     default_tx_bytes: Some(tx_bytes),
                     default_rx_bytes: Some(rx_bytes),
+                    dc_modes,
                     notes: notes.clone(),
                     identity: Identity {
                         vendor,
@@ -150,7 +152,9 @@ fn xml_text(bytes: &[u8]) -> Result<String> {
 }
 
 fn named(node: Node<'_, '_>, tag: &str) -> bool {
-    node.is_element() && node.tag_name().name() == tag
+    node.is_element()
+        && node.tag_name().name() == tag
+        && node.tag_name().namespace() == node.document().root_element().tag_name().namespace()
 }
 
 fn child<'a, 'd>(node: Node<'a, 'd>, tag: &str) -> Option<Node<'a, 'd>> {
@@ -258,9 +262,226 @@ fn node_number(node: Node<'_, '_>, name: &str) -> Result<u32> {
     )
 }
 
+fn unique_child<'a, 'd>(node: Node<'a, 'd>, tag: &str) -> Result<Option<Node<'a, 'd>>> {
+    let mut children = node.children().filter(|n| named(*n, tag));
+    let first = children.next();
+    ensure!(children.next().is_none(), "duplicate ESI DC element {tag}");
+    Ok(first)
+}
+
+fn dc_text(node: Node<'_, '_>) -> String {
+    node.children()
+        .filter(Node::is_text)
+        .filter_map(|n| n.text())
+        .collect()
+}
+
+fn timing(node: Node<'_, '_>, tag: &str) -> Result<Option<crate::sync_review::Timing>> {
+    let Some(time) = unique_child(node, tag)? else {
+        return Ok(None);
+    };
+    let integer = |text: &str| {
+        text.trim()
+            .parse::<i32>()
+            .with_context(|| format!("invalid signed ESI DC integer in {tag}: {text:?}"))
+    };
+    let attr = |name| time.attribute(name).map(integer).transpose();
+    let input = time
+        .attribute("Input")
+        .map(|v| match v.trim() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => bail!("invalid ESI DC Input boolean {v:?}"),
+        })
+        .transpose()?;
+    let mut notes: Vec<_> = time
+        .attributes()
+        .filter(|a| {
+            a.namespace().is_some()
+                || !["Factor", "Input", "InputDelayTime", "OutputDelayTime"].contains(&a.name())
+        })
+        .map(|a| format!("Unsupported {tag} attribute {}={}", a.name(), a.value()))
+        .collect();
+    for child in time.children().filter(Node::is_element) {
+        notes.push(format!(
+            "Unsupported {tag} child {}",
+            child.tag_name().name()
+        ));
+    }
+    Ok(Some(crate::sync_review::Timing {
+        value_ns: integer(&dc_text(time))?,
+        factor: attr("Factor")?,
+        input,
+        input_delay_ns: attr("InputDelayTime")?,
+        output_delay_ns: attr("OutputDelayTime")?,
+        notes,
+    }))
+}
+
+fn dc_modes(device: Node<'_, '_>) -> Result<Vec<crate::sync_review::DcMode>> {
+    let mut modes = Vec::new();
+    let mut add = |outer: Node<'_, '_>,
+                   timing_node: Node<'_, '_>,
+                   path: &str,
+                   inherited: Vec<String>|
+     -> Result<()> {
+        ensure!(modes.len() < 64, "ESI has more than 64 DC modes");
+        let mut notes = inherited;
+        for node in [outer, timing_node] {
+            {
+                for child in node.children().filter(Node::is_element) {
+                    let known = [
+                        "Name",
+                        "Desc",
+                        "Dc",
+                        "AssignActivate",
+                        "CycleTimeSync0",
+                        "ShiftTimeSync0",
+                        "CycleTimeSync1",
+                        "ShiftTimeSync1",
+                    ];
+                    if !known.iter().any(|name| named(child, name)) {
+                        notes.push(format!("Unsupported DC mode child {}; mapping/vendor extensions require separate review", child.tag_name().name()));
+                    }
+                }
+                notes.extend(
+                    node.attributes().map(|a| {
+                        format!("Descriptive DC mode attribute {}={}", a.name(), a.value())
+                    }),
+                );
+            }
+        }
+        notes.sort();
+        notes.dedup();
+        let assign = unique_child(timing_node, "AssignActivate")?
+            .context("ESI DC AssignActivate missing")?;
+        ensure!(
+            !assign.children().any(|n| n.is_element()),
+            "ESI DC AssignActivate must contain only an integer"
+        );
+        notes.extend(assign.attributes().map(|a| {
+            format!(
+                "Descriptive AssignActivate attribute {}={}",
+                a.name(),
+                a.value()
+            )
+        }));
+        let mode = crate::sync_review::DcMode {
+            name: label(outer, "Name")
+                .context("ESI DC mode Name missing")?
+                .trim()
+                .to_owned(),
+            description: label(outer, "Desc").map(str::to_owned),
+            xml_path: path.into(),
+            assign_activate: u16::try_from(number(&dc_text(assign))?)
+                .context("ESI DC AssignActivate exceeds 16 bits")?,
+            cycle_sync0: timing(timing_node, "CycleTimeSync0")?,
+            shift_sync0: timing(timing_node, "ShiftTimeSync0")?,
+            cycle_sync1: timing(timing_node, "CycleTimeSync1")?,
+            shift_sync1: timing(timing_node, "ShiftTimeSync1")?,
+            notes,
+        };
+        mode.validate()?;
+        modes.push(mode);
+        Ok(())
+    };
+    for node in device.children().filter(Node::is_element) {
+        if named(node, "Dc") {
+            let mut notes: Vec<_> = node
+                .attributes()
+                .map(|a| format!("Descriptive Dc attribute {}={}", a.name(), a.value()))
+                .collect();
+            notes.extend(
+                node.children()
+                    .filter(Node::is_element)
+                    .filter(|n| !named(*n, "OpMode"))
+                    .map(|n| format!("Unsupported Dc child {}", n.tag_name().name())),
+            );
+            for mode in node.children().filter(|n| named(*n, "OpMode")) {
+                add(mode, mode, "Device/Dc/OpMode", notes.clone())?;
+            }
+        } else if named(node, "OpMode")
+            && let Some(dc) = unique_child(node, "Dc")?
+        {
+            add(node, dc, "Device/OpMode/Dc", Vec::new())?;
+        }
+    }
+    Ok(modes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imports_both_dc_forms_and_preserves_signed_and_contextual_values() {
+        let xml = include_bytes!("../samples/sync-modes.esi.xml");
+        let devices = parse("sync.xml", xml).unwrap();
+        let modes = &devices[0].source.dc_modes;
+        assert_eq!(modes.len(), 4);
+        assert_eq!(modes[1].assign_activate, 0x0300);
+        assert_eq!(modes[1].shift_sync0.as_ref().unwrap().value_ns, -1250);
+        assert_eq!(
+            modes[1].shift_sync0.as_ref().unwrap().input_delay_ns,
+            Some(250)
+        );
+        assert_eq!(modes[2].cycle_sync0.as_ref().unwrap().factor, Some(-2));
+        assert_eq!(modes[3].xml_path, "Device/OpMode/Dc");
+        assert!(modes[3].notes.iter().any(|n| n.contains("Sm")));
+        let mut profile = Profile::default();
+        devices[0].apply(&mut profile);
+        profile.staged_esi_dc_mode = Some(2);
+        profile.sync_unit_cycle_ns = Some(1_000_000);
+        profile.validate().unwrap();
+        let review = crate::sync_review::review(&profile, None).unwrap().unwrap();
+        assert!(!review.applied);
+        assert_eq!(review.cycle_sync0.value_ns, Some(500_000));
+        assert_eq!(review.cycle_sync1.value_ns, Some(2_000_000));
+        let saved: Profile =
+            serde_json::from_str(&serde_json::to_string(&profile).unwrap()).unwrap();
+        assert_eq!(saved.esi.unwrap().dc_modes, *modes);
+        profile.expected_identity.as_mut().unwrap().revision += 1;
+        assert!(profile.validate().is_err());
+        devices[0].apply(&mut profile);
+        assert_eq!(profile.staged_esi_dc_mode, None);
+        assert_eq!(profile.sync_unit_cycle_ns, None);
+    }
+
+    #[test]
+    fn filters_foreign_namespace_shadows_and_rejects_ambiguous_dc_numbers() {
+        let xml = std::str::from_utf8(include_bytes!("../samples/sync-modes.esi.xml")).unwrap();
+        let namespaced = xml
+            .replace(
+                "<EtherCATInfo Version=",
+                "<EtherCATInfo xmlns=\"urn:bench\" xmlns:v=\"urn:vendor\" Version=",
+            )
+            .replace(
+                "<AssignActivate>#x0300",
+                "<v:AssignActivate>#xFFFF</v:AssignActivate><AssignActivate>#x0300",
+            );
+        let devices = parse("namespaced.xml", namespaced.as_bytes()).unwrap();
+        assert_eq!(devices[0].source.dc_modes[1].assign_activate, 0x0300);
+        assert_eq!(devices[0].tx_bytes, 8);
+        for bad in [
+            xml.replace("Factor=\"-2\"", "Factor=\"bad\""),
+            xml.replace("#x0300", "#x10000"),
+            xml.replace("Input=\"true\"", "Input=\"yes\""),
+            xml.replace(
+                "<AssignActivate>#x0300</AssignActivate>",
+                "<AssignActivate>0</AssignActivate><AssignActivate>768</AssignActivate>",
+            ),
+        ] {
+            assert!(parse("bad.xml", bad.as_bytes()).is_err());
+        }
+        let commented = xml.replace("#x0300", "#x03<!-- split text -->00");
+        assert_eq!(
+            parse("comments.xml", commented.as_bytes()).unwrap()[0]
+                .source
+                .dc_modes[1]
+                .assign_activate,
+            0x0300
+        );
+    }
 
     #[test]
     fn aligns_each_sync_manager_and_keeps_bits_contiguous_within_it() {

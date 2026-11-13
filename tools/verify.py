@@ -133,6 +133,7 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
         if model == "coe-dc":
             assert dc["support"] == "Bits64" and dc["initial_offset_setup_attempted"] is True
             assert dc["activation"] == {"value": 0, "unavailable": None}
+            assert dc["assign_activate"] == {"value": 0, "unavailable": None}
             assert dc["sync0_cycle_ns"] == dc["sync1_cycle_ns"] == {"value": 0, "unavailable": None}
             assert dc["system_time_offset_ns"]["value"] > 0
             assert dc["transmission_delay_ns"] == {"value": 0, "unavailable": None}
@@ -343,6 +344,86 @@ def verify_input_loss(cli, profile, destination, model="coe"):
     (destination / "input-health.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
 
 
+def verify_sync_modes(cli, destination):
+    esi = ROOT / "samples/sync-modes.esi.xml"
+    modes = cli_call(cli, "esi-list", esi)[0]["source"]["dc_modes"]
+    assert len(modes) == 4 and modes[1]["assign_activate"] == 0x300
+    assert modes[1]["shift_sync0"]["value_ns"] == -1250
+    assert modes[3]["xml_path"] == "Device/OpMode/Dc"
+    utf16 = destination / "sync-utf16.xml"
+    utf16.write_text(esi.read_text(encoding="utf-8").replace("UTF-8", "UTF-16"), encoding="utf-16")
+    assert cli_call(cli, "esi-list", utf16)[0]["source"]["dc_modes"] == modes
+    imported = destination / "sync-review.json"
+    cli_call(cli, "esi-import", esi, "--device", 0, "--dc-mode", 2,
+             "--sync-unit-cycle-ns", 1_000_000, "--out", imported)
+    profile = cli_call(cli, "validate", imported)
+    assert profile["esi"]["sha256"] == hashlib.sha256(esi.read_bytes()).hexdigest()
+    preview = cli_call(cli, "review-sync", imported)
+    assert preview["cycle_sync0"]["value_ns"] == 500_000
+    assert preview["cycle_sync1"]["value_ns"] == 2_000_000
+    assert preview["shift_sync0"]["value_ns"] == -25000 and preview["shift_sync1"]["value_ns"] is None
+    assert preview["applied"] is False and preview["mode_source"] == "esi"
+    assert preview["sync_unit_source"] == "manual"
+    assert all(c["state"] == "unavailable" for c in preview["checks"])
+    profile["requested_cycle_us"] = 2000
+    changed_host = destination / "changed-host-cycle.json"
+    changed_host.write_text(json.dumps(profile), encoding="utf-8")
+    assert cli_call(cli, "review-sync", changed_host)["cycle_sync0"] == preview["cycle_sync0"]
+    profile["requested_cycle_us"] = 1000
+    profile["rotate_rows"] = 500
+    imported.write_text(json.dumps(profile), encoding="utf-8")
+    base = destination / "staged-dc.csv"
+    report = cli_call(cli, "run", imported, "--backend", "virtual", "--virtual-model", "coe-dc",
+                      "--seconds", 1, "--csv", base)
+    report_path = destination / "staged-dc.json"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    assert report["valid"] > 100 and report["error"] is None and report["stopped_al"] == [1, 0]
+    assert report["sync_review"]["applied"] is False
+    assert [c["state"] for c in report["sync_review"]["checks"]] == ["different"] * 3
+    assert report["synchronization"]["dc"]["assign_activate"]["value"] == 0
+    assert all(report["virtual_esc"][k] == 0 for k in ["dc_enable_requests", "dc_clock_distribution",
+               "coe_downloads", "logical_writes", "physical_output_writes", "op_requests"])
+    _, entries = rows(base)
+    assert len(entries) == report["valid"] == report["capture"]["written"] and report["capture"]["overruns"] == 0
+    counter_name, bool_name, float_name = [f["name"] for f in profile["tx"]]
+    for index, row in enumerate(entries, 1):
+        value = int(row[counter_name])
+        assert int(row["sample_index"]) == index
+        assert (index-1)//4 <= value <= (index-1+report["timeouts"])//4
+        assert row[bool_name] == str(bool(value & 1)).lower() and float(row[float_name]) == value/4
+    compared = cli_call(cli, "review-sync", imported, "--readback", report_path)
+    assert compared["readback_source"].startswith("Saved run report") and compared["applied"] is False
+    assert [c["state"] for c in compared["checks"]] == ["different"] * 3
+    profile["staged_esi_dc_mode"] = 0
+    free = destination / "free-run-review.json"
+    free.write_text(json.dumps(profile), encoding="utf-8")
+    matched = cli_call(cli, "review-sync", free, "--readback", report_path)
+    assert [c["state"] for c in matched["checks"]] == ["matched"] * 3 and matched["applied"] is False
+    older = json.loads(json.dumps(report))
+    older["synchronization"]["dc"].pop("assign_activate")
+    old_report = destination / "old-sync-report.json"
+    old_report.write_text(json.dumps(older), encoding="utf-8")
+    assert cli_call(cli, "review-sync", free, "--readback", old_report)["checks"][0]["state"] == "unavailable"
+    older["devices"][0]["identity"]["revision"] = 9
+    old_report.write_text(json.dumps(older), encoding="utf-8")
+    assert "matching the profile" in cli_call(cli, "review-sync", free, "--readback", old_report, success=False)
+    profile["staged_esi_dc_mode"] = 1
+    profile["sync_unit_cycle_ns"] = None
+    unresolved = destination / "unresolved-mode.json"
+    unresolved.write_text(json.dumps(profile), encoding="utf-8")
+    assert cli_call(cli, "review-sync", unresolved)["cycle_sync0"]["value_ns"] is None
+    for index, key, value in [(1, "staged_esi_dc_mode", 99), (2, "sync_unit_cycle_ns", 0),
+                              (3, "expected_identity", {"vendor": 1, "product": 3, "revision": 1})]:
+        bad = json.loads(json.dumps(profile)); bad[key] = value
+        bad_path = destination / f"bad-staged-{index}.json"
+        bad_path.write_text(json.dumps(bad), encoding="utf-8")
+        assert cli_call(cli, "validate", bad_path, success=False)
+    impossible = destination / "must-not-exist.json"
+    cli_call(cli, "esi-import", esi, "--device", 0, "--dc-mode", 99, "--out", impossible, success=False)
+    assert not impossible.exists()
+    (destination / "sync-checks.json").write_text(json.dumps({"preview": preview, "compared": compared, "matched": matched}, indent=2), encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -480,6 +561,10 @@ def main():
     dc_destination.mkdir()
     verify_virtual(cli, ROOT / "samples/virtual-dc.json", dc_destination, reports, model="coe-dc")
     verify_input_loss(cli, ROOT / "samples/virtual-dc.json", dc_destination, model="coe-dc")
+
+    sync_destination = destination / "sync-modes"
+    sync_destination.mkdir()
+    verify_sync_modes(cli, sync_destination)
 
     if options.gui:
         assert os.name == "nt"

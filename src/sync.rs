@@ -1,9 +1,9 @@
 //! Device synchronization readback, separate from requested host timing.
 use anyhow::{Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegisterRead<T> {
     pub value: Option<T>,
     pub unavailable: Option<String>,
@@ -24,7 +24,7 @@ impl<T> RegisterRead<T> {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Synchronization {
     pub source: String,
     pub tx_sync_type: Option<RegisterRead<u16>>,
@@ -32,7 +32,7 @@ pub struct Synchronization {
     pub dc: DcReadback,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DcReadback {
     pub support: String,
     pub enhanced_sync_supported: bool,
@@ -41,6 +41,7 @@ pub struct DcReadback {
     pub static_sync_iterations: u32,
     pub cyclic_clock_distribution: bool,
     pub activation: Option<RegisterRead<u8>>,
+    pub assign_activate: Option<RegisterRead<u16>>,
     pub sync0_cycle_ns: Option<RegisterRead<u32>>,
     pub sync1_cycle_ns: Option<RegisterRead<u32>>,
     pub system_time_offset_ns: Option<RegisterRead<i64>>,
