@@ -25,6 +25,7 @@ pub struct DeviceInfo {
     pub identity: Option<Identity>,
     pub name: Option<String>,
     pub coe_name: Option<crate::sync::RegisterRead<String>>,
+    pub diagnostics: Option<Arc<crate::esc::Diagnosis>>,
     pub serial: Option<u32>,
     pub tx_bytes: Option<usize>,
     pub rx_bytes: Option<usize>,

@@ -27,6 +27,19 @@ impl VirtualModel {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanCase {
+    #[default]
+    Normal,
+    PortErrors,
+    CountersUnavailable,
+    InformationUnavailable,
+    CoreWkc,
+    CoreTimeout,
+    DiagnosticsTimeout,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum VirtualFault {
     #[default]
@@ -56,6 +69,7 @@ pub enum VirtualFault {
 pub struct VirtualStats {
     pub model: VirtualModel,
     pub datagrams: u64,
+    pub register_writes: u64,
     pub dropped_replies: u64,
     pub transport_errors: u64,
     pub sii_reads: u64,
@@ -93,6 +107,8 @@ struct Upload {
 }
 
 pub(crate) struct VirtualEsc {
+    scan_case: ScanCase,
+    read_only: bool,
     registers: Box<[u8; 65_536]>,
     eeprom: Vec<u8>,
     replies: VecDeque<Vec<u8>>,
@@ -114,12 +130,17 @@ impl VirtualEsc {
         registers[0] = 0x11;
         registers[4] = 2; // FMMU channels.
         registers[5] = if model.has_coe() { 4 } else { 2 }; // SyncManager channels.
+        registers[6] = 8; // Authored process RAM capacity in KiB.
+        registers[7] = 3; // Port 0 MII family; remaining ports not implemented.
         if model == VirtualModel::CoeDc {
             registers[0x0008..0x000a].copy_from_slice(&0x010cu16.to_le_bytes());
         }
         registers[0x0110] = 0x13; // One linked port, PDI operational, watchdog OK.
+        registers[0x0111] = 0x56; // Port 0 open with signal; unused ports closed.
         registers[0x0130] = 1; // INIT.
         Self {
+            scan_case: ScanCase::Normal,
+            read_only: false,
             registers,
             eeprom: eeprom(model, fault),
             replies: VecDeque::new(),
@@ -137,6 +158,24 @@ impl VirtualEsc {
             last_request: None,
             last_response: None,
         }
+    }
+
+    pub fn for_scan(model: VirtualModel, case: ScanCase) -> Self {
+        let mut esc = Self::new(model, VirtualFault::None);
+        esc.scan_case = case;
+        esc.read_only = true;
+        if case == ScanCase::PortErrors {
+            esc.registers[1] = 1;
+            esc.registers[2..4].copy_from_slice(&0x1234u16.to_le_bytes());
+            esc.registers[7] = 0xfb;
+            esc.registers[0x0110..0x0112].copy_from_slice(&0x9eb6u16.to_le_bytes());
+            esc.registers[0x0130] = 0x14;
+            esc.registers[0x0134..0x0136].copy_from_slice(&0x001du16.to_le_bytes());
+            esc.registers[0x0300..0x0314].copy_from_slice(&[
+                1, 2, 255, 3, 0, 0, 0, 0, 4, 5, 0, 0, 6, 7, 0x34, 0x12, 8, 9, 10, 255,
+            ]);
+        }
+        esc
     }
 
     pub fn stats(&self) -> VirtualStats {
@@ -224,6 +263,16 @@ impl VirtualEsc {
             {
                 drop_reply = true;
             }
+            if command == 0x01 {
+                match (self.scan_case, register, len) {
+                    (ScanCase::CoreWkc, 0x0010, 4) => wkc = 2,
+                    (ScanCase::CountersUnavailable, 0x0300, 20)
+                    | (ScanCase::InformationUnavailable, 0x0000, 16) => wkc = 0,
+                    (ScanCase::CoreTimeout, 0x0010, 4)
+                    | (ScanCase::DiagnosticsTimeout, 0x0000, 16) => drop_reply = true,
+                    _ => {}
+                }
+            }
             if command == 0x0a
                 && match self.fault {
                     VirtualFault::IoTimeout => self.stats.logical_reads.is_multiple_of(7),
@@ -286,6 +335,11 @@ impl VirtualEsc {
     }
 
     fn write(&mut self, register: usize, data: &[u8]) -> Result<()> {
+        self.stats.register_writes += 1;
+        ensure!(
+            !self.read_only,
+            "read-only scan fixture rejects register writes"
+        );
         let end = register
             .checked_add(data.len())
             .filter(|end| *end <= self.registers.len())
@@ -710,6 +764,25 @@ fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::wire::{Datagram, FPRD, Frame};
+
+    #[test]
+    fn scan_fixture_rejects_a_register_write_before_changing_state() {
+        let mut esc = VirtualEsc::for_scan(VirtualModel::Coe, ScanCase::Normal);
+        let mut frame = Frame::new(1, [Datagram::register(FPRD, 0, 0x0120, 2)])
+            .bytes()
+            .to_vec();
+        frame[16] = 5;
+        frame[26] = 8;
+        assert!(
+            esc.send(&frame)
+                .unwrap_err()
+                .to_string()
+                .contains("read-only scan")
+        );
+        assert_eq!(esc.stats().register_writes, 1);
+        assert_eq!(esc.stats().final_al_status, 1);
+        assert!(esc.stats().state_requests.is_empty());
+    }
 
     #[test]
     fn rejects_output_commands_and_requires_valid_fmmus_for_safeop() {

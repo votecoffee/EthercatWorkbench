@@ -1,6 +1,7 @@
 pub mod benchmark;
 pub mod capture;
 pub mod capture_audit;
+pub mod esc;
 pub mod esi;
 pub mod health;
 pub mod model;

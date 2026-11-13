@@ -37,6 +37,8 @@ try {
         'docs/benchmark-comparison.md' = 'docs/benchmark-comparison.md'
         'docs/capture-audit.md' = 'docs/capture-audit.md'
         'docs/desktop-review.md' = 'docs/desktop-review.md'
+        'docs/esc-diagnostics.md' = 'docs/esc-diagnostics.md'
+        'samples/esc-diagnostics.json' = 'samples/esc-diagnostics.json'
         'samples/synthetic.esi.xml' = 'samples/synthetic.esi.xml'
         'samples/pdo-choices.esi.xml' = 'samples/pdo-choices.esi.xml'
         'samples/pdo-choices.json' = 'samples/pdo-choices.json'

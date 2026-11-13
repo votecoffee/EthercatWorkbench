@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "source": "authored",
+  "started_utc": "2026-01-01T00:00:00Z",
+  "elapsed_us": 350,
+  "position": 0,
+  "station_address": 4096,
+  "alias": 7,
+  "dl_status": 40630,
+  "al_status": 20,
+  "al_code": 29,
+  "information": {
+    "value": [
+      17,
+      1,
+      52,
+      18,
+      2,
+      4,
+      8,
+      251,
+      12,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "unavailable": null
+  },
+  "counters": {
+    "value": [
+      1,
+      2,
+      255,
+      3,
+      0,
+      0,
+      0,
+      0,
+      4,
+      5,
+      0,
+      0,
+      6,
+      7,
+      52,
+      18,
+      8,
+      9,
+      10,
+      255
+    ],
+    "unavailable": null
+  }
+}

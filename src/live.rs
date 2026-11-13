@@ -176,6 +176,8 @@ impl Transport {
         );
         (0..count)
             .map(|position| {
+                let started=Instant::now();
+                let started_utc=chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true);
                 let address = 0u16.wrapping_sub(position);
                 let (_, info) = self.read(
                     [
@@ -185,7 +187,9 @@ impl Transport {
                     ],
                     Duration::from_millis(30),
                     |[(addresses, a), (links, b), (al, c)], _| {
-                        (a == 1 && b == 1 && c == 1).then(|| DeviceInfo {
+                        ensure!(a==1 && b==1 && c==1,
+                            "core register Working Counters [{a}, {b}, {c}] differ from [1, 1, 1] at position {position}");
+                        Ok::<_,anyhow::Error>((DeviceInfo {
                             position,
                             station_address: word(addresses),
                             alias: word(&addresses[2..]),
@@ -195,12 +199,32 @@ impl Transport {
                             al_status: word(al),
                             al_code: word(&al[4..]),
                             ..DeviceInfo::default()
-                        })
+                        },word(links)))
                     },
                 )?;
-                info.flatten().with_context(|| {
-                    format!("missing or ambiguous register response at bus position {position}")
-                })
+                let (mut info,dl_status)=info.with_context(||format!("no matching core register response at bus position {position}"))??;
+                let optional=self.read([
+                    Datagram::register(APRD,address,0x0000,16),
+                    Datagram::register(APRD,address,0x0300,20),
+                ],Duration::from_millis(30),|[(information,a),(counters,b)],_| {
+                    (RegisterRead::from_result(if a==1 {Ok(information.try_into().expect("fixed register length"))}
+                        else {Err(format!("ESC information WKC {a}; expected 1"))}),
+                     RegisterRead::from_result(if b==1 {Ok(counters.try_into().expect("fixed register length"))}
+                        else {Err(format!("ESC counter WKC {b}; expected 1"))}))
+                });
+                let (information,counters)=match optional {
+                    Ok((_,Some(values)))=>values,
+                    other=>{
+                        let reason=match other {Err(error)=>format!("diagnostics read: {error:#}"),_=>"no matching diagnostics response within 30 ms".into()};
+                        (RegisterRead {value:None,unavailable:Some(reason.clone())},RegisterRead {value:None,unavailable:Some(reason)})
+                    }
+                };
+                let raw=crate::esc::Snapshot {schema:1,source:match self.io {PacketIo::Nic(_)=>crate::esc::Source::Bus,
+                    PacketIo::Virtual(_)=>crate::esc::Source::VirtualEsc},started_utc,elapsed_us:started.elapsed().as_micros() as u64,
+                    position,station_address:info.station_address,alias:info.alias,dl_status,al_status:info.al_status,
+                    al_code:info.al_code,information,counters};
+                info.diagnostics=Some(Arc::new(raw.decode()?));
+                Ok(info)
             })
             .collect()
     }
@@ -270,6 +294,42 @@ fn word(bytes: &[u8]) -> u16 {
 
 pub fn scan(nic: &str) -> Result<Vec<DeviceInfo>> {
     Transport::open(nic)?.scan()
+}
+
+#[derive(Serialize)]
+pub struct VirtualScan {
+    pub scenario: crate::virtual_esc::ScanCase,
+    pub devices: Vec<DeviceInfo>,
+    pub audit: crate::virtual_esc::VirtualStats,
+    pub error: Option<String>,
+}
+
+pub fn scan_virtual(
+    model: crate::virtual_esc::VirtualModel,
+    scenario: crate::virtual_esc::ScanCase,
+) -> VirtualScan {
+    let mut port = Transport {
+        io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::for_scan(
+            model, scenario,
+        ))),
+        seq: 0,
+        ignored_frames: 0,
+        mailbox_watch: None,
+        mailbox_counter: None,
+    };
+    let (devices, error) = match port.scan() {
+        Ok(devices) => (devices, None),
+        Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+    };
+    let PacketIo::Virtual(esc) = &port.io else {
+        unreachable!("virtual scan transport")
+    };
+    VirtualScan {
+        scenario,
+        devices,
+        audit: esc.stats(),
+        error,
+    }
 }
 
 fn ethercat_now() -> u64 {
@@ -797,6 +857,53 @@ mod cancellation_tests {
         run::{self, Mode, RunOptions},
         virtual_esc::{VirtualFault, VirtualModel},
     };
+
+    #[test]
+    fn discovery_diagnostics_use_only_reads_and_keep_optional_failures_explicit() {
+        use crate::virtual_esc::ScanCase;
+        for case in [
+            ScanCase::Normal,
+            ScanCase::PortErrors,
+            ScanCase::CountersUnavailable,
+            ScanCase::InformationUnavailable,
+            ScanCase::CoreWkc,
+            ScanCase::CoreTimeout,
+            ScanCase::DiagnosticsTimeout,
+        ] {
+            let report = scan_virtual(VirtualModel::Coe, case);
+            let audit = &report.audit;
+            assert_eq!(
+                audit.register_writes
+                    + audit.logical_writes
+                    + audit.physical_output_writes
+                    + audit.op_requests
+                    + audit.sii_reads
+                    + audit.coe_uploads,
+                0
+            );
+            assert!(audit.state_requests.is_empty());
+            if matches!(case, ScanCase::CoreWkc | ScanCase::CoreTimeout) {
+                assert!(report.error.is_some() && report.devices.is_empty());
+            } else {
+                assert!(report.error.is_none(), "{:?}", report.error);
+                let diag = report.devices[0].diagnostics.as_ref().unwrap();
+                assert_eq!(
+                    diag.counters.is_none(),
+                    matches!(
+                        case,
+                        ScanCase::CountersUnavailable | ScanCase::DiagnosticsTimeout
+                    )
+                );
+                assert_eq!(
+                    diag.information.is_none(),
+                    matches!(
+                        case,
+                        ScanCase::InformationUnavailable | ScanCase::DiagnosticsTimeout
+                    )
+                );
+            }
+        }
+    }
 
     #[test]
     fn bounded_upload_reads_valid_segments_that_the_pinned_stock_reader_rejects() {

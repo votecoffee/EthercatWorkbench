@@ -31,6 +31,15 @@ enum Command {
         #[arg(long)]
         nic: String,
     },
+    /// Run the same read-only discovery parser against an authored virtual ESC. Never opens a NIC.
+    ScanVirtual {
+        #[arg(long, value_enum, default_value = "coe")]
+        model: ethercat_workbench::virtual_esc::VirtualModel,
+        #[arg(long, value_enum, default_value = "normal")]
+        case: ethercat_workbench::virtual_esc::ScanCase,
+    },
+    /// Interpret an offline ESC register snapshot (no bus access).
+    DecodeEsc { file: PathBuf },
     /// List products and revisions in an ESI XML.
     EsiList { file: PathBuf },
     /// Write a new profile from one zero-based ESI list selection.
@@ -189,6 +198,15 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Nics => output(&ethercat_workbench::live::nics()?),
         Command::Scan { nic } => output(&ethercat_workbench::live::scan(&nic)?),
+        Command::ScanVirtual { model, case } => {
+            let report = ethercat_workbench::live::scan_virtual(model, case);
+            output(&report)?;
+            if let Some(error) = report.error {
+                bail!("{error}");
+            }
+            Ok(())
+        }
+        Command::DecodeEsc { file } => output(&ethercat_workbench::esc::load(&file)?),
         Command::CompareRuns { reports, csv } => {
             let result = if csv.is_empty() {
                 ethercat_workbench::benchmark::compare_files(&reports)?

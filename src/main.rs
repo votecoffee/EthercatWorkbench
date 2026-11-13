@@ -175,8 +175,7 @@ impl App {
             match self.scan.take().expect("finished scan").join() {
                 Ok(Ok(devices)) => {
                     self.discovery = devices;
-                    self.message =
-                        "Read-only scan complete. Identity requires approved SII access.".into();
+                    self.message = "Discovery complete. ESC diagnostics are snapshots; device identity requires approved SII access.".into();
                 }
                 Ok(Err(error)) => self.message = format!("{error:#}"),
                 Err(_) => self.message = "Read-only scan worker failed".into(),
@@ -566,6 +565,24 @@ impl App {
                     "CoE segmented readback",
                 );
             });
+        if ui
+            .add_enabled(
+                self.scan.is_none(),
+                egui::Button::new("Preview virtual discovery"),
+            )
+            .clicked()
+        {
+            let model = self.virtual_model;
+            self.discovery.clear();
+            self.scan = Some(std::thread::spawn(move || {
+                let report =
+                    live::scan_virtual(model, ethercat_workbench::virtual_esc::ScanCase::Normal);
+                if let Some(error) = report.error {
+                    anyhow::bail!("{error}");
+                }
+                Ok(report.devices)
+            }));
+        }
         if ui.button("Start virtual EtherCAT controller").clicked() {
             self.start(Mode::Virtual {
                 model: self.virtual_model,
@@ -928,16 +945,23 @@ fn show_values(ui: &mut egui::Ui, bytes: &[u8], fields: &[Field]) {
 }
 
 fn device_info(ui: &mut egui::Ui, device: &DeviceInfo) {
-    let state = match device.al_status & 0xf {
-        1 => "INIT",
-        2 => "PREOP",
-        3 => "BOOT",
-        4 => "SAFEOP",
-        8 => "OP",
-        _ => "unknown",
-    };
-    ui.label(format!("Bus position {} · station {:#06x} · alias {:#06x} · links {:?} · {} / AL {:#06x} code {:#06x}",
-        device.position, device.station_address, device.alias, device.link_ports, state, device.al_status, device.al_code));
+    let al = ethercat_workbench::esc::al_status(device.al_status, device.al_code);
+    ui.label(format!("Bus position {} · station {:#06x} · alias {:#06x} · discovery links {:?} · {} / AL {:#06x} code {:#06x}",
+        device.position, device.station_address, device.alias, device.link_ports, al.state, device.al_status, device.al_code));
+    if al.error || al.code != 0 {
+        ui.colored_label(
+            egui::Color32::LIGHT_RED,
+            format!("AL error flag {} · {}", al.error, al.description),
+        );
+    }
+    if let Some(diagnostics) = &device.diagnostics {
+        ui.push_id((device.position, &diagnostics.snapshot.started_utc), |ui| {
+            ui.collapsing(
+                "ESC discovery snapshot (not refreshed during cyclic input)",
+                |ui| show_esc(ui, diagnostics),
+            );
+        });
+    }
     if let Some(identity) = &device.identity {
         ui.label(format!(
             "Bus identity · {} · {} · serial {:?} · Tx/Rx bytes {:?}/{:?} · DC {:?}",
@@ -956,6 +980,69 @@ fn device_info(ui: &mut egui::Ui, device: &DeviceInfo) {
                 .as_deref()
                 .unwrap_or_else(|| name.unavailable.as_deref().unwrap_or("unavailable"))
         ));
+    }
+}
+
+fn show_esc(ui: &mut egui::Ui, diagnostics: &ethercat_workbench::esc::Diagnosis) {
+    let raw = &diagnostics.snapshot;
+    let dl = &diagnostics.data_link;
+    ui.label(format!(
+        "{:?} · started {} · sequential reads {} µs",
+        raw.source, raw.started_utc, raw.elapsed_us
+    ));
+    ui.label(format!(
+        "DL {:#06x} · PDI operational {} · watchdog OK {} · extended link flag {}",
+        dl.raw, dl.pdi_operational, dl.watchdog_ok, dl.extended_link_detection
+    ));
+    ui.label(format!(
+        "Snapshot AL {:#06x} · {} · error flag {} · code {:#06x}: {}",
+        raw.al_status,
+        diagnostics.al.state,
+        diagnostics.al.error,
+        raw.al_code,
+        diagnostics.al.description
+    ));
+    for port in &dl.ports {
+        ui.label(format!(
+            "ESC port {} · link {} · loop {} · signal {}",
+            port.number,
+            port.physical_link,
+            if port.loop_closed { "closed" } else { "open" },
+            port.signal_detected
+        ));
+    }
+    if let Some(info) = &diagnostics.information {
+        ui.label(format!("ESC type {:#04x} · revision {} · build {:#06x} · FMMUs {} · SMs {} · RAM {} KiB · features {:#06x}",
+            info.controller_type,info.revision,info.build,info.fmmus,info.sync_managers,info.ram_kib,info.feature_bits));
+        ui.label(format!(
+            "Port descriptors 0–3 · {}",
+            info.port_types.join(", ")
+        ));
+    }
+    if let Some(counters) = &diagnostics.counters {
+        for port in &counters.ports {
+            ui.label(format!(
+                "Port {} counters · invalid {} · RX {} · forwarded {} · lost link {}",
+                port.number,
+                port.invalid_frames,
+                port.rx_errors,
+                port.forwarded_errors,
+                port.lost_links
+            ));
+        }
+        ui.label(format!(
+            "Processing errors {} · PDI errors {} · controller-specific PDI code {:#06x}",
+            counters.processing_errors, counters.pdi_errors, counters.pdi_error_code
+        ));
+        if !counters.at_byte_maximum.is_empty() {
+            ui.label(format!(
+                "Counters at 255 · {}",
+                counters.at_byte_maximum.join(", ")
+            ));
+        }
+    }
+    for note in &diagnostics.notes {
+        ui.label(note);
     }
 }
 

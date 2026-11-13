@@ -820,6 +820,72 @@ def verify_capture_audit(cli, destination, comparison):
     (destination/"typed-audit.json").write_text(json.dumps(receipt,indent=2),encoding="utf-8")
 
 
+def verify_discovery(cli, destination):
+    reports = {}
+    for case in ["normal","port-errors","counters-unavailable","information-unavailable",
+                 "core-wkc","core-timeout","diagnostics-timeout"]:
+        failed = case in ["core-wkc","core-timeout"]
+        report = cli_call(cli,"scan-virtual","--case",case,success=not failed)
+        audit = report["audit"]
+        assert audit["register_writes"] == audit["logical_writes"] == audit["physical_output_writes"] == 0
+        assert audit["sii_reads"] == audit["coe_uploads"] == audit["coe_downloads"] == audit["op_requests"] == 0
+        assert audit["state_requests"] == []
+        if failed:
+            assert report["devices"] == [] and report["error"]
+            assert "Working Counters" in report["error"] if case=="core-wkc" else "no matching core" in report["error"]
+        else:
+            assert report["error"] is None and len(report["devices"]) == 1
+            device = report["devices"][0]; diag = device["diagnostics"]; raw = diag["snapshot"]
+            assert device["identity"] is None and device["name"] is None
+            assert raw["source"] == "virtual_esc" and raw["position"] == 0
+            assert raw["dl_status"] == diag["data_link"]["raw"]
+            assert [p["physical_link"] for p in diag["data_link"]["ports"]] == device["link_ports"]
+            absent_counters = case in ["counters-unavailable","diagnostics-timeout"]
+            absent_information = case in ["information-unavailable","diagnostics-timeout"]
+            assert (diag["counters"] is None) == absent_counters
+            assert (diag["information"] is None) == absent_information
+            if absent_counters: assert raw["counters"]["unavailable"] and raw["counters"]["value"] is None
+            if absent_information: assert raw["information"]["unavailable"] and raw["information"]["value"] is None
+            if case == "port-errors":
+                assert diag["al"]["state"] == "SAFEOP" and diag["al"]["error"] is True
+                assert diag["al"]["code"] == 0x1d and "Output" in diag["al"]["description"]
+                assert diag["counters"]["pdi_error_code"] == 0x1234
+                assert diag["counters"]["at_byte_maximum"] == ["port1.invalid_frames","port3.lost_links"]
+                assert [(p["physical_link"],p["loop_closed"],p["signal_detected"]) for p in diag["data_link"]["ports"]] == [
+                    (True,False,True),(True,True,True),(False,True,False),(True,False,True)]
+                assert audit["final_al_status"] == 0x14 and audit["final_al_code"] == 0x1d
+            else: assert audit["final_al_status"] == 1 and audit["final_al_code"] == 0
+            snapshot = destination / (case+"-snapshot.json")
+            snapshot.write_text(json.dumps(raw),encoding="utf-8")
+            assert cli_call(cli,"decode-esc",snapshot) == diag
+        reports[case] = report
+    for model in ["sii","coe-dc","coe-normal","coe-segmented"]:
+        report = cli_call(cli,"scan-virtual","--model",model)
+        assert report["audit"]["register_writes"] == 0
+        info=report["devices"][0]["diagnostics"]["information"]
+        assert info["fmmus"] == 2 and info["sync_managers"] == (2 if model=="sii" else 4)
+        assert info["feature_bits"] == (0x10c if model=="coe-dc" else 0)
+    raw = reports["port-errors"]["devices"][0]["diagnostics"]["snapshot"]
+    for change in ["schema","non-utc","both","missing","short-array","byte-range","unknown"]:
+        altered=json.loads(json.dumps(raw))
+        if change=="schema": altered["schema"]=2
+        elif change=="non-utc": altered["started_utc"]="2026-01-01T00:00:00+01:00"
+        elif change=="both": altered["counters"]["unavailable"]="contradictory"
+        elif change=="missing": altered["counters"]={"value":None,"unavailable":None}
+        elif change=="short-array": altered["counters"]["value"].pop()
+        elif change=="byte-range": altered["information"]["value"][0]=256
+        else: altered["unexpected"]=1
+        path=destination/("invalid-"+change+".json");path.write_text(json.dumps(altered),encoding="utf-8")
+        assert cli_call(cli,"decode-esc",path,success=False)
+    bom=destination/"bom.json";bom.write_bytes(b"\xef\xbb\xbf"+json.dumps(raw).encode("utf-8"))
+    assert cli_call(cli,"decode-esc",bom)["snapshot"] == raw
+    large=destination/"large.json";large.write_bytes(b" "*(64*1024+1))
+    assert "exceeds 64 KiB" in cli_call(cli,"decode-esc",large,success=False)
+    sample=cli_call(cli,"decode-esc",ROOT/"samples/esc-diagnostics.json")
+    assert sample["snapshot"]["source"] == "authored" and sample["counters"]["pdi_error_code"] == 0x1234
+    (destination/"scans.json").write_text(json.dumps(reports,indent=2),encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -876,6 +942,9 @@ def main():
     assert "requires approval" in denied
 
     reports = {}
+    discovery_destination = destination / "discovery"
+    discovery_destination.mkdir()
+    verify_discovery(cli, discovery_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),
