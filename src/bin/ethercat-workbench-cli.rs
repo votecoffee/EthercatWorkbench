@@ -66,7 +66,7 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Inspect Ethernet PCAP or single-interface PCAPNG offline; never opens a NIC or transmits frames.
+    /// Inspect Ethernet PCAP or one PCAPNG interface offline; never opens a NIC or transmits frames.
     InspectPcap {
         profile: PathBuf,
         file: PathBuf,
@@ -76,6 +76,9 @@ enum Command {
         /// Number of returned-frame payload previews (0..64); all frames are counted.
         #[arg(long, default_value_t = 16)]
         preview: usize,
+        /// PCAPNG interface ID (0..31); required when the file has multiple interfaces.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..32))]
+        interface: Option<u32>,
         /// Save UTF-8 JSON to a new .json file after inspection; preserve existing paths.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -343,13 +346,15 @@ fn main() -> Result<()> {
             file,
             station,
             preview,
+            interface,
             out,
         } => {
-            let report = ethercat_workbench::pcap_inspect::inspect(
+            let report = ethercat_workbench::pcap_inspect::inspect_interface(
                 &file,
                 &Profile::load(&profile)?,
                 u16::try_from(station).context("station address exceeds 16 bits")?,
                 preview,
+                interface,
             )?;
             if let Some(path) = out {
                 use std::io::Write;

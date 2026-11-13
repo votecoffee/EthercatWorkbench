@@ -44,6 +44,8 @@ In the GUI, inspect raw/typed payloads in section **3**. Typed staging prepares 
 
 Use fresh paths. Runs reserve new report paths before starting; CSV rotation preserves existing parts and reports failures/losses. Replay must finish its fixture; playback timestamps are host execution timestamps. Virtual models exercise the shared EtherCrab setup/cleanup using authored memory transport. Their normal/segmented upload policy changes after private initialization and does not resolve the earlier expedited-only initializer gap for arbitrary devices.
 
+For saved PCAPNG containing several capture interfaces, use `inspect-pcap .local/bench.json .local/capture.pcapng --interface 1 --out .local/interface-1.json`, or select **PCAPNG interface** in desktop saved-file review. Choose the actual Ethernet interface ID from the file, not a Windows adapter index. A sole interface can be selected automatically; multiple descriptors require an explicit choice. The [capture guide](pcap-inspection.md) defines schema-3 inventory/excluded counts, original packet indexes and timing isolation. Malformed excluded records still fail validation.
+
 ## Interpret timing, quality and losses
 
 The requested host period (1,000 us is a bench target), configured/discovered synchronization/DC settings, host send/receive spacing and saved capture timestamps are different evidence. Deadline scheduling skips elapsed slots; stock relative scheduling rebases its next dispatch. Neither gives Windows hard real-time guarantees.

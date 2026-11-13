@@ -1,4 +1,4 @@
-//! Bounded offline inspection of PCAP and single-interface PCAPNG. Never opens a driver or replays traffic.
+//! Bounded offline inspection of PCAP and explicitly selected PCAPNG interfaces. No driver or traffic replay.
 use crate::{
     model::Profile,
     wire::{Frame, input_datagrams, input_reply},
@@ -11,7 +11,7 @@ use std::{fs::File, io::Read, path::Path, sync::atomic::AtomicBool};
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PACKETS: u64 = 1_000_000;
-pub use crate::capture_file::PcapngMetadata;
+pub use crate::capture_file::{InterfaceMetadata, PcapngMetadata};
 
 #[derive(Debug, Default, Serialize)]
 pub struct Counts {
@@ -131,7 +131,17 @@ pub fn inspect(
     station: u16,
     preview_limit: usize,
 ) -> Result<Report> {
-    inspect_with_stop(path, profile, station, preview_limit, None)
+    inspect_interface(path, profile, station, preview_limit, None)
+}
+
+pub fn inspect_interface(
+    path: &Path,
+    profile: &Profile,
+    station: u16,
+    preview_limit: usize,
+    interface: Option<u32>,
+) -> Result<Report> {
+    inspect_with_stop(path, profile, station, preview_limit, interface, None)
 }
 
 pub fn inspect_cancelable(
@@ -139,9 +149,10 @@ pub fn inspect_cancelable(
     profile: &Profile,
     station: u16,
     preview_limit: usize,
+    interface: Option<u32>,
     stop: &AtomicBool,
 ) -> Result<Report> {
-    inspect_with_stop(path, profile, station, preview_limit, Some(stop))
+    inspect_with_stop(path, profile, station, preview_limit, interface, Some(stop))
 }
 
 fn read_bytes(mut reader: impl Read, stop: Option<&AtomicBool>) -> Result<Vec<u8>> {
@@ -168,6 +179,7 @@ fn inspect_with_stop(
     profile: &Profile,
     station: u16,
     preview_limit: usize,
+    interface: Option<u32>,
     stop: Option<&AtomicBool>,
 ) -> Result<Report> {
     crate::review::check_cancel(stop)?;
@@ -186,7 +198,7 @@ fn inspect_with_stop(
             && before.modified()? == after.modified()?,
         "PCAP changed while reading"
     );
-    let mut report = parse_with_stop(&bytes, profile, station, preview_limit, stop)?;
+    let mut report = parse_with_stop(&bytes, profile, station, preview_limit, interface, stop)?;
     report.file = path.display().to_string();
     crate::review::check_cancel(stop)?;
     Ok(report)
@@ -219,6 +231,7 @@ fn parse_with_stop(
     profile: &Profile,
     station: u16,
     preview_limit: usize,
+    interface: Option<u32>,
     stop: Option<&AtomicBool>,
 ) -> Result<Report> {
     crate::review::check_cancel(stop)?;
@@ -231,7 +244,7 @@ fn parse_with_stop(
     let mut preview = Vec::new();
     let mut first = None;
     let mut previous = None;
-    let info = crate::capture_file::packets(bytes, stop, |record| {
+    let info = crate::capture_file::selected_packets(bytes, stop, interface, |record| {
         ensure!(
             counts.packets < MAX_PACKETS,
             "capture exceeds one million packets"
@@ -279,7 +292,7 @@ fn parse_with_stop(
             if preview.len() < preview_limit {
                 let payload = &input.data[..profile.tx_bytes];
                 preview.push(Preview {
-                    packet_index: counts.packets,
+                    packet_index: record.index,
                     timestamp_unix_ns: timestamp,
                     sequence,
                     input_wkc: input.wkc,
@@ -311,8 +324,8 @@ fn parse_with_stop(
         "Requests and replies are counted independently, without pairing, deduplication, timeout inference, cycle indexes or deadline estimates. Duplicate frames are retained. Percentiles use a three-significant-digit histogram; longest gap is exact.".into(),
     ];
     if let Some(metadata) = &info.pcapng {
-        notes.push(format!("PCAPNG single Ethernet interface 0; signed timestamp offset {} seconds applied. {} blocks and {} options skipped without interpreting their contents, including any capture-tool statistics. Packet pairing, losses and interface identity remain unverified.",
-            metadata.timestamp_offset_seconds, metadata.skipped_blocks, metadata.skipped_options));
+        notes.push(format!("PCAPNG Ethernet interface {} selected from {} descriptors; {} packets on other interfaces excluded from counts, previews and timing. Signed timestamp offset {} seconds applied. {} blocks and {} options skipped without interpreting their contents, including any capture-tool statistics. Packet pairing, losses and interface identity remain unverified.",
+            metadata.interface_id, metadata.interfaces.len(), metadata.skipped_packets, metadata.timestamp_offset_seconds, metadata.skipped_blocks, metadata.skipped_options));
     }
     if !monotonic {
         notes.push("Capture timestamps regress; all spacing summaries are unavailable.".into());
@@ -340,7 +353,7 @@ fn parse_with_stop(
     let profile_sha256 = crate::benchmark::hash(&serde_json::to_vec(profile)?);
     crate::review::check_cancel(stop)?;
     Ok(Report {
-        schema: 2,
+        schema: 3,
         app_version: env!("CARGO_PKG_VERSION").into(),
         file: String::new(),
         file_bytes: bytes.len() as u64,
@@ -387,7 +400,7 @@ mod tests {
         station: u16,
         preview_limit: usize,
     ) -> Result<Report> {
-        parse_with_stop(bytes, profile, station, preview_limit, None)
+        parse_with_stop(bytes, profile, station, preview_limit, None, None)
     }
 
     #[test]
@@ -420,16 +433,23 @@ mod tests {
             .contains("cancelled")
         );
         assert!(
-            parse_with_stop(&[], &profile(), 0x1000, 16, Some(&stop))
+            parse_with_stop(&[], &profile(), 0x1000, 16, None, Some(&stop))
                 .unwrap_err()
                 .to_string()
                 .contains("cancelled")
         );
         assert!(
-            inspect_cancelable(Path::new("missing.pcap"), &profile(), 0x1000, 16, &stop)
-                .unwrap_err()
-                .to_string()
-                .contains("cancelled")
+            inspect_cancelable(
+                Path::new("missing.pcap"),
+                &profile(),
+                0x1000,
+                16,
+                None,
+                &stop
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
         );
     }
 

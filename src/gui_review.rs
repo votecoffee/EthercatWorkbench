@@ -32,6 +32,7 @@ pub struct Panel {
     pcap_path: String,
     station: String,
     preview_limit: usize,
+    pcap_interface: String,
     shared_path: String,
     shared_mapping: SharedMapping,
     shared_report: String,
@@ -54,6 +55,7 @@ impl Default for Panel {
             pcap_path: String::new(),
             station: "0x1000".into(),
             preview_limit: 16,
+            pcap_interface: String::new(),
             shared_path: String::new(),
             shared_mapping: SharedMapping::Raw,
             shared_report: String::new(),
@@ -62,6 +64,15 @@ impl Default for Panel {
 }
 
 impl Panel {
+    fn selected_interface(&self) -> anyhow::Result<Option<u32>> {
+        let text = self.pcap_interface.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let id = ethercat_workbench::esi::number(text)?;
+        anyhow::ensure!(id < 32, "PCAPNG interface ID must be 0..31");
+        Ok(Some(id))
+    }
     pub fn is_running(&self) -> bool {
         self.controller.is_running()
     }
@@ -139,15 +150,20 @@ impl Panel {
                 let station = ethercat_workbench::esi::number(self.station.trim())
                     .ok().and_then(|v| u16::try_from(v).ok()).filter(|v| (1..=0xfffe).contains(v));
                 if station.is_none() { ui.label("Station must be 1–65534, in decimal or 0x hex."); }
-                if ui.add_enabled(!self.pcap_path.trim().is_empty() && station.is_some(),
+                ui.horizontal(|ui|{ui.label("PCAPNG interface");ui.add(egui::TextEdit::singleline(&mut self.pcap_interface).hint_text("auto if sole").desired_width(100.0));});
+                let interface = self.selected_interface();
+                if interface.is_err(){ui.label("Interface must be 0–31, or blank for a sole interface.");}
+                ui.label("Multiple interfaces require an explicit ID. Counts and timing use only that interface; original packet indexes are retained.");
+                if ui.add_enabled(!self.pcap_path.trim().is_empty() && station.is_some() && interface.is_ok(),
                     egui::Button::new("Inspect PCAP with current profile")).clicked() {
                     self.start(Task::InspectPcap {
                         file: PathBuf::from(self.pcap_path.trim()), profile: Box::new(profile.clone()),
                         station: station.expect("validated station"), preview_limit: self.preview_limit,
+                        interface: interface.expect("validated interface"),
                     });
                 }
             });
-            ui.label("Up to 64 MiB. PCAPNG requires one Ethernet interface and microsecond/nanosecond timestamps. VLAN decoding is unsupported. Capture timestamps remain separate from application cycle timing.");
+            ui.label("Up to 64 MiB. PCAPNG supports one section, up to 32 interfaces and microsecond/nanosecond timestamps. Select an Ethernet interface. VLAN decoding is unsupported. Capture timestamps remain separate from application cycle timing.");
         });
         ui.collapsing("Inspect a saved shared-input snapshot",|ui|{
             ui.label("Historical file only. No IPC, process-liveness query, NIC or current-input check.");
@@ -234,7 +250,7 @@ impl Panel {
                         ui.label(format!("CSV base · {}", csv.display()));
                     }
                 }
-                if let Task::InspectPcap { file, profile, station, preview_limit } = &completed.task {
+                if let Task::InspectPcap { file, profile, station, preview_limit, interface } = &completed.task {
                     ui.label(format!("PCAP · {}", file.display()));
                     ui.label(format!("Frozen commissioning profile · {} · {} input bytes · station {station:#06x} · preview limit {preview_limit}",
                         profile.name, profile.tx_bytes));
@@ -242,6 +258,7 @@ impl Panel {
                         ui.label(format!("Expected identity · {identity}"));
                     }
                     ui.label("Export JSON for the complete frozen profile, including ESI provenance and field transformations.");
+                    ui.label(format!("PCAPNG interface choice · {}",interface.map_or("auto if sole".into(),|id|id.to_string())));
                 }
                 if let Task::InspectShared{file,decoding}=&completed.task{
                     ui.label(format!("Saved snapshot · {}",file.display()));
@@ -481,9 +498,16 @@ fn show_pcap(ui: &mut egui::Ui, report: &pcap_inspect::Report) {
         report.capture_format, report.schema
     ));
     if let Some(metadata) = &report.pcapng {
-        ui.label(format!("Interface 0 · Ethernet · snaplen {} · 10^-{} s ticks · signed offset {} s · blocks {} · skipped blocks/options {}/{}",
-            metadata.snaplen, metadata.timestamp_resolution_exponent, metadata.timestamp_offset_seconds,
+        ui.label(format!("Selected interface {} · Ethernet · snaplen {} · 10^-{} s ticks · signed offset {} s · blocks {} · skipped blocks/options {}/{}",
+            metadata.interface_id, metadata.snaplen, metadata.timestamp_resolution_exponent, metadata.timestamp_offset_seconds,
             metadata.blocks, metadata.skipped_blocks, metadata.skipped_options));
+        ui.label(format!("{} file packets · {} excluded on other interfaces. Counts and spacing below use the selected interface only; preview packet indexes refer to the whole file.", metadata.total_packets, metadata.skipped_packets));
+        ui.collapsing("Capture interface inventory",|ui|{
+            for i in &metadata.interfaces {
+                ui.label(format!("Interface {} · link {} · {} packets · snaplen {} · 10^-{} s ticks · offset {} s{}",i.interface_id,i.link_type,i.packets,i.snaplen,i.timestamp_resolution_exponent,i.timestamp_offset_seconds,if i.interface_id==metadata.interface_id{" · SELECTED"}else{" · excluded"}));
+            }
+            ui.label("Interface IDs and clocks are recorded capture metadata, not confirmed physical NIC identities or synchronized clocks.");
+        });
     }
     ui.strong(format!(
         "{} saved packets · {} recognized returned frames · {} valid SAFEOP frames",
@@ -848,7 +872,7 @@ mod tests {
     #[test]
     fn pcap_layout_labels_invalid_payloads_and_unavailable_capture_spacing() {
         let report = pcap_inspect::Report {
-            schema: 2,
+            schema: 3,
             app_version: env!("CARGO_PKG_VERSION").into(),
             file: "Authored UI fixture".into(),
             file_bytes: 100,
@@ -866,7 +890,7 @@ mod tests {
             pcapng: Some(pcap_inspect::PcapngMetadata {
                 minor_version: 0,
                 declared_section_bytes: None,
-                interface_id: 0,
+                interface_id: 1,
                 link_type: 1,
                 snaplen: 65535,
                 timestamp_resolution_exponent: 9,
@@ -874,6 +898,27 @@ mod tests {
                 blocks: 4,
                 skipped_blocks: 0,
                 skipped_options: 1,
+                selection_explicit: true,
+                total_packets: 5,
+                skipped_packets: 4,
+                interfaces: vec![
+                    pcap_inspect::InterfaceMetadata {
+                        interface_id: 0,
+                        link_type: 101,
+                        snaplen: 1024,
+                        timestamp_resolution_exponent: 6,
+                        timestamp_offset_seconds: 0,
+                        packets: 4,
+                    },
+                    pcap_inspect::InterfaceMetadata {
+                        interface_id: 1,
+                        link_type: 1,
+                        snaplen: 65535,
+                        timestamp_resolution_exponent: 9,
+                        timestamp_offset_seconds: -2,
+                        packets: 1,
+                    },
+                ],
             }),
             capture_first_utc: None,
             first_timestamp_unix_ns: Some(100),
@@ -922,6 +967,11 @@ mod tests {
             "hardware validity is unknown",
             "Capture container · pcapng",
             "signed offset -2 s",
+            "Selected interface 1",
+            "4 excluded on other interfaces",
+            "Capture interface inventory",
+            "Interface 0 · link 101",
+            "whole file",
         ] {
             assert!(
                 text.contains(expected),
@@ -943,7 +993,7 @@ mod tests {
             "Stop the active bus",
             "frozen copy",
             "Station must be 1–65534",
-            "PCAPNG requires one Ethernet interface",
+            "up to 32 interfaces",
             "Inspect PCAP with current profile",
         ] {
             assert!(
@@ -951,6 +1001,29 @@ mod tests {
                 "missing {expected:?} from layout: {text}"
             );
         }
+    }
+
+    #[test]
+    fn pcap_interface_editor_requires_a_bounded_explicit_choice_and_retains_bus_exclusion() {
+        let mut panel = Panel::default();
+        assert_eq!(panel.selected_interface().unwrap(), None);
+        panel.pcap_interface = "0x1f".into();
+        assert_eq!(panel.selected_interface().unwrap(), Some(31));
+        for invalid in ["32", "-1", "bad"] {
+            panel.pcap_interface = invalid.into();
+            assert!(panel.selected_interface().is_err());
+        }
+        let text = text_from_layout(|ui| panel.draw(ui, true, &Profile::default()));
+        for label in [
+            "PCAPNG interface",
+            "Interface must be 0–31",
+            "Multiple interfaces require an explicit ID",
+            "original packet indexes",
+            "Stop the active bus",
+        ] {
+            assert!(text.contains(label), "missing {label}: {text}");
+        }
+        assert!(!panel.is_running());
     }
 
     #[test]

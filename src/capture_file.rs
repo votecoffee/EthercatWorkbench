@@ -4,6 +4,17 @@ use serde::Serialize;
 use std::sync::atomic::AtomicBool;
 
 pub(crate) const MAX_SNAPLEN: u32 = 262_144;
+const MAX_INTERFACES: usize = 32;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InterfaceMetadata {
+    pub interface_id: u32,
+    pub link_type: u16,
+    pub snaplen: u32,
+    pub timestamp_resolution_exponent: u8,
+    pub timestamp_offset_seconds: i64,
+    pub packets: u64,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PcapngMetadata {
@@ -17,6 +28,10 @@ pub struct PcapngMetadata {
     pub blocks: u64,
     pub skipped_blocks: u64,
     pub skipped_options: u64,
+    pub selection_explicit: bool,
+    pub total_packets: u64,
+    pub skipped_packets: u64,
+    pub interfaces: Vec<InterfaceMetadata>,
 }
 
 #[derive(Debug)]
@@ -27,6 +42,7 @@ pub(crate) struct Info {
 }
 
 pub(crate) struct Packet<'a> {
+    pub index: u64,
     pub timestamp: u64,
     pub original: u32,
     pub bytes: &'a [u8],
@@ -63,15 +79,26 @@ impl Order {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn packets<'a>(
     bytes: &'a [u8],
     stop: Option<&AtomicBool>,
+    visit: impl FnMut(Packet<'a>) -> Result<()>,
+) -> Result<Info> {
+    selected_packets(bytes, stop, None, visit)
+}
+
+pub(crate) fn selected_packets<'a>(
+    bytes: &'a [u8],
+    stop: Option<&AtomicBool>,
+    interface: Option<u32>,
     mut visit: impl FnMut(Packet<'a>) -> Result<()>,
 ) -> Result<Info> {
     ensure!(bytes.len() >= 24, "capture header truncated");
     if bytes[..4] == [0x0a, 0x0d, 0x0d, 0x0a] {
-        return pcapng(bytes, stop, visit);
+        return pcapng(bytes, stop, interface, visit);
     }
+    ensure!(interface.is_none(), "interface selection requires PCAPNG");
     let (order, nano) = match &bytes[..4] {
         [0xd4, 0xc3, 0xb2, 0xa1] => (Order(true), false),
         [0xa1, 0xb2, 0xc3, 0xd4] => (Order(false), false),
@@ -93,8 +120,11 @@ pub(crate) fn packets<'a>(
         "only Ethernet link type 1 without additional FCS flags is supported"
     );
     let mut offset = 24;
+    let mut index = 0;
     while offset < bytes.len() {
         crate::review::check_cancel(stop)?;
+        ensure!(index < 1_000_000, "capture exceeds one million packets");
+        index += 1;
         ensure!(bytes.len() - offset >= 16, "truncated PCAP packet header");
         let header = &bytes[offset..offset + 16];
         let seconds = order.number(header, 0) as u64;
@@ -116,6 +146,7 @@ pub(crate) fn packets<'a>(
             "truncated PCAP packet data"
         );
         visit(Packet {
+            index,
             timestamp,
             original,
             bytes: &bytes[offset..offset + captured as usize],
@@ -195,8 +226,13 @@ fn unique(seen: &mut u8, mask: u8, value: &[u8], length: usize) -> Result<()> {
 fn pcapng<'a>(
     bytes: &'a [u8],
     stop: Option<&AtomicBool>,
+    selected: Option<u32>,
     mut visit: impl FnMut(Packet<'a>) -> Result<()>,
 ) -> Result<Info> {
+    ensure!(
+        selected.is_none_or(|id| id < MAX_INTERFACES as u32),
+        "PCAPNG interface ID must be 0..31"
+    );
     let order = match &bytes[8..12] {
         [0x4d, 0x3c, 0x2b, 0x1a] => Order(true),
         [0x1a, 0x2b, 0x3c, 0x4d] => Order(false),
@@ -217,7 +253,7 @@ fn pcapng<'a>(
     let mut metadata = PcapngMetadata {
         minor_version: minor,
         declared_section_bytes: (declared >= 0).then_some(declared as u64),
-        interface_id: 0,
+        interface_id: selected.unwrap_or(0),
         link_type: 1,
         snaplen: 0,
         timestamp_resolution_exponent: 6,
@@ -225,12 +261,15 @@ fn pcapng<'a>(
         blocks: 1,
         skipped_blocks: 0,
         skipped_options: 0,
+        selection_explicit: selected.is_some(),
+        total_packets: 0,
+        skipped_packets: 0,
+        interfaces: Vec::new(),
     };
     options(&section[16..], order, stop, |_, _| {
         metadata.skipped_options += 1;
         Ok(())
     })?;
-    let mut interface = false;
     while offset < bytes.len() {
         crate::review::check_cancel(stop)?;
         ensure!(
@@ -246,17 +285,24 @@ fn pcapng<'a>(
         match kind {
             1 => {
                 ensure!(
-                    !interface,
-                    "multiple PCAPNG interfaces are unsupported; export one interface"
+                    metadata.interfaces.len() < MAX_INTERFACES,
+                    "PCAPNG exceeds 32 interface descriptors"
                 );
                 ensure!(body.len() >= 8, "truncated PCAPNG interface descriptor");
                 ensure!(
-                    order.word(body, 0) == 1 && order.word(body, 2) == 0,
-                    "PCAPNG requires Ethernet link type 1 with clear reserved bits"
+                    order.word(body, 2) == 0,
+                    "PCAPNG interface reserved bits must be clear"
                 );
-                metadata.snaplen = order.number(body, 4);
+                let mut interface = InterfaceMetadata {
+                    interface_id: metadata.interfaces.len() as u32,
+                    link_type: order.word(body, 0),
+                    snaplen: order.number(body, 4),
+                    timestamp_resolution_exponent: 6,
+                    timestamp_offset_seconds: 0,
+                    packets: 0,
+                };
                 ensure!(
-                    (1..=MAX_SNAPLEN).contains(&metadata.snaplen),
+                    (1..=MAX_SNAPLEN).contains(&interface.snaplen),
                     "PCAPNG snaplen must be 1..262144"
                 );
                 let mut seen = 0;
@@ -268,11 +314,11 @@ fn pcapng<'a>(
                                 matches!(value[0], 6 | 9),
                                 "PCAPNG supports decimal microsecond or nanosecond resolution only"
                             );
-                            metadata.timestamp_resolution_exponent = value[0];
+                            interface.timestamp_resolution_exponent = value[0];
                         }
                         14 => {
                             unique(&mut seen, 2, value, 8)?;
-                            metadata.timestamp_offset_seconds = order.signed(value, 0);
+                            interface.timestamp_offset_seconds = order.signed(value, 0);
                         }
                         13 => {
                             unique(&mut seen, 4, value, 1)?;
@@ -282,21 +328,23 @@ fn pcapng<'a>(
                     }
                     Ok(())
                 })?;
-                interface = true;
+                metadata.interfaces.push(interface);
             }
             6 => {
                 ensure!(
-                    interface && body.len() >= 20,
+                    !metadata.interfaces.is_empty() && body.len() >= 20,
                     "PCAPNG enhanced packet requires a prior interface and full header"
                 );
-                ensure!(
-                    order.number(body, 0) == 0,
-                    "PCAPNG packet references an unsupported interface"
-                );
+                let id = order.number(body, 0);
+                let interface = metadata.interfaces.get_mut(id as usize).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "PCAPNG packet references an interface without a prior descriptor"
+                    )
+                })?;
                 let captured = order.number(body, 12) as usize;
                 let original = order.number(body, 16);
                 ensure!(
-                    captured <= metadata.snaplen as usize && captured <= original as usize,
+                    captured <= interface.snaplen as usize && captured <= original as usize,
                     "invalid PCAPNG captured/original lengths"
                 );
                 let padded = (captured + 3) & !3;
@@ -319,21 +367,32 @@ fn pcapng<'a>(
                 })?;
                 let ticks = ((order.number(body, 4) as u64) << 32) | order.number(body, 8) as u64;
                 let timestamp = ticks as i128
-                    * if metadata.timestamp_resolution_exponent == 6 {
+                    * if interface.timestamp_resolution_exponent == 6 {
                         1000
                     } else {
                         1
                     }
-                    + metadata.timestamp_offset_seconds as i128 * 1_000_000_000;
+                    + interface.timestamp_offset_seconds as i128 * 1_000_000_000;
                 ensure!(
                     (0..=i64::MAX as i128).contains(&timestamp),
                     "PCAPNG timestamp outside supported Unix nanosecond range"
                 );
-                visit(Packet {
-                    timestamp: timestamp as u64,
-                    original,
-                    bytes: &body[20..20 + captured],
-                })?;
+                ensure!(
+                    metadata.total_packets < 1_000_000,
+                    "capture exceeds one million packets"
+                );
+                metadata.total_packets += 1;
+                interface.packets += 1;
+                if id == metadata.interface_id {
+                    visit(Packet {
+                        index: metadata.total_packets,
+                        timestamp: timestamp as u64,
+                        original,
+                        bytes: &body[20..20 + captured],
+                    })?;
+                } else {
+                    metadata.skipped_packets += 1;
+                }
             }
             0 | 2 | 3 => {
                 bail!("invalid, obsolete or untimestamped PCAPNG packet block is unsupported")
@@ -343,9 +402,42 @@ fn pcapng<'a>(
         offset = end;
     }
     ensure!(
-        interface,
-        "PCAPNG requires exactly one Ethernet interface descriptor"
+        !metadata.interfaces.is_empty(),
+        "PCAPNG requires an interface descriptor"
     );
+    if selected.is_none() && metadata.interfaces.len() != 1 {
+        let choices = metadata
+            .interfaces
+            .iter()
+            .map(|i| {
+                format!(
+                    "{} (link {}, {} packets)",
+                    i.interface_id, i.link_type, i.packets
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "PCAPNG contains multiple interfaces: {choices}; select --interface ID (desktop: PCAPNG interface)"
+        );
+    }
+    let interface = metadata
+        .interfaces
+        .get(metadata.interface_id as usize)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "selected PCAPNG interface {} is not present",
+                metadata.interface_id
+            )
+        })?;
+    ensure!(
+        interface.link_type == 1,
+        "selected PCAPNG interface must use Ethernet link type 1"
+    );
+    metadata.link_type = interface.link_type;
+    metadata.snaplen = interface.snaplen;
+    metadata.timestamp_resolution_exponent = interface.timestamp_resolution_exponent;
+    metadata.timestamp_offset_seconds = interface.timestamp_offset_seconds;
     Ok(Info {
         format: "pcapng",
         nano: metadata.timestamp_resolution_exponent == 9,
@@ -600,5 +692,129 @@ mod tests {
         .unwrap_err();
         assert_eq!(count, 1);
         assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn selection_keeps_interface_clocks_packet_indexes_and_counts_separate() {
+        for little in [false, true] {
+            let mut other = interface(little, Vec::new());
+            other[8..10].copy_from_slice(&word(little, 101)); // An excluded non-Ethernet link.
+            let selected = interface(
+                little,
+                [
+                    option(little, 9, &[9]),
+                    option(little, 14, &signed(little, -2)),
+                ]
+                .concat(),
+            );
+            let epb = |id: u32, ticks: u64| {
+                let mut p = packet(little, ticks, Vec::new());
+                p[8..12].copy_from_slice(&number(little, id));
+                p
+            };
+            let bytes = [
+                section(little),
+                other,
+                selected,
+                epb(0, 10),
+                epb(1, 3_000_000_001),
+                epb(0, 1),
+                epb(1, 3_000_001_001),
+            ]
+            .concat();
+            assert!(
+                inspect(&bytes)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("multiple interfaces")
+            );
+            let mut observed = Vec::new();
+            let info = selected_packets(&bytes, None, Some(1), |p| {
+                observed.push((p.index, p.timestamp, p.bytes.to_vec()));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                observed,
+                vec![(2, 1_000_000_001, vec![42]), (4, 1_000_001_001, vec![42])]
+            );
+            assert!(info.nano);
+            let m = info.pcapng.unwrap();
+            assert_eq!(
+                (m.interface_id, m.total_packets, m.skipped_packets),
+                (1, 4, 2)
+            );
+            assert!(m.selection_explicit);
+            assert_eq!(
+                m.interfaces.iter().map(|i| i.packets).collect::<Vec<_>>(),
+                vec![2, 2]
+            );
+            assert!(
+                selected_packets(&bytes, None, Some(0), |_| Ok(()))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Ethernet")
+            );
+            assert!(
+                selected_packets(&bytes, None, Some(2), |_| Ok(()))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not present")
+            );
+            assert!(selected_packets(&bytes, None, Some(32), |_| Ok(())).is_err());
+        }
+    }
+
+    #[test]
+    fn selection_still_validates_excluded_records_and_bounds_interface_inventory() {
+        let mut bytes = [
+            section(true),
+            interface(true, Vec::new()),
+            interface(true, Vec::new()),
+            packet(true, 1, Vec::new()),
+        ]
+        .concat();
+        let record = bytes.len() - 36;
+        bytes[record + 24..record + 28].copy_from_slice(&0u32.to_le_bytes()); // Original length smaller than captured on excluded ID 0.
+        assert!(
+            selected_packets(&bytes, None, Some(1), |_| Ok(()))
+                .unwrap_err()
+                .to_string()
+                .contains("lengths")
+        );
+        let mut bytes = section(true);
+        for _ in 0..32 {
+            bytes.extend(interface(true, Vec::new()));
+        }
+        assert_eq!(
+            selected_packets(&bytes, None, Some(31), |_| Ok(()))
+                .unwrap()
+                .pcapng
+                .unwrap()
+                .interfaces
+                .len(),
+            32
+        );
+        bytes.extend(interface(true, Vec::new()));
+        assert!(
+            selected_packets(&bytes, None, Some(31), |_| Ok(()))
+                .unwrap_err()
+                .to_string()
+                .contains("32 interface")
+        );
+        let bytes = [
+            section(true),
+            interface(true, Vec::new()),
+            packet(true, 1, Vec::new()),
+            interface(true, Vec::new()),
+        ]
+        .concat();
+        let stop = AtomicBool::new(true);
+        assert!(
+            selected_packets(&bytes, Some(&stop), Some(1), |_| Ok(()))
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
     }
 }

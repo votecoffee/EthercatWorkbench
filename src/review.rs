@@ -49,6 +49,7 @@ pub enum Task {
         profile: Box<Profile>,
         station: u16,
         preview_limit: usize,
+        interface: Option<u32>,
     },
 }
 
@@ -75,8 +76,13 @@ impl Task {
                 profile,
                 station,
                 preview_limit,
+                interface,
             } => {
                 ensure!(!file.as_os_str().is_empty(), "enter a PCAP file path");
+                ensure!(
+                    interface.is_none_or(|id| id < 32),
+                    "PCAPNG interface ID must be 0..31"
+                );
                 return pcap_inspect::validate_settings(profile, *station, *preview_limit);
             }
             Self::Audit(input) => (std::slice::from_ref(input), true),
@@ -131,11 +137,13 @@ impl Task {
                 profile,
                 station,
                 preview_limit,
+                interface,
             } => Outcome::Pcap(Box::new(pcap_inspect::inspect_cancelable(
                 file,
                 profile,
                 *station,
                 *preview_limit,
+                *interface,
                 stop,
             )?)),
             Self::Audit(input) => Outcome::Audit(Box::new(capture_audit::verify_cancelable(
@@ -428,6 +436,7 @@ mod tests {
                 ),
                 station: 0x1000,
                 preview_limit: 16,
+                interface: None,
             }
         }
 
@@ -577,6 +586,7 @@ mod tests {
             profile,
             station,
             preview_limit,
+            interface,
         } = &mut edited
         {
             *file = "different.pcap".into();
@@ -584,6 +594,7 @@ mod tests {
             profile.tx[0].name = "Different field".into();
             *station = 42;
             *preview_limit = 0;
+            *interface = Some(1);
         }
         finish(&mut controller);
         assert_eq!(controller.state(), State::Complete);
@@ -606,11 +617,14 @@ mod tests {
             profile,
             station,
             preview_limit,
+            interface,
         } = &original
         else {
             unreachable!()
         };
-        let cli = pcap_inspect::inspect(file, profile, *station, *preview_limit).unwrap();
+        let cli =
+            pcap_inspect::inspect_interface(file, profile, *station, *preview_limit, *interface)
+                .unwrap();
         assert_eq!(
             serde_json::to_value(&completed.outcome).unwrap(),
             serde_json::to_value(cli).unwrap()
@@ -636,26 +650,128 @@ mod tests {
         let mut controller = Controller::default();
         controller.start(original.clone()).unwrap();
         finish(&mut controller);
-        for invalid in 0..4 {
+        for invalid in 0..5 {
             let mut task = original.clone();
             if let Task::InspectPcap {
                 file,
                 profile,
                 station,
                 preview_limit,
+                interface,
             } = &mut task
             {
                 match invalid {
                     0 => *file = PathBuf::new(),
                     1 => profile.tx_bytes = 0,
                     2 => *station = 0xffff,
-                    _ => *preview_limit = 65,
+                    3 => *preview_limit = 65,
+                    _ => *interface = Some(32),
                 }
             }
             assert!(controller.start(task).is_err());
             assert_eq!(controller.state(), State::Complete);
             assert_eq!(controller.completed().unwrap().task, original);
         }
+    }
+
+    #[test]
+    fn selected_pcapng_worker_freezes_interface_and_exports_only_selected_frame_analysis() {
+        fn block(kind: u32, mut body: Vec<u8>) -> Vec<u8> {
+            while !body.len().is_multiple_of(4) {
+                body.push(0);
+            }
+            let len = body.len() as u32 + 12;
+            [
+                kind.to_le_bytes().to_vec(),
+                len.to_le_bytes().to_vec(),
+                body,
+                len.to_le_bytes().to_vec(),
+            ]
+            .concat()
+        }
+        let fixture = Fixture::new();
+        let mut task = fixture.pcap_task();
+        let Task::InspectPcap {
+            file, interface, ..
+        } = &mut task
+        else {
+            unreachable!()
+        };
+        let raw = std::fs::read(&*file).unwrap();
+        let mut section = 0x1a2b3c4du32.to_le_bytes().to_vec();
+        section.extend([1, 0, 0, 0]);
+        section.extend((-1i64).to_le_bytes());
+        let idb = block(1, vec![1, 0, 0, 0, 255, 255, 0, 0]);
+        let mut bytes = [block(0x0a0d0d0a, section), idb.clone(), idb].concat();
+        // Independent block writer using the already-authored Ethernet frames. The first
+        // frame is excluded, so exported preview indexes must still refer to the whole file.
+        let mut offset = 24;
+        let mut index = 0;
+        while offset < raw.len() {
+            let captured =
+                u32::from_le_bytes(raw[offset + 8..offset + 12].try_into().unwrap()) as usize;
+            let packet = &raw[offset + 16..offset + 16 + captured];
+            let make = |id: u32| {
+                let mut body = Vec::new();
+                for value in [id, 0, index * 1000, captured as u32, captured as u32] {
+                    body.extend(value.to_le_bytes());
+                }
+                body.extend(packet);
+                block(6, body)
+            };
+            if index == 0 {
+                bytes.extend(make(0));
+            }
+            bytes.extend(make(1));
+            offset += 16 + captured;
+            index += 1;
+        }
+        std::fs::write(&*file, &bytes).unwrap();
+        *interface = Some(1);
+        let original = task.clone();
+        let mut controller = Controller::default();
+        controller.start(task.clone()).unwrap();
+        if let Task::InspectPcap { interface, .. } = &mut task {
+            *interface = Some(0);
+        }
+        finish(&mut controller);
+        assert_eq!(
+            controller.state(),
+            State::Complete,
+            "{:?}",
+            controller.error()
+        );
+        assert_eq!(controller.completed().unwrap().task, original);
+        let Outcome::Pcap(report) = &controller.completed().unwrap().outcome else {
+            unreachable!()
+        };
+        assert_eq!(report.counts.packets, 4);
+        assert_eq!(report.preview[0].packet_index, 3);
+        let m = report.pcapng.as_ref().unwrap();
+        assert_eq!(
+            (m.interface_id, m.total_packets, m.skipped_packets),
+            (1, 5, 1)
+        );
+        let Task::InspectPcap {
+            file,
+            profile,
+            station,
+            preview_limit,
+            interface,
+        } = &original
+        else {
+            unreachable!()
+        };
+        let expected =
+            pcap_inspect::inspect_interface(file, profile, *station, *preview_limit, *interface)
+                .unwrap();
+        let out = fixture.0.join("pcap-result.json");
+        controller.save_new(&out).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(out).unwrap()).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(std::fs::read(file).unwrap(), bytes);
     }
 
     #[test]
