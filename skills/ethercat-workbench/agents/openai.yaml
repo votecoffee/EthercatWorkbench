@@ -1,0 +1,4 @@
+interface:
+  display_name: "EtherCAT Workbench"
+  short_description: "EtherCAT profiles, offline capture and bench input"
+  default_prompt: "Use $ethercat-workbench to configure and verify an offline EtherCAT profile before an approved bench run."

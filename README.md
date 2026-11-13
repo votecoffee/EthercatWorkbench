@@ -14,6 +14,8 @@ Windows x64 Rust desktop application and headless CLI for EtherCAT MainDevice be
 
 Extract the portable ZIP. Launch `ethercat-workbench.exe` for the GUI or use `ethercat-workbench-cli.exe` from PowerShell. Offline mode runs with no EtherCAT hardware. Live mode uses the separately installed x64 [Npcap runtime](https://npcap.com/#download), an Ethernet NIC connected to an isolated bench, and access permitted by the Npcap driver policy.
 
+Start with the [operations guide](docs/operations.md) for ESI/manual setup, CLI and hardware boundaries. Developers and future chats can use [AGENTS.md](AGENTS.md) and the [development guide](docs/development.md). Run `powershell -File tools/install-skill.ps1` to install the bundled [EtherCAT Workbench skill](skills/ethercat-workbench/SKILL.md) for future Codex chats, bound to this extracted/source root; modified or unowned installed files are preserved.
+
 To build from source, install Rust 1.92 or later, the MSVC x64 toolchain and Windows SDK, and download the Npcap SDK. Keep the SDK and vendor ESI XML in ignored `.local/`. Set the x64 library directory for the build.
 
 ```powershell
@@ -101,13 +103,15 @@ The desktop's **4 Saved run review** panel runs those audits and comparisons on 
 
 See the [EtherCrab source review](docs/ethercrab-review.md), [verification results](VERIFICATION.md), and [roadmap](ROADMAP.md).
 
+Read-only local API, MQTT publishing, Windows shared memory and optional C-compatible FFI/C# embedding are [planned interfaces](docs/interfaces-roadmap.md), not implemented services. Their design must keep acquisition independent from slow consumers and report interface losses/freshness separately from bus and CSV quality.
+
 ## Maintainers
 
 [votecoffee](https://github.com/votecoffee)
 
 ## Contributing
 
-Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.17.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.17.1-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
 
 ## License
 

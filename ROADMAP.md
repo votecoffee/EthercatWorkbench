@@ -1,5 +1,11 @@
 # EtherCAT Workbench roadmap
 
+## Software interfaces, documentation and skills
+
+- Plan a read-only local API, MQTT publishing and Windows shared memory as opt-in consumers with bounded buffers, independent loss/freshness reporting and no acquisition-thread waits. These are not implemented. Define EtherCAT WKC/AL/identity/generation/clock semantics and slow-consumer acceptance before implementation; see the [interface roadmap](docs/interfaces-roadmap.md).
+- Evaluate optional C-compatible FFI for C# embedding based on whether the host must own the hardware connection. Define single NIC/session ownership, runtime/thread/allocator/shutdown behavior and bounded callbacks/polling. It has been discussed, not implemented, in the read-only EthernetIPWorkbench reference; no embedding API exists here.
+- Maintain [operations](docs/operations.md), [development](docs/development.md), the repository [AGENTS entry point](AGENTS.md) and the [Codex skill](skills/ethercat-workbench/SKILL.md) with each feature. The skill installer binds a discoverable local copy to the source/portable root. Cover ESI/manual setup, CLI, mappings/staging, timing/losses, interfaces, tests, packaging and hardware authorization; keep planned interfaces separate from current commands.
+
 ## One-device bench acceptance
 
 - Record device model and revision, ESI hash, NIC and driver version, bench wiring, selected input and an independent way to vary or observe it.

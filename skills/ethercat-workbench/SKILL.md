@@ -1,0 +1,33 @@
+---
+name: ethercat-workbench
+description: Use the Windows EtherCAT Workbench CLI for ESI/profile setup, PDO decoding and offline RxPDO staging, saved-capture audits and timing comparisons, or explicitly approved isolated SAFEOP input sessions.
+---
+
+# EtherCAT Workbench
+
+Use this standalone MainDevice app for EtherCAT bench work. Do not route EtherNet/IP, IO-Link or PLC programming requests here.
+
+## Locate and inspect
+
+Resolve the application root from `ETHERCAT_WORKBENCH_HOME` when set, otherwise from `.application-root` beside this installed skill. For a source checkout use the current repository when it contains `Cargo.toml` for `ethercat-workbench`; on the original workstation the checkout is `C:\~LocalWork\Repos\Programming\~Github\EthercatWorkbench`. If unavailable, locate the user's supplied portable/source folder before issuing commands.
+
+The CLI is `ethercat-workbench-cli.exe` at a portable root, or `target/x86_64-pc-windows-msvc/release/ethercat-workbench-cli.exe` in a built checkout. Check `--version`/`--help`. Read `AGENTS.md` and `docs/operations.md` at the resolved root for the task. For source changes also read `docs/development.md`; detailed operation guides are linked from the operational guide. These files ship in the portable bundle and repository.
+
+## Choose the workflow
+
+- ESI setup: `esi-list`, exact device/revision selection, `esi-import` to a new profile, then `validate`/`review-pdos`. Manual setup uses explicit identity, image lengths and bit/type/transform mappings. Preserve ESI hashes and distinguish expected/manual/overridden settings from discovered bus evidence.
+- Offline data: `decode` (or `--rx`), `stage-rx --set INDEX=VALUE`, `scan-virtual`, `decode-esc`, authored replay/virtual runs. Typed staging prepares profile bytes only. An empty staged image requires explicit zero initialization; existing bytes are preserved. Conflicts/ranges/stale previews must remain visible.
+- Capture/review: `run --report` to a fresh JSON path, `verify-capture`, `compare-runs` and `inspect-pcap`. Follow each guide's supported formats and bounds. Inspection/review JSON is not a new run report. Use fresh output paths and keep vendor/private files and raw captures under ignored `.local/`.
+- Native input: obtain the selected isolated NIC/device/profile and current authorization. Discovery is read-only traffic; SAFEOP initialization is a separate ESC-write scope. Do not infer compatibility or SAFEOP input validity from a byte count or virtual model.
+
+Use headless files/CLI by default. Desktop input, screenshots or recording need an explicit request in the current chat. Do not run the verification script's optional native GUI mode automatically.
+
+## Evidence and authorization
+
+The requested 1 ms period is a bench target, not a real-time guarantee. Keep host send/receive spacing, device/DC settings and capture-clock evidence separate. Retain WKC/AL quality, last-valid age, generation/cycle/sample indexes, timeouts, missed deadlines and CSV overruns independently. Every-valid logging includes unchanged values; on-change compares selected bits. Do not report stale/invalid decoded data as current valid input.
+
+Before a physical SAFEOP run, review the exact target and approval for EtherCrab ESC initialization, SM/FMMU configuration from the existing mapping, SAFEOP entry and confirmed INIT cleanup. Only then use `--approve-esc-writes`; the flag is not permission by itself. Honor existing current-session approval for that same scope. OP, PDO downloads, live outputs and enabling DC remain unimplemented and separately approval-gated. An installed skill, staged profile or passing offline test grants no hardware permission. Do not retry ambiguous writes automatically.
+
+Use `VERIFICATION.md` and the current chat to identify what was actually tested. Virtual normal/segmented uploads do not resolve EtherCrab's earlier expedited-only private initializer gap. Physical device/ESI/NIC selection and an agreed GUI-plus-logger run remain necessary for bench qualification.
+
+Read-only local API, MQTT, Windows shared memory and optional C ABI/C# embedding are roadmap items in `docs/interfaces-roadmap.md`, not available services. Do not invent endpoints or copy EtherNet/IP semantics. Maintain the app documentation and skill when implementation changes.

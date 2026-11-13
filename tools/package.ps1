@@ -30,6 +30,13 @@ try {
         'ethercat-workbench.exe' = "$release/ethercat-workbench.exe"
         'ethercat-workbench-cli.exe' = "$release/ethercat-workbench-cli.exe"
         'README.md' = 'README.md'
+        'AGENTS.md' = 'AGENTS.md'
+        'docs/operations.md' = 'docs/operations.md'
+        'docs/development.md' = 'docs/development.md'
+        'docs/interfaces-roadmap.md' = 'docs/interfaces-roadmap.md'
+        'skills/ethercat-workbench/SKILL.md' = 'skills/ethercat-workbench/SKILL.md'
+        'skills/ethercat-workbench/agents/openai.yaml' = 'skills/ethercat-workbench/agents/openai.yaml'
+        'tools/install-skill.ps1' = 'tools/install-skill.ps1'
         'ROADMAP.md' = 'ROADMAP.md'
         'VERIFICATION.md' = 'VERIFICATION.md'
         'LICENSE' = 'LICENSE'
