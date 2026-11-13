@@ -158,6 +158,9 @@ enum Command {
         virtual_model: ethercat_workbench::virtual_esc::VirtualModel,
         #[arg(long, default_value_t = 1)]
         generation: u64,
+        /// Enable the read-only HTTP feed on 127.0.0.1 (0 chooses a free port). No device writes.
+        #[arg(long)]
+        http_port: Option<u16>,
         /// Confirm approval for ESC initialization, SAFEOP and return to INIT on one isolated device.
         #[arg(long)]
         approve_esc_writes: bool,
@@ -428,6 +431,7 @@ fn main() -> Result<()> {
             virtual_fault,
             virtual_model,
             generation,
+            http_port,
             approve_esc_writes,
         } => {
             ensure!(
@@ -509,6 +513,9 @@ fn main() -> Result<()> {
                 }
             };
             let mut profile = Profile::load(&profile)?;
+            if let Some(port) = http_port {
+                profile.http.get_or_insert_with(Default::default).port = port;
+            }
             if let Some(scheduler) = scheduler {
                 profile.scheduler = match scheduler {
                     Schedule::Deadline => Scheduler::Deadline,

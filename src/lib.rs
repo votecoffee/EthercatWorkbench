@@ -5,6 +5,7 @@ mod capture_file;
 pub mod esc;
 pub mod esi;
 pub mod health;
+pub mod http_feed;
 pub mod model;
 pub mod output_stage;
 pub mod pcap_inspect;

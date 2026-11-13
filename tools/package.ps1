@@ -34,6 +34,8 @@ try {
         'docs/operations.md' = 'docs/operations.md'
         'docs/development.md' = 'docs/development.md'
         'docs/interfaces-roadmap.md' = 'docs/interfaces-roadmap.md'
+        'docs/http-input-feed.md' = 'docs/http-input-feed.md'
+        'samples/http-input.json' = 'samples/http-input.json'
         'skills/ethercat-workbench/SKILL.md' = 'skills/ethercat-workbench/SKILL.md'
         'skills/ethercat-workbench/agents/openai.yaml' = 'skills/ethercat-workbench/agents/openai.yaml'
         'tools/install-skill.ps1' = 'tools/install-skill.ps1'

@@ -143,6 +143,7 @@ struct SavedRun {
     stopped_al: Option<(u16, u16)>,
     cancelled: bool,
     error: Option<String>,
+    http: Option<crate::http_feed::Stats>,
 }
 
 impl SavedRun {
@@ -151,6 +152,22 @@ impl SavedRun {
             "report has no versioned run context; collect a new trial with Workbench 0.10 or later",
         )?;
         ctx.validate()?;
+        ensure!(
+            self.http.is_some() == ctx.profile.http.is_some(),
+            "HTTP feed report/configuration disagree"
+        );
+        if let Some(http) = &self.http {
+            ensure!(
+                !http.active
+                    && http.offered == self.cycles
+                    && http
+                        .dispatched
+                        .checked_add(http.queue_drops)
+                        .and_then(|n| n.checked_add(http.pending))
+                        == Some(http.offered),
+                "HTTP feed counters are inconsistent or still active"
+            );
+        }
         ensure!(
             self.error.is_none() && !self.cancelled,
             "trial failed or was cancelled"
@@ -319,6 +336,7 @@ pub struct Trial {
     pub send_spacing: Spacing,
     pub receive_spacing: Spacing,
     pub capture: CaptureStats,
+    pub http: Option<crate::http_feed::Stats>,
 }
 
 #[derive(Debug, Serialize)]
@@ -540,6 +558,16 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
                 file.display()
             ));
         }
+        if let Some(http) = &r.http
+            && (http.queue_drops > 0
+                || http.pending > 0
+                || http.io_errors > 0
+                || http.rejected_requests > 0
+                || http.worker_failed
+                || http.worker_error.is_some())
+        {
+            result.warnings.push(format!("Trial {} has HTTP feed loss, client errors or worker failure; inspect its independent interface counters.",file.display()));
+        }
         result.trials.push(Trial {
             file: file.clone(),
             sha256: sha256.clone(),
@@ -558,6 +586,7 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
             send_spacing: r.send_spacing.clone(),
             receive_spacing: r.receive_spacing.clone(),
             capture: cap.clone(),
+            http: r.http.clone(),
         });
     }
     for scheduler in [Scheduler::Deadline, Scheduler::Relative] {
@@ -672,6 +701,41 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("GUI-plus-logger"))
         );
+    }
+
+    #[test]
+    fn comparison_retains_http_losses_separately_and_rejects_mixed_config_or_bad_counts() {
+        let mut runs = vec![
+            fixture(Scheduler::Deadline, 0, 100),
+            fixture(Scheduler::Relative, 1, 200),
+        ];
+        for run in &mut runs {
+            let ctx = run.context.as_mut().unwrap();
+            ctx.profile.http = Some(crate::http_feed::Config::default());
+            let (exact, common) = RunContext::hashes(&ctx.profile).unwrap();
+            ctx.profile_sha256 = exact;
+            ctx.comparison_sha256 = common;
+            run.http = Some(crate::http_feed::Stats {
+                offered: 1000,
+                dispatched: 997,
+                queue_drops: 3,
+                history_evictions: 500,
+                io_errors: 2,
+                ..Default::default()
+            });
+        }
+        let checked = compare(inputs(runs)).unwrap();
+        assert_eq!(checked.trials[0].http.as_ref().unwrap().queue_drops, 3);
+        assert_eq!(checked.trials[0].capture.overruns, 0);
+        assert!(
+            checked
+                .warnings
+                .iter()
+                .any(|w| w.contains("HTTP feed loss"))
+        );
+        let mut bad = fixture(Scheduler::Deadline, 0, 100);
+        bad.http = Some(crate::http_feed::Stats::default());
+        assert!(bad.checked().is_err());
     }
 
     #[test]

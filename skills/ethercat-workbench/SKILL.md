@@ -1,6 +1,6 @@
 ---
 name: ethercat-workbench
-description: Use the Windows EtherCAT Workbench CLI for ESI/profile setup, PDO decoding and offline RxPDO staging, saved-capture audits and timing comparisons, or explicitly approved isolated SAFEOP input sessions.
+description: Use the Windows EtherCAT Workbench CLI for ESI/profile setup, PDO decoding and offline RxPDO staging, saved-capture audits, read-only local HTTP input and timing comparisons, or explicitly approved isolated SAFEOP input sessions.
 ---
 
 # EtherCAT Workbench
@@ -30,4 +30,4 @@ Before a physical SAFEOP run, review the exact target and approval for EtherCrab
 
 Use `VERIFICATION.md` and the current chat to identify what was actually tested. Virtual normal/segmented uploads do not resolve EtherCrab's earlier expedited-only private initializer gap. Physical device/ESI/NIC selection and an agreed GUI-plus-logger run remain necessary for bench qualification.
 
-Read-only local API, MQTT, Windows shared memory and optional C ABI/C# embedding are roadmap items in `docs/interfaces-roadmap.md`, not available services. Do not invent endpoints or copy EtherNet/IP semantics. Maintain the app documentation and skill when implementation changes.
+The opt-in read-only loopback HTTP feed is documented in `docs/http-input-feed.md`: enable it in the profile or with `run --http-port`, check stream identity/freshness and keep API event indexes/losses separate from CSV and bus quality. It has no output/configuration routes and grants no hardware permission. MQTT, Windows shared memory and optional C ABI/C# embedding remain roadmap items in `docs/interfaces-roadmap.md`. Do not invent endpoints or copy EtherNet/IP semantics. Maintain the app documentation and skill when implementation changes.

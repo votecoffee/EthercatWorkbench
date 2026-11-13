@@ -165,6 +165,14 @@ impl Capture {
         }
     }
 
+    pub(crate) fn counts(&self) -> crate::http_feed::CsvCounts {
+        crate::http_feed::CsvCounts {
+            selected: self.selected,
+            written: self.shared.written.load(Relaxed),
+            overruns: self.overruns,
+        }
+    }
+
     pub fn finish(mut self) -> (CaptureStats, Result<()>) {
         let result = self.join();
         let mut stats = self.stats();

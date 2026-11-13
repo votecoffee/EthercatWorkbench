@@ -1,6 +1,6 @@
-# Planned software interfaces
+# Software interfaces and roadmap
 
-**Status: design/roadmap only.** EtherCAT Workbench currently exports CSV, run reports and offline review/inspection JSON. It has no local HTTP server, MQTT publisher, shared-memory feed or C ABI. These items do not authorize hardware work or output/configuration writes.
+**Status: read-only loopback HTTP implemented in 0.18; other transports planned.** EtherCAT Workbench exports CSV, run reports, offline review/inspection JSON and an opt-in [HTTP input feed](http-input-feed.md). It has no MQTT publisher, shared-memory feed or C ABI. These items do not authorize hardware work or output/configuration writes.
 
 The read-only reference is [EthernetIPWorkbench](https://github.com/votecoffee/EthernetIPWorkbench), locally `C:\~LocalWork\Repos\Programming\~Github\EthernetIPWorkbench`. Its [README at 5fec2f8](https://github.com/votecoffee/EthernetIPWorkbench/blob/5fec2f8937cd21ee4437de49a4f54733d5c97f86/README.md) describes loopback HTTP with bounded history, MQTT 3.1.1 TCP QoS 0 latest-value publishing and a Windows shared-memory latest raw snapshot. C-compatible FFI has been discussed there, not implemented. Use its consumer isolation patterns while defining EtherCAT-specific schemas and ownership.
 
@@ -14,14 +14,14 @@ Count bus timeouts/WKC/AL errors, skipped deadlines, CSV overruns, interface dis
 
 ## Interface work items
 
-| Planned interface | Scope and acceptance criteria |
+| Interface / status | Scope and acceptance criteria |
 | --- | --- |
-| Read-only local API | Opt-in loopback binding; versioned status/latest and bounded cursor history. No output/configuration endpoints. Limit connections, request/header/response sizes, history and timeouts. Slow clients and malformed requests run off acquisition. Expose stream/generation identity, oldest/newest index and evictions so a caller detects gaps and resets cursors. Define local access policy before any remote binding. |
+| Read-only local API (implemented 0.18; physical impact unqualified) | See the [HTTP contract](http-input-feed.md) for loopback status/latest, bounded history, setup metadata, client limits and independent loss/freshness reporting. No output/configuration routes or remote binding. |
 | MQTT publishing | Dedicated bounded worker; latest-value publishing is a candidate initial contract, not every-cycle delivery. Evaluate the reference's MQTT 3.1.1 TCP QoS 0/non-retained behavior, broker trust/TLS bridging, topic isolation and reconnect/backoff. Report publish attempts, failures, coalescing and input age separately; QoS 0 gives no broker/consumer acknowledgement proof. No command subscription or implicit device writes. |
 | Windows shared memory | Versioned, fixed-capacity latest raw snapshot plus coherent quality/identity/time header. Define mapping names, Windows access control, single writer, reader-copy consistency, restart/generation detection and writer-death/staleness behavior. Never expose Rust pointers or let a reader lock stall acquisition. Report skipped publications/contention independently. Document latest-value loss semantics and a stable C-readable byte layout if required. |
 | Optional C-compatible FFI / C# embedding | First decide whether the C# host must own the hardware connection. If not, evaluate an out-of-process read-only interface. If embedding is needed, design opaque handles, fixed-width/versioned C structs, explicit allocation/free, UTF-8 strings, error codes, shutdown/cancellation and bounded polling/callback handoff. Catch panics at the ABI boundary and state thread/runtime ownership. One owner controls a NIC/session; the desktop and host must not open competing MainDevice sessions. Treat callback/host stalls as consumer failures. No output/configuration ABI is implied by read-only embedding. |
 
-No endpoint names, MQTT topics, memory layout or ABI in this document is a supported public contract yet. Define schemas and compatibility rules before implementation; keep EtherNet/IP sequence/assembly fields out of EtherCAT schemas.
+Only the linked HTTP contract defines implemented routes. MQTT topics, memory layout and ABI remain unimplemented. Define schemas and compatibility rules before implementation; keep EtherNet/IP sequence/assembly fields out of EtherCAT schemas.
 
 ## Qualification and maintenance
 

@@ -64,6 +64,6 @@ For stop/close or Ctrl+C, let the session perform INIT confirmation and drain th
 
 ## Software consumers and Codex
 
-Read-only local API, MQTT, Windows shared memory and an optional C-compatible embedding layer are [planned interfaces](interfaces-roadmap.md), not currently available commands or endpoints. CSV and saved inspection/review JSON are the implemented external data products.
+Use the opt-in [read-only HTTP input feed](http-input-feed.md) from GUI section **2** or `run --http-port PORT`. It binds only 127.0.0.1, serves status/latest/bounded history/setup metadata after backend setup and closes at run completion. Read-only consumers do not change hardware authorization. Check stream identity, freshness, invalid/null payloads and independent interface losses. CSV and saved inspection/review JSON remain available. MQTT, Windows shared memory and optional C-compatible embedding are [planned](interfaces-roadmap.md).
 
 To install the bundled operating skill for future Codex chats, run `powershell -File tools/install-skill.ps1` from the package/repo. The installer records that application's root, preserves unrelated skill files and rejects modified managed files. The source skill is [here](../skills/ethercat-workbench/SKILL.md). Refresh the skill catalog in a new chat/session if the current session has already loaded its catalog.

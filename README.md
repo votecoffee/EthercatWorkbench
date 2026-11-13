@@ -103,7 +103,7 @@ The desktop's **4 Saved run review** panel runs those audits and comparisons on 
 
 See the [EtherCrab source review](docs/ethercrab-review.md), [verification results](VERIFICATION.md), and [roadmap](ROADMAP.md).
 
-Read-only local API, MQTT publishing, Windows shared memory and optional C-compatible FFI/C# embedding are [planned interfaces](docs/interfaces-roadmap.md), not implemented services. Their design must keep acquisition independent from slow consumers and report interface losses/freshness separately from bus and CSV quality.
+An opt-in [read-only loopback HTTP input feed](docs/http-input-feed.md) now exposes status, latest input, bounded cursor history and setup metadata. Start `run samples/http-input.json --seconds 20` and read `http://127.0.0.1:8766/v1/latest`. It has separate queue/history/client loss counters, explicit freshness and no output/configuration routes. MQTT, Windows shared memory and optional C-compatible FFI/C# embedding remain [planned interfaces](docs/interfaces-roadmap.md).
 
 ## Maintainers
 
@@ -111,7 +111,7 @@ Read-only local API, MQTT publishing, Windows shared memory and optional C-compa
 
 ## Contributing
 
-Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.17.1-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.18.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
 
 ## License
 

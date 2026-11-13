@@ -4,11 +4,13 @@ import csv
 import ctypes
 import datetime
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import subprocess
 import struct
+import socket
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1118,6 +1120,148 @@ def verify_output_staging(cli, destination):
     (destination / "preview.json").write_text(json.dumps(preview, indent=2), encoding="utf-8")
 
 
+def verify_http(cli, destination):
+    def fetch(port, target, method="GET"):
+        client = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+        try:
+            client.request(method, target)
+            response = client.getresponse()
+            data = response.read()
+            assert response.getheader("Cache-Control") == "no-store"
+            assert len(data) == int(response.getheader("Content-Length")) <= 2 * 1024 * 1024
+            return response.status, json.loads(data)
+        finally:
+            client.close()
+
+    reports = []
+    streams = []
+    observed = []
+    for schedule in ("deadline", "relative"):
+        case = destination / schedule
+        profile = json.loads((ROOT / "samples/synthetic.json").read_text(encoding="utf-8"))
+        profile["http"] = dict(port=0, queue_capacity=2, history_capacity=8, freshness_ms=20)
+        # Non-logged fields must still be exported by the read-only interface.
+        profile["tx"][2]["log"] = False
+        saved = case.with_suffix(".profile.json")
+        saved.write_text(json.dumps(profile), encoding="utf-8")
+        report = case.with_suffix(".json")
+        base = case.with_suffix(".csv")
+        stdout = case.with_suffix(".stdout.json")
+        stderr = case.with_suffix(".stderr.txt")
+        with stdout.open("wb") as output, stderr.open("wb") as errors:
+            proc = subprocess.Popen([str(cli), "run", str(saved), "--seconds", "2", "--scheduler", schedule,
+                "--simulate-faults", "--input-loss-timeout-ms", "0", "--csv", str(base), "--report", str(report)],
+                stdout=output, stderr=errors)
+            try:
+                deadline = time.monotonic() + 6
+                port = None
+                while port is None:
+                    text = stderr.read_text(encoding="utf-8")
+                    import re
+                    match = re.search(r"HTTP input feed bound at http://127\.0\.0\.1:(\d+)", text)
+                    if match:
+                        port = int(match.group(1)); break
+                    assert proc.poll() is None and time.monotonic() < deadline, text
+                    time.sleep(.01)
+                status, metadata = fetch(port, "/v1/metadata")
+                assert status == 200 and metadata["schema"] == 1
+                assert metadata["data"]["backend"] == "Synthetic fixture" and metadata["data"]["tx_bytes"] == 8
+                assert len(metadata["data"]["fields"]) == 3
+                streams.append(metadata["stream_id"])
+                # Hold incomplete requests past the header deadline. This must not stop cyclic I/O or CSV.
+                for _ in range(3):
+                    stalled = socket.create_connection(("127.0.0.1", port), timeout=1)
+                    stalled.sendall(b"GET /v1/status HTTP/1.1\r\n")
+                    time.sleep(.04)
+                    stalled.close()
+                assert fetch(port, "/v1/latest", "POST")[0] == 405
+                assert fetch(port, "/outputs")[0] == 404
+                assert fetch(port, "/v1/samples?limit=65")[0] == 400
+                cursor = 0
+                while proc.poll() is None:
+                    try:
+                        code, result = fetch(port, f"/v1/samples?after={cursor}&limit=64")
+                        if code != 200: break
+                        assert result["stream_id"] == streams[-1]
+                        for sample in result["data"]["samples"]:
+                            assert sample["event_index"] > cursor
+                            cursor = sample["event_index"]
+                            if sample["valid"]:
+                                payload = bytes.fromhex(sample["payload_hex"])
+                                count = int.from_bytes(payload[:2], "little")
+                                assert sample["values"]["Counter"] == str(count)
+                                assert sample["values"]["Scaled counter"] == str(count / 4).removesuffix(".0")
+                            else:
+                                assert sample["payload_hex"] is None and sample["values"] is None
+                        observed.append(result)
+                    except (OSError, http.client.HTTPException):
+                        if proc.poll() is None: time.sleep(.005)
+                        else: break
+                    time.sleep(.005)
+                proc.wait(timeout=5)
+            finally:
+                if proc.poll() is None:
+                    proc.kill(); proc.wait()
+        assert proc.returncode == 0, stderr.read_text(encoding="utf-8")
+        r = json.loads(report.read_text(encoding="utf-8"))
+        feed = r["http"]
+        assert feed["offered"] == r["cycles"] == feed["dispatched"] + feed["queue_drops"]
+        assert not feed["active"] and not feed["worker_failed"] and feed["pending"] == 0 and feed["worker_error"] is None
+        assert feed["queue_drops"] > 0 and feed["history_evictions"] > 0 and feed["io_errors"] > 0 and feed["rejected_requests"] >= 3
+        assert r["capture"]["overruns"] == 0 and r["capture"]["written"] == r["valid"]
+        parts, entries = rows(base)
+        assert len(entries) == r["valid"] and len(parts) == r["capture"]["parts"]
+        assert all("Scaled counter" not in row for row in entries)
+        audit = cli_call(cli, "verify-capture", report, base)
+        assert audit["rows"] == r["valid"]
+        reports.append(r)
+    assert streams[0] != streams[1] and observed
+    comparison = cli_call(cli, "compare-runs", destination / "deadline.json", destination / "relative.json",
+        "--csv", destination / "deadline.csv", "--csv", destination / "relative.csv")
+    assert all(trial["http"]["queue_drops"] > 0 for trial in comparison["trials"])
+    assert any("HTTP feed loss" in warning for warning in comparison["warnings"])
+    (destination / "comparison.json").write_text(json.dumps(comparison, indent=2), encoding="utf-8")
+    (destination / "observed.json").write_text(json.dumps(observed, indent=2), encoding="utf-8")
+    # Sustained invalid virtual input must retain only an explicitly historical last-good payload.
+    case = destination / "lost"
+    lost_profile = json.loads((ROOT / "samples/virtual.json").read_text(encoding="utf-8"))
+    lost_profile["http"] = dict(port=0, queue_capacity=128, history_capacity=16, freshness_ms=20)
+    lost_file = case.with_suffix(".profile.json")
+    lost_file.write_text(json.dumps(lost_profile), encoding="utf-8")
+    lost_out = case.with_suffix(".stdout.json");lost_err = case.with_suffix(".stderr.txt")
+    invalid_seen = False
+    with lost_out.open("wb") as output, lost_err.open("wb") as errors:
+        proc = subprocess.Popen([str(cli), "run", str(lost_file), "--backend", "virtual", "--virtual-fault", "io-lost",
+            "--seconds", "1", "--input-loss-timeout-ms", "0", "--csv", str(case.with_suffix(".csv")),
+            "--report", str(case.with_suffix(".json"))], stdout=output, stderr=errors)
+        try:
+            until = time.monotonic()+6
+            while proc.poll() is None and time.monotonic()<until:
+                import re
+                match = re.search(r"HTTP input feed bound at http://127\.0\.0\.1:(\d+)",lost_err.read_text(encoding="utf-8"))
+                if match:
+                    try:
+                        _, value = fetch(int(match.group(1)),"/v1/latest")
+                        latest = value["data"]["latest"]
+                        if latest and not latest["valid"]:
+                            assert not value["fresh"] and latest["payload_hex"] is None and latest["values"] is None
+                            assert latest["actual_wkc"] is None and latest["al_status"] is None
+                            assert value["data"]["last_valid"] is not None
+                            invalid_seen=True
+                    except (OSError,http.client.HTTPException): pass
+                time.sleep(.01)
+            proc.wait(timeout=5)
+        finally:
+            if proc.poll() is None:proc.kill();proc.wait()
+    assert proc.returncode==0 and invalid_seen,lost_err.read_text(encoding="utf-8")
+    lost=json.loads(case.with_suffix(".json").read_text(encoding="utf-8"))
+    assert lost["timeouts"]>0 and lost["http"]["offered"]==lost["cycles"] and lost["capture"]["overruns"]==0
+    assert lost["stopped_al"]==[1,0]
+    assert all(lost["virtual_esc"][key]==0 for key in ["logical_writes","physical_output_writes","coe_downloads","op_requests","dc_enable_requests"])
+    cli_call(cli,"verify-capture",case.with_suffix(".json"),case.with_suffix(".csv"))
+    return reports
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -1132,6 +1276,9 @@ def main():
     destination.mkdir(parents=True, exist_ok=False)
     cli = bin_dir / "ethercat-workbench-cli.exe"
     profile = ROOT / "samples/synthetic.json"
+    http_destination = destination / "http"
+    http_destination.mkdir()
+    verify_http(cli, http_destination)
     staging_destination = destination / "output-staging"
     staging_destination.mkdir()
     verify_output_staging(cli, staging_destination)

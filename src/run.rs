@@ -118,6 +118,7 @@ pub struct Report {
     pub setup_failure_al: Option<(u16, u16)>,
     pub cancelled: bool,
     pub error: Option<String>,
+    pub http: Option<crate::http_feed::Stats>,
 }
 
 #[derive(Clone, Debug)]
@@ -259,6 +260,20 @@ fn run_inner(
     report.context = Some(Arc::new(crate::benchmark::RunContext::new(
         profile, &options,
     )?));
+    let mut http = profile
+        .http
+        .as_ref()
+        .map(crate::http_feed::Bound::bind)
+        .transpose()?;
+    report.http = http.as_ref().map(crate::http_feed::Bound::stats);
+    if options.frontend == crate::benchmark::Frontend::Cli
+        && let Some(http) = &report.http
+    {
+        eprintln!(
+            "HTTP input feed bound at {}; serves after setup",
+            http.address
+        );
+    }
     match options.mode {
         Mode::Simulate { faults } => {
             report.backend = "Synthetic fixture".into();
@@ -273,7 +288,15 @@ fn run_inner(
                 al_status: 4,
                 ..DeviceInfo::default()
             }];
-            cycle(Simulated { faults }, profile, &options, stop, view, report)
+            cycle(
+                Simulated { faults },
+                profile,
+                &options,
+                stop,
+                view,
+                report,
+                &mut http,
+            )
         }
         Mode::Replay { ref fixture } => {
             let replay = crate::replay::Replay::load(fixture, profile)?;
@@ -289,7 +312,7 @@ fn run_inner(
                 tx_bytes: Some(profile.tx_bytes),
                 ..DeviceInfo::default()
             }];
-            cycle(replay, profile, &options, stop, view, report)?;
+            cycle(replay, profile, &options, stop, view, report, &mut http)?;
             ensure!(
                 Some(report.cycles as usize) == report.replay_exchanges || stop.load(Relaxed),
                 "replay duration expired before all recorded exchanges were processed"
@@ -307,7 +330,7 @@ fn run_inner(
                     stop,
                     view,
                     report,
-                    |bus, report| cycle(bus, profile, &options, stop, view, report),
+                    |bus, report| cycle(bus, profile, &options, stop, view, report, &mut http),
                 )
             }
             #[cfg(not(windows))]
@@ -321,7 +344,7 @@ fn run_inner(
             {
                 report.backend = "EtherCrab / Npcap LRD SAFEOP".into();
                 crate::live::safeop(profile, approved, stop, view, report, |bus, report| {
-                    cycle(bus, profile, &options, stop, view, report)
+                    cycle(bus, profile, &options, stop, view, report, &mut http)
                 })
             }
             #[cfg(not(windows))]
@@ -340,7 +363,19 @@ fn cycle(
     stop: &AtomicBool,
     view: &Mutex<Snapshot>,
     report: &mut Report,
+    http_bound: &mut Option<crate::http_feed::Bound>,
 ) -> Result<()> {
+    let mut http = match http_bound
+        .take()
+        .map(|bound| crate::http_feed::Hub::start(bound, profile, report))
+        .transpose()
+    {
+        Ok(http) => http,
+        Err(error) => {
+            let cleanup = bus.stop().map(|al| report.stopped_al = al);
+            return combine(Err(error), cleanup);
+        }
+    };
     let mut capture = match options
         .csv
         .as_ref()
@@ -349,7 +384,13 @@ fn cycle(
     {
         Ok(capture) => capture,
         Err(error) => {
+            if let Some(http) = &http {
+                http.deactivate();
+            }
             let cleanup = bus.stop().map(|al| report.stopped_al = al);
+            if let Some(http) = http.take() {
+                report.http = Some(http.finish());
+            }
             return combine(Err(error), cleanup);
         }
     };
@@ -400,6 +441,20 @@ fn cycle(
                         Instant::now(),
                     );
                     last = Some(([0; MAX_PAYLOAD], false, false));
+                    if let Some(http) = http.as_mut() {
+                        http.offer(crate::http_feed::Observation {
+                            cycle_index: index,
+                            received: None,
+                            observed: Instant::now(),
+                            valid: false,
+                            expected_wkc: report.expected_wkc,
+                            actual_wkc: None,
+                            al: None,
+                            issue: Some(InputIssue::TransportError),
+                            counts: feed_counts(report, capture.as_ref()),
+                            data: &[0; MAX_PAYLOAD],
+                        });
+                    }
                     return Err(error.context("cyclic Ethernet transport failed"));
                 }
             };
@@ -460,12 +515,27 @@ fn cycle(
                 health.invalid(&mut report.input_health, issue, exchange.sent, observed);
             }
             last = Some((exchange.data, exchange.received.is_some(), valid));
+            if let Some(http) = http.as_mut() {
+                http.offer(crate::http_feed::Observation {
+                    cycle_index: index,
+                    received: exchange.received,
+                    observed,
+                    valid,
+                    expected_wkc: report.expected_wkc,
+                    actual_wkc: exchange.received.map(|_| exchange.wkc),
+                    al: exchange.received.and(exchange.status),
+                    issue: report.input_health.current_issue,
+                    counts: feed_counts(report, capture.as_ref()),
+                    data: &exchange.data,
+                });
+            }
             if !valid {
                 check_input_loss(&report.input_health, profile.input_loss_timeout_ms)?;
             }
             if observed >= publish || previous_issue != report.input_health.current_issue {
                 if let Ok(mut snapshot) = view.try_lock() {
                     update(report, &sends, &receives, capture.as_ref());
+                    report.http = http.as_ref().map(crate::http_feed::Hub::stats);
                     snapshot.report.clone_from(report);
                     snapshot.phase = "Cycling".into();
                     publish_payload(&mut snapshot, last, profile.tx_bytes, health.last_valid);
@@ -485,6 +555,10 @@ fn cycle(
         result = check_input_loss(&report.input_health, profile.input_loss_timeout_ms);
     }
     update(report, &sends, &receives, capture.as_ref());
+    if let Some(http) = &http {
+        http.deactivate();
+        report.http = Some(http.stats());
+    }
     if let Ok(mut snapshot) = view.try_lock() {
         snapshot.phase = "Stopping cyclic input".into();
         snapshot.report.clone_from(report);
@@ -497,6 +571,9 @@ fn cycle(
         let (stats, write_result) = capture.finish();
         report.capture = Some(stats);
         result = combine(result, write_result.context("CSV capture incomplete"));
+    }
+    if let Some(http) = http.take() {
+        report.http = Some(http.finish());
     }
     if let Ok(mut snapshot) = view.lock() {
         publish_payload(&mut snapshot, last, profile.tx_bytes, health.last_valid);
@@ -541,6 +618,19 @@ fn combine(primary: Result<()>, followup: Result<()>) -> Result<()> {
     match (primary, followup) {
         (Err(primary), Err(followup)) => Err(primary.context(format!("also failed: {followup:#}"))),
         (primary, followup) => primary.and(followup),
+    }
+}
+
+fn feed_counts(report: &Report, capture: Option<&Capture>) -> crate::http_feed::Counts {
+    crate::http_feed::Counts {
+        cycles: report.cycles,
+        valid: report.valid,
+        timeouts: report.timeouts,
+        wkc_mismatches: report.wkc_mismatches,
+        al_mismatches: report.state_mismatches,
+        transport_errors: report.transport_errors,
+        missed_deadlines: report.missed_deadlines,
+        csv: capture.map(Capture::counts),
     }
 }
 
@@ -592,6 +682,40 @@ pub fn spawn(
 mod cycle_tests {
     use super::*;
 
+    #[test]
+    fn occupied_http_port_fails_before_virtual_device_setup() {
+        let occupied = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut profile: Profile =
+            serde_json::from_str(include_str!("../samples/virtual.json")).unwrap();
+        profile.http = Some(crate::http_feed::Config {
+            port: occupied.local_addr().unwrap().port(),
+            ..Default::default()
+        });
+        let report = run(
+            profile,
+            RunOptions {
+                frontend: crate::benchmark::Frontend::Cli,
+                mode: Mode::Virtual {
+                    model: crate::virtual_esc::VirtualModel::Coe,
+                    fault: crate::virtual_esc::VirtualFault::None,
+                },
+                duration: Duration::from_millis(100),
+                csv: None,
+                generation: 1,
+            },
+            &AtomicBool::new(false),
+            &Mutex::new(Snapshot::default()),
+        );
+        assert!(
+            report
+                .error
+                .unwrap()
+                .contains("bind read-only loopback HTTP")
+        );
+        assert_eq!(report.cycles, 0);
+        assert!(report.virtual_esc.is_none());
+    }
+
     struct FailingBus<'a> {
         view: &'a Mutex<Snapshot>,
         calls: u64,
@@ -624,6 +748,9 @@ mod cycle_tests {
                 snapshot.report.input_health.current_issue,
                 Some(InputIssue::TransportError)
             );
+            if let Some(http) = &snapshot.report.http {
+                assert!(!http.active);
+            }
             self.stopped.store(true, Relaxed);
             anyhow::bail!("authored INIT cleanup failure")
         }
@@ -631,9 +758,19 @@ mod cycle_tests {
 
     #[test]
     fn invalidates_before_cleanup_and_preserves_both_transport_and_cleanup_errors() {
+        check_transport_cleanup(false);
+        check_transport_cleanup(true);
+    }
+
+    fn check_transport_cleanup(with_http: bool) {
         let profile = Profile {
             tx_bytes: 1,
             requested_cycle_us: 250,
+            http: with_http.then_some(crate::http_feed::Config {
+                port: 0,
+                queue_capacity: 8,
+                ..Default::default()
+            }),
             ..Profile::default()
         };
         let options = RunOptions {
@@ -654,6 +791,12 @@ mod cycle_tests {
             expected_wkc: 1,
             ..Report::default()
         };
+        let mut http = profile
+            .http
+            .as_ref()
+            .map(crate::http_feed::Bound::bind)
+            .transpose()
+            .unwrap();
         let error = cycle(
             bus,
             &profile,
@@ -661,6 +804,7 @@ mod cycle_tests {
             &AtomicBool::new(false),
             &view,
             &mut report,
+            &mut http,
         )
         .unwrap_err();
         let text = format!("{error:#}");
@@ -674,5 +818,14 @@ mod cycle_tests {
         assert_eq!(report.input_health.last_valid_cycle, Some(1));
         assert_eq!(report.stopped_al, None);
         assert!(!view.lock().unwrap().valid);
+        assert_eq!(report.http.is_some(), with_http);
+        if let Some(feed) = report.http {
+            assert!(!feed.active && !feed.worker_failed);
+            assert_eq!(feed.worker_error, None);
+            assert_eq!(feed.offered, 2);
+            assert_eq!(feed.dispatched, 2);
+            assert_eq!(feed.pending, 0);
+            assert_eq!(feed.queue_drops, 0);
+        }
     }
 }

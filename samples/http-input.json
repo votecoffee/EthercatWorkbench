@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "Authored synthetic HTTP input fixture",
+  "requested_cycle_us": 1000,
+  "input_loss_timeout_ms": 1000,
+  "scheduler": "deadline",
+  "mode": "every",
+  "queue_capacity": 4096,
+  "rotate_rows": 500,
+  "tx_bytes": 8,
+  "rx_bytes": 2,
+  "tx": [
+    { "name": "Counter", "bit": 0, "width": 16 },
+    { "name": "Sensor active", "bit": 16, "width": 1, "kind": "bool" },
+    { "name": "Scaled counter", "bit": 32, "width": 32, "kind": "f32" }
+  ],
+  "rx": [
+    { "name": "Staged setpoint", "bit": 0, "width": 16, "kind": "signed", "log": false }
+  ],
+  "staged_rx_hex": "FE FF",
+  "http": { "port": 8766, "queue_capacity": 4096, "history_capacity": 1024, "freshness_ms": 100 }
+}

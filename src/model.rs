@@ -245,6 +245,8 @@ pub struct Profile {
     pub tx: Vec<Field>,
     pub rx: Vec<Field>,
     pub staged_rx_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http: Option<crate::http_feed::Config>,
 }
 
 impl Default for Profile {
@@ -269,6 +271,7 @@ impl Default for Profile {
             tx: Vec::new(),
             rx: Vec::new(),
             staged_rx_hex: String::new(),
+            http: None,
         }
     }
 }
@@ -280,6 +283,13 @@ impl Profile {
             "unsupported profile version {}",
             self.version
         );
+        if let Some(http) = &self.http {
+            http.validate()?;
+            ensure!(
+                self.tx.iter().map(|f| f.name.len()).sum::<usize>() <= 16_384,
+                "HTTP input field names exceed 16 KiB"
+            );
+        }
         ensure!(
             (250..=1_000_000).contains(&self.requested_cycle_us),
             "cycle must be 250–1000000 µs"

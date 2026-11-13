@@ -455,6 +455,28 @@ impl App {
     }
 
     fn bench_controls(&mut self, ui: &mut egui::Ui) {
+        let mut enabled = self.profile.http.is_some();
+        if ui
+            .checkbox(&mut enabled, "Enable read-only local HTTP input feed")
+            .changed()
+        {
+            self.profile.http = enabled.then(Default::default);
+        }
+        if let Some(config) = &mut self.profile.http {
+            ui.horizontal(|ui| {
+                ui.label("127.0.0.1 port (0 = automatic)");
+                ui.add(egui::DragValue::new(&mut config.port).range(0..=65535));
+                ui.label("Freshness ms");
+                ui.add(egui::DragValue::new(&mut config.freshness_ms).range(1..=60000));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Feed queue");
+                ui.add(egui::DragValue::new(&mut config.queue_capacity).range(1..=8192));
+                ui.label("HTTP history");
+                ui.add(egui::DragValue::new(&mut config.history_capacity).range(1..=4096));
+            });
+            ui.small("Read-only input/status; any local process can connect. Network/JSON work is outside cyclic I/O.");
+        }
         ui.horizontal(|ui| {
             if ui.button("Refresh NICs").clicked() {
                 match live::nics() {
@@ -1065,6 +1087,16 @@ fn write_report(path: &Path, report: &Report) -> anyhow::Result<()> {
 
 fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
     let r = &snapshot.report;
+    if let Some(http) = &r.http {
+        ui.label(format!("HTTP {} · active {} · offered {} · dispatched {} · queue drops {} · pending {} · history evictions {} · rejected requests {} · I/O errors {} · worker failed {}",
+            http.address,http.active,http.offered,http.dispatched,http.queue_drops,http.pending,http.history_evictions,http.rejected_requests,http.io_errors,http.worker_failed));
+        if let Some(error) = &http.worker_error {
+            ui.colored_label(
+                egui::Color32::LIGHT_RED,
+                format!("HTTP feed worker: {error}"),
+            );
+        }
+    }
     ui.strong(format!("{}  {}", snapshot.phase, r.backend));
     if let Some(context) = &r.context {
         ui.collapsing("Saved trial settings", |ui| {
