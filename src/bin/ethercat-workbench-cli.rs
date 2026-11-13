@@ -40,6 +40,32 @@ enum Command {
     },
     /// Interpret an offline ESC register snapshot (no bus access).
     DecodeEsc { file: PathBuf },
+    /// Read one existing Windows shared-memory input snapshot. Never opens an EtherCAT NIC.
+    ReadShared {
+        name: String,
+        /// Exact effective profile for verified typed decoding; raw inspection works without it.
+        #[arg(long, conflicts_with = "run_report")]
+        profile: Option<PathBuf>,
+        /// Use the effective profile embedded in a saved run context.
+        #[arg(long)]
+        run_report: Option<PathBuf>,
+        /// Save coherent ready raw bytes to a new .bin file.
+        #[arg(long)]
+        save_raw: Option<PathBuf>,
+        /// Export this inspection to a new .json file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Inspect saved shared-memory bytes as historical evidence; never reads IPC or a NIC.
+    InspectShared {
+        file: PathBuf,
+        #[arg(long, conflicts_with = "run_report")]
+        profile: Option<PathBuf>,
+        #[arg(long)]
+        run_report: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Inspect Ethernet PCAP or single-interface PCAPNG offline; never opens a NIC or transmits frames.
     InspectPcap {
         profile: PathBuf,
@@ -195,6 +221,41 @@ fn output(value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn shared_export(value: &impl Serialize, path: Option<&std::path::Path>) -> Result<()> {
+    if let Some(path) = path {
+        use std::io::Write;
+        ensure!(
+            path.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("json")),
+            "inspection output must end in .json"
+        );
+        let mut file = std::fs::File::create_new(path)
+            .context("create new inspection output; existing paths are preserved")?;
+        serde_json::to_writer_pretty(&mut file, value)?;
+        writeln!(file)?;
+        file.sync_all().context("flush shared input inspection")?;
+    }
+    output(value)
+}
+
+fn shared_outputs(out: Option<&std::path::Path>, raw: Option<&std::path::Path>) -> Result<()> {
+    for (path, extension) in [(out, "json"), (raw, "bin")] {
+        if let Some(path) = path {
+            ensure!(
+                path.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case(extension)),
+                "output must end in .{extension}"
+            );
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => bail!("output path already exists: {}", path.display()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn pdo_arguments(
     values: &[String],
     default: Vec<ethercat_workbench::pdo_catalog::Assignment>,
@@ -243,6 +304,40 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::DecodeEsc { file } => output(&ethercat_workbench::esc::load(&file)?),
+        Command::ReadShared {
+            name,
+            profile,
+            run_report,
+            save_raw,
+            out,
+        } => {
+            shared_outputs(out.as_deref(), save_raw.as_deref())?;
+            let profile = ethercat_workbench::shared_memory::reader::load_decoding_profile(
+                profile.as_deref(),
+                run_report.as_deref(),
+            )?;
+            let capture =
+                ethercat_workbench::shared_memory::reader::read_once(&name, profile.as_ref())?;
+            if let Some(path) = save_raw {
+                capture.save_raw(&path)?;
+            }
+            shared_export(&capture.inspection, out.as_deref())
+        }
+        Command::InspectShared {
+            file,
+            profile,
+            run_report,
+            out,
+        } => {
+            shared_outputs(out.as_deref(), None)?;
+            let profile = ethercat_workbench::shared_memory::reader::load_decoding_profile(
+                profile.as_deref(),
+                run_report.as_deref(),
+            )?;
+            let capture =
+                ethercat_workbench::shared_memory::reader::inspect_file(&file, profile.as_ref())?;
+            shared_export(&capture.inspection, out.as_deref())
+        }
         Command::InspectPcap {
             profile,
             file,

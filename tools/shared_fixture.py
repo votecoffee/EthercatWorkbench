@@ -4,8 +4,10 @@ from ctypes import wintypes as W
 import http.client
 import importlib.util
 import json
+import hashlib
 import re
 import subprocess
+import struct
 import sys
 import time
 if __package__:
@@ -88,6 +90,15 @@ def verify_shared_memory(cli, root, destination, cli_call):
                 else:
                     raise AssertionError("shared snapshot never became ready")
                 descriptor = acl(reader)
+                # The native CLI is a separate consumer process, using the same byte contract.
+                native = None
+                for _ in range(30):
+                    native = cli_call(cli, "read-shared", name, "--profile", config)
+                    if native["status"] == "ready" and native["snapshot"]["latest"]:
+                        break
+                    time.sleep(.005)
+                assert native["status"] == "ready" and native["snapshot"]["latest"]
+                assert native["decoding"]["profile_sha256"] == native["snapshot"]["profile_sha256"]
                 if stop_locked:
                     assert K.WaitForSingleObject(reader.lock, 100) == 0
                     holding = True
@@ -97,6 +108,11 @@ def verify_shared_memory(cli, root, destination, cli_call):
                         before = http_cycles(errors)
                         time.sleep(.18)
                         stale = reader.read()  # Recursive mutex acquisition on this same reader thread.
+                        busy = cli_call(cli, "read-shared", name)
+                        assert busy["status"] == "busy" and busy["snapshot"] is None and busy["raw_sha256"] is None and not busy["current_usable"]
+                        blocked = base.with_suffix(".busy.bin")
+                        cli_call(cli, "read-shared", name, "--save-raw", blocked, success=False)
+                        assert not blocked.exists()
                         after = http_cycles(errors)
                         assert stale["valid"] and not stale["current_usable"]
                         assert after is not None and before is not None and after > before
@@ -107,6 +123,9 @@ def verify_shared_memory(cli, root, destination, cli_call):
                     proc.wait(timeout=3)
                     value = reader.read()
                     assert value["active"] and value["valid"] and not value["publisher_alive"] and not value["current_usable"]
+                    dead = cli_call(cli, "read-shared", name, "--profile", config)
+                    assert dead["snapshot"]["active"] and not dead["current_usable"]
+                    assert dead["observation"]["process"] in ("exited", "identity_mismatch")
                     return reader, value, records, descriptor
                 while proc.poll() is None:
                     value = reader.read()
@@ -135,6 +154,20 @@ def verify_shared_memory(cli, root, destination, cli_call):
                 assert report["http"]["queue_drops"] == 0 and report["mqtt"]["write_completions"] > 0
                 audit = cli_call(cli, "verify-capture", base.with_suffix(".json"), base.with_suffix(".csv"))
                 assert audit["rows"] == report["valid"]
+                saved = base.with_suffix(".native.bin")
+                exported = base.with_suffix(".native.json")
+                native = cli_call(cli, "read-shared", name, "--run-report", base.with_suffix(".json"), "--save-raw", saved, "--out", exported)
+                assert native == json.loads(exported.read_bytes()) and not native["current_usable"]
+                assert native["snapshot"]["stream_id"] == final["stream_id"]
+                assert saved.read_bytes() == base.with_suffix(".snapshot.bin").read_bytes()
+                offline = cli_call(cli, "inspect-shared", saved, "--run-report", base.with_suffix(".json"))
+                assert offline["source"]["kind"] == "saved_file" and offline["observation"] is None and not offline["current_usable"]
+                assert offline["raw_sha256"] == native["raw_sha256"] and offline["decoding"] == native["decoding"]
+                if native["snapshot"]["latest"]["valid_at_exchange"]:
+                    latest = native["snapshot"]["latest"]["data"]
+                    count = int.from_bytes(bytes.fromhex(latest["payload_hex"])[:2], "little")
+                    assert latest["values"]["Counter"] == str(count)
+                    assert latest["values"]["Scaled counter"] == str(count / 4).removesuffix(".0")
                 if stalled:
                     assert memory["lock_misses"] > 0 and memory["coalesced"] > 0
                 (base.with_suffix(".observed.json")).write_text(json.dumps(records[-32:], indent=2), encoding="utf-8")
@@ -159,6 +192,7 @@ def verify_shared_memory(cli, root, destination, cli_call):
     try:
         for schedule in ["deadline", "relative"]:
             profile = settings(json.loads((root / "samples/synthetic.json").read_bytes()))
+            profile["scheduler"] = schedule  # Persist the exact effective profile for typed readers.
             profile["tx"][2]["log"] = False
             reader, report, records, descriptor = run(schedule, profile, extra=["--scheduler", schedule], stalled=True)
             try:
@@ -186,6 +220,7 @@ def verify_shared_memory(cli, root, destination, cli_call):
         assert busy_stop["shared_memory"]["lock_misses"] > 0
         reader.close()
         profile = settings(json.loads((root / "samples/virtual.json").read_bytes()))
+        profile["input_loss_timeout_ms"] = 0
         reader, lost, records, _ = run("lost", profile, 1, ["--backend", "virtual", "--virtual-fault", "io-lost", "--input-loss-timeout-ms", "0"])
         try:
             invalid = [r for r in records if not r["valid"]]
@@ -199,6 +234,9 @@ def verify_shared_memory(cli, root, destination, cli_call):
         try:
             # A separate reader process dies owning the mutex, after the writer is gone.
             script = "import importlib.util,sys; s=importlib.util.spec_from_file_location('r',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);r=m.Reader(sys.argv[2]);assert m.K.WaitForSingleObject(r.lock,100)==0"
+            subprocess.run([sys.executable, "-B", "-c", script, str(root / "examples/read_shared_memory.py"), name], check=True, timeout=5)
+            abandoned = cli_call(cli, "read-shared", name)
+            assert abandoned["status"] == "abandoned" and abandoned["snapshot"] is None and abandoned["raw_sha256"] is None
             subprocess.run([sys.executable, "-B", "-c", script, str(root / "examples/read_shared_memory.py"), name], check=True, timeout=5)
             try:
                 reader.read()
@@ -215,8 +253,49 @@ def verify_shared_memory(cli, root, destination, cli_call):
             pass
         else:
             raise AssertionError("mapping survived all handles closing")
+        cli_call(cli, "read-shared", name, success=False)
+        # Saved-file CLI checks are independent of current IPC and process liveness.
+        original = (destination / "deadline.native.bin").read_bytes()
+        run_file = destination / "deadline.json"
+        original_hash = hashlib.sha256(original).hexdigest()
+        raw = cli_call(cli, "inspect-shared", destination / "deadline.native.bin")
+        assert raw["raw_sha256"] == original_hash and raw["decoding"] is None and raw["snapshot"]["latest"]["data"]["values"] is None
+        active = bytearray(original)
+        flags = struct.unpack_from("<I", active, 268)[0]
+        struct.pack_into("<I", active, 268, flags | 0x101)
+        active_file = destination / "historical-active.bin"
+        active_file.write_bytes(active)
+        historical = cli_call(cli, "inspect-shared", active_file, "--run-report", run_file)
+        assert historical["snapshot"]["active"] and historical["snapshot"]["fresh_at_publication"] and not historical["current_usable"]
+        assert historical["publication_age_us"] is None and historical["observation"] is None
+        assert historical["snapshot"]["latest"]["observed_age_us"] is None
+        wrong = json.loads(run_file.read_bytes())["context"]["profile"]
+        wrong["tx"][0]["name"] = "Changed mapping"
+        wrong_file = destination / "wrong-profile.json"
+        wrong_file.write_text(json.dumps(wrong), encoding="utf-8")
+        failed_out = destination / "must-not-export.json"
+        cli_call(cli, "inspect-shared", active_file, "--profile", wrong_file, "--out", failed_out, success=False)
+        assert not failed_out.exists()
+        for index, (offset, replacement) in enumerate([(12, 2559), (268, flags | 4096), (284, 1025), (256, 0)]):
+            malformed = bytearray(original)
+            struct.pack_into("<I", malformed, offset, replacement)
+            path = destination / f"bad-header-{index}.bin"
+            path.write_bytes(malformed)
+            cli_call(cli, "inspect-shared", path, "--out", failed_out, success=False)
+            assert not failed_out.exists()
+        for label, data in [("short", original[:-1]), ("long", original + b"\0")]:
+            path = destination / f"{label}.bin"
+            path.write_bytes(data)
+            cli_call(cli, "inspect-shared", path, success=False)
+        reserved = destination / "reserved.bin"
+        reserved.write_bytes(bytes(2560))
+        assert cli_call(cli, "inspect-shared", reserved)["status"] == "not_ready"
+        cli_call(cli, "read-shared", name, "--save-raw", destination / "deadline.native.bin", "--out", failed_out, success=False)
+        assert not failed_out.exists() and hashlib.sha256((destination / "deadline.native.bin").read_bytes()).hexdigest() == original_hash
+        cli_call(cli, "inspect-shared", active_file, "--out", destination / "deadline.native.json", success=False)
+        cli_call(cli, "compare-runs", run_file, destination / "deadline.native.json", success=False)
         summary = dict(trials=[dict(cycles=r["cycles"], valid=r["valid"], shared_memory=r["shared_memory"], csv_overruns=r["capture"]["overruns"]) for r in reports],
-            dacl=descriptor, virtual_invalid_init="passed", retained_handle_collision="passed", restart_identity="passed", writer_death="passed", abandoned_reader="passed", busy_shutdown=busy_stop["shared_memory"])
+            dacl=descriptor, virtual_invalid_init="passed", retained_handle_collision="passed", restart_identity="passed", writer_death="passed", abandoned_reader="passed", busy_shutdown=busy_stop["shared_memory"], native_reader_and_typed_review="passed", offline_rejections="passed")
         (destination / "shared-verification.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return summary
     finally:

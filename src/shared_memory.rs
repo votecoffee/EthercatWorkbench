@@ -1,4 +1,5 @@
 //! Latest raw input, copied by a separate worker into a fixed Windows byte layout.
+pub mod reader;
 use crate::{
     input_feed::{self, Observation, Record},
     model::{MAX_PAYLOAD, Profile},

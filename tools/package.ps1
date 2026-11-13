@@ -37,6 +37,7 @@ try {
         'docs/http-input-feed.md' = 'docs/http-input-feed.md'
         'docs/mqtt-input-feed.md' = 'docs/mqtt-input-feed.md'
         'docs/shared-input-feed.md' = 'docs/shared-input-feed.md'
+        'docs/shared-input-review.md' = 'docs/shared-input-review.md'
         'samples/shared-input.json' = 'samples/shared-input.json'
         'examples/read_shared_memory.py' = 'examples/read_shared_memory.py'
         'include/ethercat_input_v1.h' = 'include/ethercat_input_v1.h'
