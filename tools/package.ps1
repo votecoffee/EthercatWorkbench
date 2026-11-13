@@ -39,6 +39,8 @@ try {
         'docs/desktop-review.md' = 'docs/desktop-review.md'
         'docs/esc-diagnostics.md' = 'docs/esc-diagnostics.md'
         'docs/pcap-inspection.md' = 'docs/pcap-inspection.md'
+        'docs/output-staging.md' = 'docs/output-staging.md'
+        'samples/output-staging.json' = 'samples/output-staging.json'
         'samples/esc-diagnostics.json' = 'samples/esc-diagnostics.json'
         'samples/synthetic.esi.xml' = 'samples/synthetic.esi.xml'
         'samples/pdo-choices.esi.xml' = 'samples/pdo-choices.esi.xml'

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod gui_review;
+mod gui_stage;
 
 use clap::Parser;
 use eframe::egui;
@@ -82,6 +83,7 @@ struct App {
     report_save: String,
     deferred_close: bool,
     review: gui_review::Panel,
+    stage: gui_stage::Panel,
 }
 
 impl App {
@@ -116,6 +118,7 @@ impl App {
             report_save: String::new(),
             deferred_close: false,
             review: gui_review::Panel::default(),
+            stage: gui_stage::Panel::default(),
         };
         if let Some(path) = args.profile {
             app.profile_path = path.to_string_lossy().into_owned();
@@ -129,6 +132,7 @@ impl App {
             Ok(profile) => {
                 self.profile = profile;
                 self.profile_pdo_draft = None;
+                self.stage = gui_stage::Panel::default();
                 self.approved = false;
                 self.last = None;
                 self.message = "Profile loaded".into();
@@ -734,6 +738,7 @@ impl eframe::App for App {
                                 self.profile.rx_bytes,
                                 &self.profile.rx,
                             );
+                            self.stage.draw(ui, &mut self.profile);
                             if let Err(error) = self.profile.validate() {
                                 ui.colored_label(egui::Color32::LIGHT_RED, format!("{error:#}"));
                             }

@@ -6,6 +6,7 @@ pub mod esc;
 pub mod esi;
 pub mod health;
 pub mod model;
+pub mod output_stage;
 pub mod pcap_inspect;
 pub mod pdo;
 pub mod pdo_catalog;

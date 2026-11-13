@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "name": "Authored offline output staging fixture",
+  "tx_bytes": 1,
+  "rx_bytes": 24,
+  "tx": [
+    { "name": "Offline input byte", "bit": 0, "width": 8 }
+  ],
+  "rx": [
+    { "name": "Enable", "bit": 0, "width": 1, "kind": "bool", "log": false },
+    { "name": "Mode", "bit": 1, "width": 3, "kind": "unsigned", "log": false },
+    { "name": "Setpoint", "bit": 16, "width": 16, "kind": "signed", "log": false },
+    { "name": "Gain", "bit": 32, "width": 32, "kind": "f32", "big_endian": true, "log": false },
+    { "name": "Swapped counter", "bit": 64, "width": 32, "kind": "unsigned", "swap_bytes_in_words": true, "log": false },
+    { "name": "Raw bytes", "bit": 96, "width": 32, "kind": "raw", "log": false },
+    { "name": "Control byte view", "bit": 0, "width": 8, "kind": "raw", "log": false },
+    { "name": "Ratio", "bit": 128, "width": 64, "kind": "f64", "log": false }
+  ],
+  "staged_rx_hex": "A0 5A FE FF 00 00 00 00 00 00 00 00 DE AD BE EF 00 00 00 00 00 00 00 00"
+}

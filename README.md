@@ -61,6 +61,8 @@ Live discovery is read-only on the selected NIC. It retains optional ESC informa
 .\ethercat-workbench-cli.exe run .local/bench.json --backend safeop --approve-esc-writes --seconds 20 --csv .local/bench.csv
 ```
 
+Typed RxPDO values can be staged offline in **3 PDO maps and offline payloads**, or with `stage-rx samples/output-staging.json --set '2=-1234' --out .local/staged.json`. Preview raw bytes and affected overlapping views before applying them to the profile. Range checks, inverse endian/word transforms, explicit zero initialization, conflict rejection and stale-preview checks preserve the offline image. This adds no bus writes or OP entry. [Typed staging instructions](docs/output-staging.md) cover value syntax, provenance and new-file saving.
+
 The bundled raw-frame replay fixture contains twelve authored Ethernet exchanges. Replay uses the live LRD/AL reply parser and the normal capture queue and CSV writer. It reports malformed or stale candidates as ignored frames and checks Working Counter and AL state before logging. It stops at the end of the fixture, and a duration limit that cuts a replay short produces an error. Playback spacing and timestamps come from the host clock during the replay. The fixture covers the cyclic input path.
 
 Use `inspect-pcap .local/bench.json .local/bench.pcap --station 0x1000 --out .local/inspection.json` or the desktop's **4 Saved run review → Inspect a saved Ethernet PCAP** controls to inspect saved classic Ethernet PCAP or supported single-interface PCAPNG offline. It recognizes Workbench's input-only LRD/AL signature, counts WKC/AL quality and unmatched/truncated packets, and previews raw/typed TxPDO values. The desktop job freezes the current commissioning profile, station and preview limit, supports cancellation and exports the same schema as the CLI. Recorded request/reply spacing stays separate from application cycle timing; timestamp regressions suppress spacing summaries. Inspection uses file I/O without Npcap or packet transmission. [PCAP inspection details](docs/pcap-inspection.md) cover supported formats, bounds, independent frame counts and limits of capture-clock evidence.
@@ -105,7 +107,7 @@ See the [EtherCrab source review](docs/ethercrab-review.md), [verification resul
 
 ## Contributing
 
-Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.16.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.17.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
 
 ## License
 

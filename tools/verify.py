@@ -1067,6 +1067,57 @@ def verify_pcapng(cli, destination, classic_fixture):
     (destination / "inspection-reports.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
 
 
+def verify_output_staging(cli, destination):
+    sample = ROOT / "samples/output-staging.json"
+    original_bytes = sample.read_bytes()
+    baseline = cli_call(cli, "validate", sample)
+    changes = ["0=true", "1=5", "2=-1234", "3=1.5", "4=0x11223344", "5=CA FE BA BE", "7=0.5"]
+    arguments = [value for change in changes for value in ("--set", change)]
+    preview = cli_call(cli, "stage-rx", sample, *arguments)
+    assert preview["schema"] == 1 and preview["scope"] == "offline_rxpdo_only"
+    assert preview["value_source"] == "manual_offline" and preview["rx_bytes"] == 24 and preview["expected_identity"] is None
+    expected_hex = "AB5A2EFB3FC0000033441122CAFEBABE000000000000E03F"
+    assert preview["after_hex"] == expected_hex and not preview["initialized_from_zero"]
+    alias = next(i for i in preview["impacts"] if i["field"] == 6)
+    assert not alias["selected"] and alias["bits_changed"] and alias["before"] == "A0" and alias["after"] == "AB"
+    expected_values = {0:"true",1:"5",2:"-1234",3:"1.5",4:"287454020",5:"CAFEBABE",6:"AB",7:"0.5"}
+    assert {i["field"]:i["after"] for i in preview["impacts"]} == expected_values
+    saved = destination / "staged.json"
+    saved_preview = cli_call(cli, "stage-rx", sample, *arguments, "--out", saved)
+    assert saved_preview == preview
+    staged = cli_call(cli, "validate", saved)
+    assert staged == dict(baseline, staged_rx_hex=expected_hex)
+    decoded = cli_call(cli, "decode", saved, expected_hex, "--rx")
+    assert [i["value"] for i in decoded] == [expected_values[i] for i in range(8)]
+    protected = saved.read_bytes()
+    cli_call(cli, "stage-rx", sample, *arguments, "--out", saved, success=False)
+    assert saved.read_bytes() == protected and sample.read_bytes() == original_bytes
+    for index, bad in enumerate([[], ["0=false","6=FF"], ["0=true","0=true"], ["1=8"], ["2=-32769"],
+        ["3=NaN"], ["7=inf"], ["5=00"], ["99=1"], ["-1=0"], ["missing equals"]]):
+        path = destination / f"bad-{index}.json"
+        args = [item for change in bad for item in ("--set", change)]
+        cli_call(cli, "stage-rx", sample, *args, "--out", path, success=False)
+        assert not path.exists()
+    agreeing = cli_call(cli, "stage-rx", sample, "--set", "0=true", "--set", "6=A1")
+    assert agreeing["after_hex"].startswith("A15A")
+    blank = destination / "blank.json"
+    blank.write_text(json.dumps(dict(baseline, staged_rx_hex="")), encoding="utf-8")
+    cli_call(cli, "stage-rx", blank, "--set", "0=true", success=False)
+    initialized = cli_call(cli, "stage-rx", blank, "--set", "0=true", "--zero")
+    assert initialized["initialized_from_zero"] and initialized["before_hex"] == "00" * 24
+    assert initialized["after_hex"] == "01" + "00" * 23
+    cli_call(cli, "stage-rx", sample, "--set", "0=true", "--zero", success=False)
+    esi = destination / "esi.json"
+    cli_call(cli, "esi-import", ROOT / "samples/synthetic.esi.xml", "--device", 0, "--out", esi)
+    esi_original = cli_call(cli, "validate", esi)
+    esi_saved = destination / "esi-staged.json"
+    esi_preview = cli_call(cli, "stage-rx", esi, "--set", "0=-123", "--zero", "--out", esi_saved)
+    assert esi_preview["after_hex"] == "85FF" and esi_preview["impacts"][0]["mapping_source"] == "esi"
+    assert esi_preview["expected_identity"] == esi_original["expected_identity"] and esi_preview["value_source"] == "manual_offline"
+    assert cli_call(cli, "validate", esi_saved) == dict(esi_original, staged_rx_hex="85FF")
+    (destination / "preview.json").write_text(json.dumps(preview, indent=2), encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -1081,6 +1132,9 @@ def main():
     destination.mkdir(parents=True, exist_ok=False)
     cli = bin_dir / "ethercat-workbench-cli.exe"
     profile = ROOT / "samples/synthetic.json"
+    staging_destination = destination / "output-staging"
+    staging_destination.mkdir()
+    verify_output_staging(cli, staging_destination)
     pcap_destination = destination / "pcap"
     pcap_destination.mkdir()
     verify_pcap(cli, pcap_destination)

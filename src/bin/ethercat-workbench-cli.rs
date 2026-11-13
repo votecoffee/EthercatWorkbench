@@ -107,6 +107,19 @@ enum Command {
     },
     /// Audit the CSV parts declared by a saved run report, without bus operations.
     VerifyCapture { report: PathBuf, csv: PathBuf },
+    /// Prepare typed RxPDO values offline; print a preview or save a new staged profile. No bus access.
+    StageRx {
+        profile: PathBuf,
+        /// Repeat zero-based INDEX=VALUE. Edits affect saved offline bytes only.
+        #[arg(long = "set", required = true)]
+        assignments: Vec<String>,
+        /// Initialize an empty staged image from zero; existing bytes are never reset.
+        #[arg(long)]
+        zero: bool,
+        /// Save the resulting profile to a new file. Without this, print the preview only.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Decode an offline payload using the profile.
     Decode {
         profile: PathBuf,
@@ -363,6 +376,25 @@ fn main() -> Result<()> {
                 "saved PDO layout differs from profile"
             );
             Ok(())
+        }
+        Command::StageRx {
+            profile,
+            assignments,
+            zero,
+            out,
+        } => {
+            use ethercat_workbench::output_stage::{Assignment, prepare};
+            let mut profile = Profile::load(&profile)?;
+            let assignments = assignments
+                .iter()
+                .map(|value| Assignment::parse(value))
+                .collect::<Result<Vec<_>>>()?;
+            let plan = prepare(&profile, &assignments, zero)?;
+            if let Some(path) = out {
+                plan.apply(&mut profile)?;
+                profile.save(&path)?;
+            }
+            output(plan.review())
         }
         Command::Decode { profile, hex, rx } => {
             let profile = Profile::load(&profile)?;
