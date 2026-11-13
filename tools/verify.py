@@ -525,7 +525,77 @@ def verify_sync_modes(cli, destination):
     impossible = destination / "must-not-exist.json"
     cli_call(cli, "esi-import", esi, "--device", 0, "--dc-mode", 99, "--out", impossible, success=False)
     assert not impossible.exists()
+    verify_mode_sync_managers(cli, destination, report_path)
     (destination / "sync-checks.json").write_text(json.dumps({"preview": preview, "compared": compared, "matched": matched}, indent=2), encoding="utf-8")
+
+
+def verify_mode_sync_managers(cli, destination, report_path):
+    esi = ROOT / "samples/mode-sync-managers.esi.xml"
+    modes = cli_call(cli, "esi-list", esi)[0]["source"]["dc_modes"]
+    assert len(modes) == 3 and [s["index"] for s in modes[0]["sync_managers"]] == [2, 3]
+    assert [s["pdo_indexes"] for s in modes[0]["sync_managers"]] == [[0x1600], [0x1a00]]
+    assert modes[1]["sync_managers"][0]["sync_type"] == 2
+    assert any("OSFac" in n for n in modes[2]["sync_managers"][0]["notes"])
+    utf16 = destination / "mode-sm-utf16.xml"; utf16.write_bytes(esi.read_text(encoding="utf-8").replace('encoding="UTF-8"', 'encoding="UTF-16"').encode("utf-16"))
+    assert cli_call(cli, "esi-list", utf16)[0]["source"]["dc_modes"] == modes
+    imported = destination / "mode-sm-profile.json"
+    cli_call(cli, "esi-import", esi, "--device", 0, "--dc-mode", 0, "--out", imported)
+    original = imported.read_bytes(); profile = json.loads(original)
+    baseline_selection = profile["esi_pdo_selection"]; baseline_fields = profile["tx"]
+    offline = cli_call(cli, "review-sync", imported)
+    assert offline["applied"] is False and [s["pdo_state"] for s in offline["sync_managers"]] == ["matched"] * 2
+    assert [s["sync_type"]["state"] for s in offline["sync_managers"]] == ["unavailable"] * 2
+    matched = cli_call(cli, "review-sync", imported, "--readback", report_path)
+    assert matched["readback_source"].startswith("Saved run report") and matched["applied"] is False
+    assert [s["sync_type"]["state"] for s in matched["sync_managers"]] == ["matched"] * 2
+    assert [s["sync_type"]["actual"] for s in matched["sync_managers"]] == [0, 0]
+    results = {"offline": offline, "matched": matched}
+    native_path = destination / "mode-sm-virtual-run.json"
+    modeled = cli_call(cli, "run", imported, "--backend", "virtual", "--virtual-model", "coe-dc", "--seconds", 1, "--report", native_path)
+    assert modeled["valid"] > 100 and modeled["error"] is None and modeled["stopped_al"] == [1, 0]
+    assert modeled["sync_review"]["applied"] is False
+    assert all(s["pdo_state"] == s["sync_type"]["state"] == "matched" for s in modeled["sync_review"]["sync_managers"])
+    audit = modeled["virtual_esc"]
+    assert all(audit[k] == 0 for k in ["coe_downloads", "logical_writes", "physical_output_writes", "op_requests", "dc_enable_requests", "dc_clock_distribution"])
+    assert modeled["context"]["profile"]["esi_pdo_selection"] == baseline_selection
+    assert imported.read_bytes() == original
+
+    def review_variant(label, changed):
+        path = destination / f"mode-sm-{label}.json"; path.write_text(json.dumps(changed), encoding="utf-8")
+        before = path.read_bytes(); result = cli_call(cli, "review-sync", path, "--readback", report_path)
+        assert path.read_bytes() == before and result["applied"] is False
+        assert changed["tx"] == baseline_fields
+        results[label] = result
+        return result
+
+    changed = json.loads(original); changed["esi_pdo_selection"] = None
+    assert all(s["pdo_state"] == "unavailable" and s["configured_pdos"] is None for s in review_variant("detached", changed)["sync_managers"])
+    changed = json.loads(original); changed["esi"]["dc_modes"][0]["sync_managers"][1]["pdo_indexes"] = [0x1a01, 0x1a00]
+    different = review_variant("different", changed)["sync_managers"][1]
+    assert different["pdo_state"] == "different" and different["configured_pdos"] == [0x1a00]
+    assert changed["esi_pdo_selection"] == baseline_selection
+    changed = json.loads(original); changed["staged_esi_dc_mode"] = 1
+    sync0 = review_variant("sync0", changed)["sync_managers"][0]
+    assert sync0["sync_type"]["state"] == "different" and sync0["pdo_state"] == "not_declared"
+    changed["staged_esi_dc_mode"] = 2
+    unresolved = review_variant("unresolved", changed)["sync_managers"][0]
+    assert unresolved["sync_type"]["state"] == unresolved["pdo_state"] == "unresolved"
+    changed["esi"]["dc_modes"][2]["sync_managers"][0]["notes"] = []
+    missing = review_variant("sm4-unavailable", changed)["sync_managers"][0]
+    assert missing["sync_type"]["state"] == "unavailable" and missing["sync_type"]["actual"] is None
+    assert imported.read_bytes() == original
+    text = esi.read_text(encoding="utf-8")
+    invalid = {"sm-range": text.replace('<Sm No="2">', '<Sm No="16">', 1),
+               "sm-duplicate": text.replace('<Sm No="2">', '<Sm No="3">', 1),
+               "sync-range": text.replace('<SyncType>0</SyncType>', '<SyncType>65536</SyncType>', 1),
+               "sync-duplicate": text.replace('<SyncType>0</SyncType>', '<SyncType>0</SyncType><SyncType>1</SyncType>', 1),
+               "pdo-duplicate": text.replace('<Pdo>#x1600</Pdo>', '<Pdo>#x1600</Pdo><Pdo>#x1600</Pdo>', 1)}
+    for label, xml in invalid.items():
+        path = destination / f"bad-mode-sm-{label}.xml"; path.write_text(xml, encoding="utf-8")
+        output = path.with_suffix(".json")
+        cli_call(cli, "esi-import", path, "--device", 0, "--out", output, success=False)
+        assert not output.exists()
+    (destination / "mode-sm-checks.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
 
 
 def verify_pdo_choices(cli, destination):

@@ -35,6 +35,8 @@ In the GUI, inspect raw/typed payloads in section **3**. Typed staging prepares 
 
 ## Exercise the pipeline headlessly
 
+Use `samples/mode-sync-managers.esi.xml` with `esi-import --device 0 --dc-mode 0 --out` for authored mode-specific SyncManager hints, then `review-sync PROFILE` to compare offline PDO choices. Optional `--readback SAVED_RUN` compares available exact-channel CoE SyncType values. Selecting a mode changes no PDO assignments or runtime DC settings. The [ESI timing/SM guide](esi-sync-review.md#mode-specific-syncmanager-hints) distinguishes matched, different, unavailable and unresolved evidence.
+
 ```powershell
 .\ethercat-workbench-cli.exe run samples/synthetic.json --seconds 3 --csv .local/synthetic.csv --report .local/synthetic-run.json
 .\ethercat-workbench-cli.exe run samples/virtual-segmented.json --backend virtual --virtual-model coe-segmented --seconds 3 --csv .local/virtual.csv --report .local/virtual-run.json

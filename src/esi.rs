@@ -406,6 +406,81 @@ fn timing(node: Node<'_, '_>, tag: &str) -> Result<Option<crate::sync_review::Ti
     }))
 }
 
+fn mode_sync_managers(
+    outer: Node<'_, '_>,
+    timing_node: Node<'_, '_>,
+) -> Result<Vec<crate::sync_review::ModeSyncManager>> {
+    let mut result = Vec::new();
+    for node in outer.children().filter(|n| named(*n, "Sm")) {
+        ensure!(result.len() < 16, "ESI mode exceeds 16 SyncManagers");
+        let index = u8::try_from(number(node.attribute("No").context("mode Sm No missing")?)?)
+            .context("mode Sm No exceeds 8 bits")?;
+        let mut notes: Vec<_> = node
+            .attributes()
+            .filter(|a| a.namespace().is_some() || a.name() != "No")
+            .map(|a| format!("Unsupported Sm attribute {}={}", a.name(), a.value()))
+            .collect();
+        let sync_type = unique_child(node, "SyncType")?
+            .map(|child| -> Result<u16> {
+                notes.extend(
+                    child.attributes().map(|a| {
+                        format!("Unsupported SyncType attribute {}={}", a.name(), a.value())
+                    }),
+                );
+                notes.extend(
+                    child
+                        .children()
+                        .filter(Node::is_element)
+                        .map(|c| format!("Unsupported SyncType child {}", c.tag_name().name())),
+                );
+                u16::try_from(number(&dc_text(child))?).context("mode Sm SyncType exceeds 16 bits")
+            })
+            .transpose()?;
+        let mut pdo_indexes = Vec::new();
+        for child in node.children().filter(Node::is_element) {
+            if named(child, "Pdo") {
+                if outer != timing_node {
+                    notes.push(
+                        "Pdo hints on Device/OpMode/Sm are outside the supported schema subset"
+                            .into(),
+                    );
+                }
+                ensure!(
+                    pdo_indexes.len() < 512,
+                    "ESI mode SyncManager exceeds 512 PDO hints"
+                );
+                notes.extend(
+                    child.attributes().map(|a| {
+                        format!("Unsupported mode Pdo attribute {}={}", a.name(), a.value())
+                    }),
+                );
+                notes.extend(
+                    child
+                        .children()
+                        .filter(Node::is_element)
+                        .map(|c| format!("Unsupported mode Pdo child {}", c.tag_name().name())),
+                );
+                pdo_indexes.push(
+                    u16::try_from(number(&dc_text(child))?)
+                        .context("mode Pdo index exceeds 16 bits")?,
+                );
+            } else if !named(child, "SyncType") {
+                notes.push(format!(
+                    "Unsupported Sm child {}; device-specific interpretation required",
+                    child.tag_name().name()
+                ));
+            }
+        }
+        result.push(crate::sync_review::ModeSyncManager {
+            index,
+            sync_type,
+            pdo_indexes,
+            notes,
+        });
+    }
+    Ok(result)
+}
+
 fn dc_modes(device: Node<'_, '_>) -> Result<Vec<crate::sync_review::DcMode>> {
     let mut modes = Vec::new();
     let mut add = |outer: Node<'_, '_>,
@@ -428,7 +503,9 @@ fn dc_modes(device: Node<'_, '_>) -> Result<Vec<crate::sync_review::DcMode>> {
                         "CycleTimeSync1",
                         "ShiftTimeSync1",
                     ];
-                    if !known.iter().any(|name| named(child, name)) {
+                    if !(known.iter().any(|name| named(child, name))
+                        || (node == outer && named(child, "Sm")))
+                    {
                         notes.push(format!("Unsupported DC mode child {}; mapping/vendor extensions require separate review", child.tag_name().name()));
                     }
                 }
@@ -468,6 +545,7 @@ fn dc_modes(device: Node<'_, '_>) -> Result<Vec<crate::sync_review::DcMode>> {
             cycle_sync1: timing(timing_node, "CycleTimeSync1")?,
             shift_sync1: timing(timing_node, "ShiftTimeSync1")?,
             notes,
+            sync_managers: mode_sync_managers(outer, timing_node)?,
         };
         mode.validate()?;
         modes.push(mode);
@@ -502,6 +580,108 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mode_sync_manager_hints_preserve_order_forms_and_unresolved_annotations() {
+        let devices = parse(
+            "modes.xml",
+            include_bytes!("../samples/mode-sync-managers.esi.xml"),
+        )
+        .unwrap();
+        let modes = &devices[0].source.dc_modes;
+        assert_eq!(modes.len(), 3);
+        assert_eq!(
+            modes[0]
+                .sync_managers
+                .iter()
+                .map(|s| s.index)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(modes[0].sync_managers[0].pdo_indexes, vec![0x1600]);
+        assert_eq!(modes[0].sync_managers[1].pdo_indexes, vec![0x1a00]);
+        assert_eq!(modes[1].xml_path, "Device/OpMode/Dc");
+        assert_eq!(modes[1].sync_managers[0].sync_type, Some(2));
+        assert!(
+            modes[2].sync_managers[0]
+                .notes
+                .iter()
+                .any(|n| n.contains("OSFac"))
+        );
+        assert!(
+            modes[2].sync_managers[0]
+                .notes
+                .iter()
+                .any(|n| n.contains("CycleTime"))
+        );
+        let mut profile = Profile::default();
+        devices[0].apply(&mut profile).unwrap();
+        profile.staged_esi_dc_mode = Some(0);
+        let before = profile.clone();
+        let review = crate::sync_review::review(&profile, None).unwrap().unwrap();
+        assert_eq!(profile, before);
+        assert!(
+            review
+                .sync_managers
+                .iter()
+                .all(|s| s.pdo_state == crate::sync_review::CheckState::Matched)
+        );
+        assert!(!review.applied);
+        let saved: Profile =
+            serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
+        assert_eq!(saved, profile);
+        let xml =
+            std::str::from_utf8(include_bytes!("../samples/mode-sync-managers.esi.xml")).unwrap();
+        let namespaced = xml
+            .replace(
+                "<EtherCATInfo Version=",
+                "<EtherCATInfo xmlns=\"urn:authored:esi\" xmlns:x=\"urn:foreign\" Version=",
+            )
+            .replace(
+                "<SyncType>0</SyncType>",
+                "<x:SyncType>65535</x:SyncType><SyncType>0</SyncType>",
+            );
+        let foreign = parse("namespaced.xml", namespaced.as_bytes()).unwrap();
+        assert_eq!(
+            foreign[0].source.dc_modes[0].sync_managers[0].sync_type,
+            Some(0)
+        );
+        assert!(
+            !foreign[0].source.dc_modes[0].sync_managers[0]
+                .notes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn mode_sync_manager_consumption_rejects_ambiguity_invalid_numbers_and_excessive_lists() {
+        let parse_sm = |sm: &str| {
+            parse("sm.xml",format!("<EtherCATInfo><Vendor><Id>1</Id></Vendor><Descriptions><Devices><Device><Type ProductCode='3' RevisionNo='1'>Test</Type><Name>Test</Name><Dc><OpMode><Name>Test</Name><AssignActivate>0</AssignActivate>{sm}</OpMode></Dc></Device></Devices></Descriptions></EtherCATInfo>").as_bytes())
+        };
+        for bad in [
+            "<Sm><SyncType>0</SyncType></Sm>",
+            "<Sm No='16'/>",
+            "<Sm No='-1'/>",
+            "<Sm No='3'><SyncType>65536</SyncType></Sm>",
+            "<Sm No='3'><SyncType>0</SyncType><SyncType>1</SyncType></Sm>",
+            "<Sm No='3'/><Sm No='3'/>",
+            "<Sm No='3'><Pdo>0</Pdo></Sm>",
+            "<Sm No='3'><Pdo>65536</Pdo></Sm>",
+            "<Sm No='3'><Pdo>6656</Pdo><Pdo>6656</Pdo></Sm>",
+        ] {
+            assert!(parse_sm(bad).is_err(), "accepted {bad}");
+        }
+        let pdos = (1..=512)
+            .map(|i| format!("<Pdo>{i}</Pdo>"))
+            .collect::<String>();
+        assert!(parse_sm(&format!("<Sm No='3'>{pdos}</Sm>")).is_ok());
+        assert!(parse_sm(&format!("<Sm No='3'>{pdos}<Pdo>513</Pdo></Sm>")).is_err());
+        let sms = (0..16)
+            .map(|i| format!("<Sm No='{i}'/>"))
+            .collect::<String>();
+        assert!(parse_sm(&sms).is_ok());
+        assert!(parse_sm(&format!("{sms}<Sm No='0'/>")).is_err());
+    }
+
+    #[test]
     fn imports_both_dc_forms_and_preserves_signed_and_contextual_values() {
         let xml = include_bytes!("../samples/sync-modes.esi.xml");
         let devices = parse("sync.xml", xml).unwrap();
@@ -515,7 +695,8 @@ mod tests {
         );
         assert_eq!(modes[2].cycle_sync0.as_ref().unwrap().factor, Some(-2));
         assert_eq!(modes[3].xml_path, "Device/OpMode/Dc");
-        assert!(modes[3].notes.iter().any(|n| n.contains("Sm")));
+        assert_eq!(modes[3].sync_managers[0].index, 3);
+        assert_eq!(modes[3].sync_managers[0].sync_type, Some(2));
         let mut profile = Profile::default();
         devices[0].apply(&mut profile).unwrap();
         profile.staged_esi_dc_mode = Some(2);

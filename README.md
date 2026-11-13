@@ -75,11 +75,13 @@ CoE setup readback uses a bounded, read-only Workbench uploader after EtherCrab 
 
 Use `samples/virtual-normal.json --virtual-model coe-normal` or `samples/virtual-segmented.json --virtual-model coe-segmented` with the virtual backend. These models change upload policy after process-image configuration; EtherCrab's earlier private initializer still needs expedited replies for its small PDO objects. Segmented-model faults are `segment-toggle`, `segment-size`, `segment-timeout`, `mailbox-counter`, `segment-abort` and the valid `segment-initial-data` variation. The [source review](docs/ethercrab-review.md#coe-upload-coverage-in-version-090) records transfer bounds, remaining initialization limits and the SOEM comparison.
 
-ESI DC modes can be staged for offline review in the GUI or imported with `--dc-mode` and an optional explicit `--sync-unit-cycle-ns` assumption. The importer retains both `Device/Dc/OpMode` and `Device/OpMode/Dc` forms, assignment/activation, cycle literals, factors, signed shifts and timing annotations. Unknown extensions are flagged. The profile retains the ESI filename, hash and exact device identity. Reimporting an ESI clears the staged mode and assumption. Selecting a mode leaves runtime policy at disabled SYNC and sends no configuration writes. The requested host period remains independent. The bundled `samples/sync-review.json` demonstrates staging against the authored CoE/DC model.
+ESI DC modes can be staged for offline review in the GUI or imported with `--dc-mode` and an optional explicit `--sync-unit-cycle-ns` assumption. The importer retains both `Device/Dc/OpMode` and `Device/OpMode/Dc` forms, assignment/activation, cycle literals, factors, signed shifts and timing annotations. Unknown extensions are flagged. Plain mode-specific SyncManager SyncType and ordered PDO hints are now retained and reviewed separately against available CoE readback and the profile's offline choices; unsupported annotations remain unresolved. The profile retains the ESI filename, hash and exact device identity. Reimporting an ESI clears the staged mode and assumption. Selecting a mode leaves runtime policy at disabled SYNC and sends no configuration writes. The requested host period remains independent. The bundled `samples/sync-review.json` demonstrates staging against the authored CoE/DC model.
 
 ```powershell
 .\ethercat-workbench-cli.exe esi-import samples/sync-modes.esi.xml --device 0 --dc-mode 2 --sync-unit-cycle-ns 1000000 --out .local/dc-review.json
 .\ethercat-workbench-cli.exe review-sync .local/dc-review.json
+.\ethercat-workbench-cli.exe esi-import samples/mode-sync-managers.esi.xml --device 0 --dc-mode 0 --out .local/mode-sm.json
+.\ethercat-workbench-cli.exe review-sync .local/mode-sm.json
 .\ethercat-workbench-cli.exe review-sync .local/dc-review.json --readback .local/saved-run.json
 ```
 
@@ -111,7 +113,7 @@ An opt-in [read-only loopback HTTP input feed](docs/http-input-feed.md) now expo
 
 ## Contributing
 
-Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.24.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.25.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
 
 ## License
 

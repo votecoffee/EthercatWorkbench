@@ -31,10 +31,47 @@ pub struct DcMode {
     pub shift_sync1: Option<Timing>,
     #[serde(default)]
     pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sync_managers: Vec<ModeSyncManager>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModeSyncManager {
+    pub index: u8,
+    pub sync_type: Option<u16>,
+    #[serde(default)]
+    pub pdo_indexes: Vec<u16>,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 impl DcMode {
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.sync_managers.len() <= 16,
+            "ESI mode exceeds 16 SyncManagers"
+        );
+        let mut seen = std::collections::HashSet::new();
+        for sm in &self.sync_managers {
+            ensure!(
+                sm.index < 16 && seen.insert(sm.index),
+                "invalid or duplicate ESI mode SyncManager"
+            );
+            ensure!(
+                sm.pdo_indexes.len() <= 512,
+                "ESI mode SyncManager exceeds 512 PDO hints"
+            );
+            let mut pdos = std::collections::HashSet::new();
+            ensure!(
+                sm.pdo_indexes.iter().all(|&p| p != 0 && pdos.insert(p)),
+                "zero or duplicate ESI mode PDO hint"
+            );
+            ensure!(
+                sm.notes.len() <= 64 && sm.notes.iter().all(|n| n.len() <= 4096),
+                "ESI mode SyncManager notes exceed limit"
+            );
+        }
         ensure!(
             !self.name.trim().is_empty()
                 && self.name.len() <= 256
@@ -238,6 +275,91 @@ pub struct Review {
     pub readback_source: Option<String>,
     pub checks: Vec<SettingCheck>,
     pub notes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sync_managers: Vec<SyncManagerReview>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SyncManagerReview {
+    pub index: u8,
+    pub source: String,
+    pub sync_type: SettingCheck,
+    pub expected_pdos: Vec<u16>,
+    pub configured_pdos: Option<Vec<u16>>,
+    pub pdo_state: CheckState,
+    pub pdo_detail: String,
+    pub notes: Vec<String>,
+}
+
+fn review_sm(
+    sm: &ModeSyncManager,
+    profile: &Profile,
+    bus: Option<&Synchronization>,
+) -> SyncManagerReview {
+    let actual = bus.and_then(|b| match sm.index {
+        2 => b.rx_sync_type.as_ref(),
+        3 => b.tx_sync_type.as_ref(),
+        _ => None,
+    });
+    let mut sync_type = check(
+        &format!(
+            "SM{} SyncType 0x{:04X}:01",
+            sm.index,
+            0x1c30 + u16::from(sm.index)
+        ),
+        sm.sync_type.map(i64::from),
+        sm.sync_type.is_some(),
+        actual,
+    );
+    if sm.sync_type.is_some() && !sm.notes.is_empty() {
+        sync_type.state = CheckState::Unresolved;
+        sync_type.detail = "Mode SyncManager contains unsupported annotations; literal/readback retained for review only".into();
+    }
+    let configured_pdos = profile.esi_pdo_selection.as_ref().map(|s| {
+        s.rx.iter()
+            .chain(&s.tx)
+            .filter(|p| p.sm == sm.index)
+            .map(|p| p.index)
+            .collect::<Vec<_>>()
+    });
+    let (pdo_state, pdo_detail) = if sm.pdo_indexes.is_empty() {
+        (
+            CheckState::NotDeclared,
+            "No PDO list declared in this mode; no empty assignment is implied",
+        )
+    } else if !sm.notes.is_empty() {
+        (
+            CheckState::Unresolved,
+            "Mode SyncManager has unsupported annotations; PDO hints are not interpreted as a complete assignment",
+        )
+    } else if let Some(actual) = &configured_pdos {
+        if *actual == sm.pdo_indexes {
+            (
+                CheckState::Matched,
+                "Ordered ESI hints equal the profile's offline PDO choices; no bus mapping was verified or applied",
+            )
+        } else {
+            (
+                CheckState::Different,
+                "Ordered ESI hints differ from the profile's offline PDO choices; no choices were changed",
+            )
+        }
+    } else {
+        (
+            CheckState::Unavailable,
+            "Profile has no attached ESI PDO selection; decoder fields do not establish an assignment",
+        )
+    };
+    SyncManagerReview {
+        index: sm.index,
+        source: "esi".into(),
+        sync_type,
+        expected_pdos: sm.pdo_indexes.clone(),
+        configured_pdos,
+        pdo_state,
+        pdo_detail: pdo_detail.into(),
+        notes: sm.notes.clone(),
+    }
 }
 
 pub fn review(profile: &Profile, bus: Option<&Synchronization>) -> Result<Option<Review>> {
@@ -256,6 +378,13 @@ pub fn review(profile: &Profile, bus: Option<&Synchronization>) -> Result<Option
         .dc_modes
         .get(index)
         .context("staged ESI DC mode index out of range")?;
+    mode.validate()?;
+    if let Some(selection) = &profile.esi_pdo_selection {
+        ensure!(
+            selection.rx.len() <= 512 && selection.tx.len() <= 512,
+            "too many selected PDOs for mode review"
+        );
+    }
     let sync0 = cycle(
         mode.cycle_sync0.as_ref(),
         false,
@@ -317,12 +446,112 @@ pub fn review(profile: &Profile, bus: Option<&Synchronization>) -> Result<Option
         readback_source: bus.map(|s| s.source.clone()),
         checks,
         notes,
+        sync_managers: mode
+            .sync_managers
+            .iter()
+            .map(|sm| review_sm(sm, profile, bus))
+            .collect(),
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn sm_profile() -> Profile {
+        let devices = crate::esi::parse(
+            "mode-sync-managers.esi.xml",
+            include_bytes!("../samples/mode-sync-managers.esi.xml"),
+        )
+        .unwrap();
+        let mut profile = Profile::default();
+        devices[0].apply(&mut profile).unwrap();
+        profile.staged_esi_dc_mode = Some(0);
+        profile
+    }
+
+    #[test]
+    fn mode_hints_compare_offline_choices_separately_from_optional_coe_values_without_mutation() {
+        let mut profile = sm_profile();
+        let original = profile.clone();
+        let bus = Synchronization {
+            source: "Authored CoE readback".into(),
+            tx_sync_type: Some(RegisterRead {
+                value: Some(0),
+                unavailable: None,
+            }),
+            rx_sync_type: Some(RegisterRead {
+                value: Some(0),
+                unavailable: None,
+            }),
+            ..Default::default()
+        };
+        let r = review(&profile, Some(&bus)).unwrap().unwrap();
+        assert!(!r.applied);
+        assert_eq!(r.checks.len(), 3);
+        assert!(
+            r.sync_managers
+                .iter()
+                .all(|sm| sm.sync_type.state == CheckState::Matched
+                    && sm.pdo_state == CheckState::Matched
+                    && sm.source == "esi")
+        );
+        assert_eq!(profile, original);
+        let r = review(&profile, None).unwrap().unwrap();
+        assert!(
+            r.sync_managers
+                .iter()
+                .all(|s| s.sync_type.state == CheckState::Unavailable
+                    && s.pdo_state == CheckState::Matched)
+        );
+        profile.esi_pdo_selection = None;
+        let r = review(&profile, Some(&bus)).unwrap().unwrap();
+        assert!(
+            r.sync_managers
+                .iter()
+                .all(|s| s.pdo_state == CheckState::Unavailable && s.configured_pdos.is_none())
+        );
+        profile = original.clone();
+        profile.esi.as_mut().unwrap().dc_modes[0].sync_managers[1].pdo_indexes =
+            vec![0x1a01, 0x1a00];
+        let r = review(&profile, Some(&bus)).unwrap().unwrap();
+        assert_eq!(r.sync_managers[1].pdo_state, CheckState::Different);
+        assert_eq!(r.sync_managers[1].configured_pdos, Some(vec![0x1a00]));
+        profile = original;
+        profile.staged_esi_dc_mode = Some(1);
+        let r = review(&profile, Some(&bus)).unwrap().unwrap();
+        assert_eq!(r.sync_managers[0].sync_type.state, CheckState::Different);
+        assert_eq!(r.sync_managers[0].pdo_state, CheckState::NotDeclared);
+        profile.staged_esi_dc_mode = Some(2);
+        let r = review(&profile, Some(&bus)).unwrap().unwrap();
+        assert_eq!(r.sync_managers[0].sync_type.state, CheckState::Unresolved);
+        assert_eq!(r.sync_managers[0].pdo_state, CheckState::Unresolved);
+        assert!(r.sync_managers[0].sync_type.actual.is_none());
+        profile.esi.as_mut().unwrap().dc_modes[2].sync_managers[0]
+            .notes
+            .clear();
+        let r = review(&profile, Some(&bus)).unwrap().unwrap();
+        assert_eq!(r.sync_managers[0].sync_type.state, CheckState::Unavailable);
+    }
+
+    #[test]
+    fn older_profiles_without_structured_sm_hints_preserve_their_canonical_content() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("../samples/sync-review.json")).unwrap();
+        let profile: Profile = serde_json::from_value(value.clone()).unwrap();
+        profile.validate().unwrap();
+        assert!(
+            profile
+                .esi
+                .as_ref()
+                .unwrap()
+                .dc_modes
+                .iter()
+                .all(|m| m.sync_managers.is_empty())
+        );
+        assert_eq!(serde_json::to_value(&profile).unwrap(), value);
+        let r = serde_json::to_value(review(&profile, None).unwrap().unwrap()).unwrap();
+        assert!(r.get("sync_managers").is_none());
+    }
     fn timing(value_ns: i32, factor: Option<i32>) -> Timing {
         Timing {
             value_ns,

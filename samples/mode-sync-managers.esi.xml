@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.6">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored mode fixture</Name></Vendor>
+  <Descriptions><Devices><Device>
+    <Type ProductCode="#x00000003" RevisionNo="#x00000001">VirtualModeReview</Type>
+    <Name>Authored SyncManager operating-mode review</Name>
+    <RxPdo Sm="2"><Index>#x1600</Index>
+      <Entry><Index>#x7000</Index><SubIndex>1</SubIndex><BitLen>16</BitLen><Name>Staged setpoint</Name><DataType>INT</DataType></Entry>
+    </RxPdo>
+    <TxPdo Sm="3"><Index>#x1A00</Index>
+      <Entry><Index>#x6000</Index><SubIndex>1</SubIndex><BitLen>16</BitLen><Name>Counter</Name><DataType>UINT</DataType></Entry>
+      <Entry><Index>#x6000</Index><SubIndex>2</SubIndex><BitLen>1</BitLen><Name>Sensor active</Name><DataType>BOOL</DataType></Entry>
+      <Entry><Index>0</Index><BitLen>15</BitLen></Entry>
+      <Entry><Index>#x6000</Index><SubIndex>3</SubIndex><BitLen>32</BitLen><Name>Scaled counter</Name><DataType>REAL</DataType></Entry>
+    </TxPdo>
+    <Dc><OpMode>
+      <Name>FreeRun-SM</Name><Desc>Offline choices and literal SyncType expectations</Desc>
+      <AssignActivate>0</AssignActivate><CycleTimeSync0>0</CycleTimeSync0><CycleTimeSync1>0</CycleTimeSync1>
+      <Sm No="2"><SyncType>0</SyncType><Pdo>#x1600</Pdo></Sm>
+      <Sm No="3"><SyncType>0</SyncType><Pdo>#x1A00</Pdo></Sm>
+    </OpMode></Dc>
+    <OpMode><Name>Sync0-SM</Name><Desc>Staged expectation only; never applied</Desc>
+      <Dc><AssignActivate>#x0300</AssignActivate><CycleTimeSync0 Factor="1">0</CycleTimeSync0></Dc>
+      <Sm No="3"><SyncType>2</SyncType></Sm>
+    </OpMode>
+    <OpMode><Name>Unresolved-SM</Name><Dc><AssignActivate>0</AssignActivate></Dc>
+      <Sm No="4" ControlByte="32"><SyncType>0</SyncType><CycleTime Factor="1">0</CycleTime><Pdo OSFac="2">#x1A00</Pdo></Sm>
+    </OpMode>
+  </Device></Devices></Descriptions>
+</EtherCATInfo>
