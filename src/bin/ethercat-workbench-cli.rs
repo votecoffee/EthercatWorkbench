@@ -67,6 +67,9 @@ enum Command {
         scheduler: Option<Schedule>,
         #[arg(long)]
         on_change: bool,
+        /// Stop after continuous invalid input for this duration; 0 monitors until the run ends.
+        #[arg(long)]
+        input_loss_timeout_ms: Option<u64>,
         #[arg(long)]
         simulate_faults: bool,
         #[arg(long, required_if_eq("backend", "replay"))]
@@ -165,6 +168,7 @@ fn main() -> Result<()> {
             csv,
             scheduler,
             on_change,
+            input_loss_timeout_ms,
             simulate_faults,
             replay,
             virtual_fault,
@@ -246,6 +250,9 @@ fn main() -> Result<()> {
             }
             if on_change {
                 profile.mode = LogMode::Change;
+            }
+            if let Some(timeout) = input_loss_timeout_ms {
+                profile.input_loss_timeout_ms = timeout;
             }
             let stop = Arc::new(AtomicBool::new(false));
             ctrlc::set_handler({

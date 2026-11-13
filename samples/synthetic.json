@@ -2,6 +2,7 @@
   "version": 1,
   "name": "Synthetic fixture",
   "requested_cycle_us": 1000,
+  "input_loss_timeout_ms": 1000,
   "scheduler": "deadline",
   "mode": "every",
   "queue_capacity": 4096,

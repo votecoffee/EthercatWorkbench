@@ -1,5 +1,6 @@
 use crate::{
     capture::{Capture, CaptureStats},
+    health::{InputHealth, InputIssue, Tracker},
     model::{Identity, MAX_PAYLOAD, Profile, Scheduler},
 };
 use anyhow::{Context, Result, ensure};
@@ -82,6 +83,9 @@ impl Gaps {
 pub struct Report {
     pub backend: String,
     pub requested_cycle_us: u64,
+    pub input_loss_timeout_ms: u64,
+    pub input_health: InputHealth,
+    pub transport_errors: u64,
     pub scheduler: Scheduler,
     pub device_sync: String,
     pub dc_sync: String,
@@ -118,6 +122,7 @@ pub struct Snapshot {
     pub payload: [u8; MAX_PAYLOAD],
     pub payload_len: usize,
     pub valid: bool,
+    pub last_valid_received_at: Option<Instant>,
 }
 
 impl Default for Snapshot {
@@ -128,6 +133,7 @@ impl Default for Snapshot {
             payload: [0; MAX_PAYLOAD],
             payload_len: 0,
             valid: false,
+            last_valid_received_at: None,
         }
     }
 }
@@ -193,12 +199,19 @@ pub fn run(
 ) -> Report {
     let mut report = Report {
         requested_cycle_us: profile.requested_cycle_us,
+        input_loss_timeout_ms: profile.input_loss_timeout_ms,
         scheduler: profile.scheduler,
         connection_generation: options.generation,
         ..Report::default()
     };
     let result = run_inner(&profile, options, stop, view, &mut report);
     report.cancelled = stop.load(Relaxed);
+    if let Some((status, code)) = report.stopped_al
+        && let Some(device) = report.devices.first_mut()
+    {
+        device.al_status = status;
+        device.al_code = code;
+    }
     if let Err(err) = result {
         report.error = Some(format!("{err:#}"));
     }
@@ -337,6 +350,7 @@ fn cycle(
     let mut deadline = start;
     let mut publish = start;
     let mut last = None;
+    let mut health = Tracker::new(start);
     let mut index = 0;
     let mut result = (|| {
         while !stop.load(Relaxed) && deadline < end {
@@ -358,8 +372,23 @@ fn cycle(
                 break;
             }
             index += 1;
-            let Some(exchange) = bus.exchange(index)? else {
-                break;
+            let attempt = Instant::now();
+            let exchange = match bus.exchange(index) {
+                Ok(Some(exchange)) => exchange,
+                Ok(None) => break,
+                Err(error) => {
+                    report.cycles += 1;
+                    report.transport_errors += 1;
+                    report.actual_wkc = None;
+                    health.invalid(
+                        &mut report.input_health,
+                        InputIssue::TransportError,
+                        attempt,
+                        Instant::now(),
+                    );
+                    last = Some(([0; MAX_PAYLOAD], false, false));
+                    return Err(error.context("cyclic Ethernet transport failed"));
+                }
             };
             report.cycles += 1;
             report.ignored_frames += exchange.ignored_frames;
@@ -368,7 +397,8 @@ fn cycle(
             let status_ok = exchange
                 .status
                 .is_some_and(|(status, code)| status & 0x1f == 4 && code == 0);
-            if let Some((status, code)) = exchange.status
+            if exchange.received.is_some()
+                && let Some((status, code)) = exchange.status
                 && let Some(device) = report.devices.first_mut()
             {
                 device.al_status = status;
@@ -396,15 +426,38 @@ fn cycle(
                 report.timeouts += 1;
                 false
             };
+            let observed = Instant::now();
+            let previous_issue = report.input_health.current_issue;
+            if valid {
+                health.valid(
+                    &mut report.input_health,
+                    index,
+                    exchange.received.expect("valid reply"),
+                );
+            } else {
+                let issue = if exchange.received.is_none() {
+                    InputIssue::Timeout
+                } else {
+                    match (exchange.wkc == report.expected_wkc, status_ok) {
+                        (false, false) => InputIssue::WorkingCounterAndAlStatus,
+                        (false, true) => InputIssue::WorkingCounter,
+                        _ => InputIssue::AlStatus,
+                    }
+                };
+                health.invalid(&mut report.input_health, issue, exchange.sent, observed);
+            }
             last = Some((exchange.data, exchange.received.is_some(), valid));
-            if now >= publish {
+            if !valid {
+                check_input_loss(&report.input_health, profile.input_loss_timeout_ms)?;
+            }
+            if observed >= publish || previous_issue != report.input_health.current_issue {
                 if let Ok(mut snapshot) = view.try_lock() {
                     update(report, &sends, &receives, capture.as_ref());
                     snapshot.report.clone_from(report);
                     snapshot.phase = "Cycling".into();
-                    publish_payload(&mut snapshot, last, profile.tx_bytes);
+                    publish_payload(&mut snapshot, last, profile.tx_bytes, health.last_valid);
                 }
-                publish = now + Duration::from_millis(100);
+                publish = observed + Duration::from_millis(100);
             }
             deadline = match profile.scheduler {
                 Scheduler::Deadline => deadline + interval,
@@ -413,6 +466,17 @@ fn cycle(
         }
         Ok(())
     })();
+    health.refresh(&mut report.input_health, Instant::now());
+    if result.is_ok() && !stop.load(Relaxed) {
+        result = check_input_loss(&report.input_health, profile.input_loss_timeout_ms);
+    }
+    update(report, &sends, &receives, capture.as_ref());
+    if let Ok(mut snapshot) = view.try_lock() {
+        snapshot.phase = "Stopping cyclic input".into();
+        snapshot.report.clone_from(report);
+        publish_payload(&mut snapshot, last, profile.tx_bytes, health.last_valid);
+        snapshot.valid = false;
+    }
     result = combine(result, bus.stop().map(|al| report.stopped_al = al));
     update(report, &sends, &receives, capture.as_ref());
     if let Some(capture) = capture {
@@ -421,7 +485,8 @@ fn cycle(
         result = combine(result, write_result.context("CSV capture incomplete"));
     }
     if let Ok(mut snapshot) = view.lock() {
-        publish_payload(&mut snapshot, last, profile.tx_bytes);
+        publish_payload(&mut snapshot, last, profile.tx_bytes, health.last_valid);
+        snapshot.valid = false;
     }
     result?;
     ensure!(
@@ -435,12 +500,27 @@ fn publish_payload(
     snapshot: &mut Snapshot,
     last: Option<([u8; MAX_PAYLOAD], bool, bool)>,
     len: usize,
+    last_valid_received_at: Option<Instant>,
 ) {
+    snapshot.last_valid_received_at = last_valid_received_at;
     if let Some((data, replied, valid)) = last {
         snapshot.payload = data;
         snapshot.payload_len = if replied { len } else { 0 };
         snapshot.valid = valid;
     }
+}
+
+fn check_input_loss(health: &InputHealth, timeout_ms: u64) -> Result<()> {
+    ensure!(
+        timeout_ms == 0
+            || health.consecutive_invalid == 0
+            || health.ongoing_invalid_us < timeout_ms * 1000,
+        "input loss timeout after {} us and {} consecutive invalid exchanges ({})",
+        health.ongoing_invalid_us,
+        health.consecutive_invalid,
+        health.current_issue.map_or("unknown", InputIssue::label)
+    );
+    Ok(())
 }
 
 fn combine(primary: Result<()>, followup: Result<()>) -> Result<()> {
@@ -492,4 +572,92 @@ pub fn spawn(
     Ok(thread::Builder::new()
         .name("ethercat-cycle".into())
         .spawn(move || run(profile, options, &stop, &view))?)
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    use super::*;
+
+    struct FailingBus<'a> {
+        view: &'a Mutex<Snapshot>,
+        calls: u64,
+        stopped: &'a AtomicBool,
+    }
+
+    impl Bus for FailingBus<'_> {
+        fn exchange(&mut self, _cycle: u64) -> Result<Option<Exchange>> {
+            self.calls += 1;
+            if self.calls == 2 {
+                anyhow::bail!("authored transport failure");
+            }
+            let at = Instant::now();
+            Ok(Some(Exchange {
+                sent: at,
+                received: Some(at),
+                wkc: 1,
+                status: Some((4, 0)),
+                data: [7; MAX_PAYLOAD],
+                ignored_frames: 0,
+            }))
+        }
+
+        fn stop(&mut self) -> Result<Option<(u16, u16)>> {
+            let snapshot = self.view.lock().unwrap();
+            assert!(!snapshot.valid);
+            assert_eq!(snapshot.payload_len, 0);
+            assert!(snapshot.last_valid_received_at.is_some());
+            assert_eq!(
+                snapshot.report.input_health.current_issue,
+                Some(InputIssue::TransportError)
+            );
+            self.stopped.store(true, Relaxed);
+            anyhow::bail!("authored INIT cleanup failure")
+        }
+    }
+
+    #[test]
+    fn invalidates_before_cleanup_and_preserves_both_transport_and_cleanup_errors() {
+        let profile = Profile {
+            tx_bytes: 1,
+            requested_cycle_us: 250,
+            ..Profile::default()
+        };
+        let options = RunOptions {
+            mode: Mode::Simulate { faults: false },
+            duration: Duration::from_secs(1),
+            csv: None,
+            generation: 1,
+        };
+        let view = Mutex::new(Snapshot::default());
+        let stopped = AtomicBool::new(false);
+        let bus = FailingBus {
+            view: &view,
+            calls: 0,
+            stopped: &stopped,
+        };
+        let mut report = Report {
+            expected_wkc: 1,
+            ..Report::default()
+        };
+        let error = cycle(
+            bus,
+            &profile,
+            &options,
+            &AtomicBool::new(false),
+            &view,
+            &mut report,
+        )
+        .unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("authored transport failure"));
+        assert!(text.contains("authored INIT cleanup failure"));
+        assert!(stopped.load(Relaxed));
+        assert_eq!(report.cycles, 2);
+        assert_eq!(report.valid, 1);
+        assert_eq!(report.transport_errors, 1);
+        assert_eq!(report.actual_wkc, None);
+        assert_eq!(report.input_health.last_valid_cycle, Some(1));
+        assert_eq!(report.stopped_al, None);
+        assert!(!view.lock().unwrap().valid);
+    }
 }

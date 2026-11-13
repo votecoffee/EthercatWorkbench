@@ -271,6 +271,78 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
     (destination / "virtual-faults.json").write_text(json.dumps(faults, indent=2), encoding="utf-8")
 
 
+def verify_input_loss(cli, profile, destination, model="coe"):
+    flags = ["--backend", "virtual", "--virtual-model", model]
+    reports = {}
+    for fault, limit, change, ok in [
+        ("io-burst", 1000, False, True),
+        ("io-burst", 1000, True, True),
+        ("io-lost", 100, False, False),
+        ("io-lost", 0, False, True),
+        ("transport-error", 1000, False, False),
+        ("transport-lost", 1000, False, False),
+    ]:
+        name = f"health-{fault}-{limit}-{'change' if change else 'every'}"
+        base = destination / (name + ".csv")
+        report = cli_call(cli, "run", profile, *flags, "--virtual-fault", fault,
+                          "--input-loss-timeout-ms", limit, "--seconds", 1, "--generation", 17,
+                          "--csv", base, *(["--on-change"] if change else []), success=ok)
+        (destination / (name + ".json")).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        health = report["input_health"]
+        audit = report["virtual_esc"]
+        assert report["input_loss_timeout_ms"] == limit
+        assert report["cycles"] == report["valid"] + report["timeouts"] + report["transport_errors"]
+        assert report["connection_generation"] == 17 and health["invalid_periods"] >= 1
+        assert health["last_valid_cycle"] is not None and health["last_valid_elapsed_us"] is not None
+        assert health["last_valid_age_us"] is not None
+        assert audit["state_requests"] == ([1, 2, 4] if fault == "transport-lost" else [1, 2, 4, 1])
+        assert all(audit[key] == 0 for key in ["coe_downloads", "logical_writes", "physical_output_writes",
+                                               "op_requests", "dc_enable_requests", "dc_clock_distribution"])
+        _, entries = rows(base)
+        assert len(entries) == report["capture"]["written"] == report["capture"]["selected"] > 0
+        assert report["capture"]["overruns"] == 0
+        if not change:
+            assert len(entries) == report["valid"]
+        else:
+            assert len(entries) < report["valid"]
+            assert all(a["Counter"] != b["Counter"] for a, b in zip(entries, entries[1:]))
+        cycle_indexes = [int(row["cycle_index"]) for row in entries]
+        times = [int(row["elapsed_us"]) for row in entries]
+        assert all(a < b for a, b in zip(cycle_indexes, cycle_indexes[1:]))
+        assert all(a <= b for a, b in zip(times, times[1:]))
+        for index, row in enumerate(entries, 1):
+            counter = int(row["Counter"])
+            assert int(row["sample_index"]) == index and int(row["connection_generation"]) == 17
+            assert row["Sensor active"] == str(bool(counter & 1)).lower()
+            assert float(row["Scaled counter"]) == counter / 4
+        if fault == "io-burst":
+            assert audit["dropped_replies"] == 40 and report["timeouts"] >= 40
+            assert report["valid"] > 100 and health["recoveries"] >= 1
+            assert health["longest_invalid_streak"] >= 40
+            assert health["longest_invalid_us"] >= 70_000
+            assert any(int(row["Counter"]) >= 12 for row in entries)
+            assert any(b-a >= 40 for a,b in zip(cycle_indexes,cycle_indexes[1:]))
+        elif fault == "io-lost":
+            assert 0 < report["valid"] <= 8 and health["current_issue"] == "timeout"
+            assert health["consecutive_invalid"] > 0 and health["longest_invalid_us"] >= 100_000
+            assert health["last_valid_age_us"] >= 100_000
+            if limit:
+                assert "input loss timeout" in report["error"]
+        else:
+            assert "cyclic Ethernet transport failed" in report["error"]
+            assert "virtual Ethernet transport failed during cyclic input" in report["error"]
+            assert report["transport_errors"] == 1 and audit["transport_errors"] >= 1
+            assert health["current_issue"] == "transport_error" and report["actual_wkc"] is None
+        if fault == "transport-lost":
+            assert report["stopped_al"] is None
+            assert "also failed" in report["error"] and "transport remains unavailable" in report["error"]
+        else:
+            assert report["stopped_al"] == [1, 0]
+            assert report["devices"][0]["al_status"] == 1
+        reports[name] = report
+    (destination / "input-health.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -286,6 +358,15 @@ def main():
     cli = bin_dir / "ethercat-workbench-cli.exe"
     profile = ROOT / "samples/synthetic.json"
     esi = ROOT / "samples/synthetic.esi.xml"
+    legacy = json.loads(profile.read_text(encoding="utf-8"))
+    legacy.pop("input_loss_timeout_ms", None)
+    legacy_path = destination / "legacy-profile.json"
+    legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert cli_call(cli, "validate", legacy_path)["input_loss_timeout_ms"] == 1000
+    legacy["input_loss_timeout_ms"] = 60001
+    bad_limit = destination / "bad-loss-limit.json"
+    bad_limit.write_text(json.dumps(legacy), encoding="utf-8")
+    assert "input loss timeout" in cli_call(cli, "validate", bad_limit, success=False)
 
     listing = cli_call(cli, "esi-list", esi)
     assert [entry["source"]["identity"]["revision"] for entry in listing] == [1, 2]
@@ -390,12 +471,15 @@ def main():
     assert unknown["tx"]["unavailable"] and all(f["state"] == "unavailable" for f in unknown["tx"]["fields"])
 
     verify_virtual(cli, ROOT / "samples/virtual.json", destination, reports)
+    verify_input_loss(cli, ROOT / "samples/virtual.json", destination)
     sii_destination = destination / "sii"
     sii_destination.mkdir()
     verify_virtual(cli, ROOT / "samples/virtual-sii.json", sii_destination, reports, model="sii")
+    verify_input_loss(cli, ROOT / "samples/virtual-sii.json", sii_destination, model="sii")
     dc_destination = destination / "dc"
     dc_destination.mkdir()
     verify_virtual(cli, ROOT / "samples/virtual-dc.json", dc_destination, reports, model="coe-dc")
+    verify_input_loss(cli, ROOT / "samples/virtual-dc.json", dc_destination, model="coe-dc")
 
     if options.gui:
         assert os.name == "nt"

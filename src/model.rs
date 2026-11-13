@@ -228,6 +228,7 @@ pub struct Profile {
     pub expected_identity: Option<Identity>,
     pub esi: Option<EsiSource>,
     pub requested_cycle_us: u64,
+    pub input_loss_timeout_ms: u64,
     pub scheduler: Scheduler,
     pub mode: LogMode,
     pub queue_capacity: usize,
@@ -248,6 +249,7 @@ impl Default for Profile {
             expected_identity: None,
             esi: None,
             requested_cycle_us: 1000,
+            input_loss_timeout_ms: 1000,
             scheduler: Scheduler::Deadline,
             mode: LogMode::Every,
             queue_capacity: 4096,
@@ -275,6 +277,10 @@ impl Profile {
         ensure!(
             (1..=65_536).contains(&self.queue_capacity),
             "queue must hold 1–65536 samples"
+        );
+        ensure!(
+            self.input_loss_timeout_ms <= 60_000,
+            "input loss timeout must be 0 (monitor only) or 1–60000 ms"
         );
         for (len, fields) in [(self.tx_bytes, &self.tx), (self.rx_bytes, &self.rx)] {
             ensure!(

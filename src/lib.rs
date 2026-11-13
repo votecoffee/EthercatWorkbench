@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod esi;
+pub mod health;
 pub mod model;
 pub mod pdo;
 mod replay;

@@ -359,6 +359,8 @@ impl App {
             ui.add(
                 egui::DragValue::new(&mut self.profile.requested_cycle_us).range(250..=1_000_000),
             );
+            ui.label("Input loss timeout ms (0 = monitor only)");
+            ui.add(egui::DragValue::new(&mut self.profile.input_loss_timeout_ms).range(0..=60_000));
             ui.label("Duration s");
             ui.add(egui::DragValue::new(&mut self.seconds).range(1..=86_400));
             ui.selectable_value(&mut self.profile.scheduler, Scheduler::Deadline, "Deadline");
@@ -808,6 +810,21 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
             c.selected, c.written, c.overruns, c.utc_start
         ));
     }
+    let health = &r.input_health;
+    let age = snapshot
+        .last_valid_received_at
+        .map(|at| format!("{} µs", at.elapsed().as_micros()))
+        .unwrap_or_else(|| "none received".into());
+    let quality = health.current_issue.map(|issue| issue.label()).unwrap_or(
+        if health.last_valid_cycle.is_some() {
+            "valid at last receive"
+        } else {
+            "awaiting input"
+        },
+    );
+    ui.label(format!("Input quality · {quality} · last valid age {age} · consecutive invalid {} · recoveries {} · longest invalid {} µs · transport errors {} · loss timeout {} ms",
+        health.consecutive_invalid, health.recoveries, health.longest_invalid_us,
+        r.transport_errors, r.input_loss_timeout_ms));
     if snapshot.payload_len > 0 {
         let data = &snapshot.payload[..snapshot.payload_len];
         let bytes = data
@@ -816,7 +833,7 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
             .collect::<Vec<_>>()
             .join(" ");
         ui.label(if snapshot.valid {
-            "Valid TxPDO"
+            "Last TxPDO (valid at receive)"
         } else {
             "Last payload (invalid or stopped)"
         });

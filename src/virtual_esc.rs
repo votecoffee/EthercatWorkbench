@@ -36,6 +36,10 @@ pub enum VirtualFault {
     CleanupReject,
     SetupTimeout,
     IoTimeout,
+    IoBurst,
+    IoLost,
+    TransportError,
+    TransportLost,
     DcActive,
     DcReadbackUnavailable,
 }
@@ -45,6 +49,7 @@ pub struct VirtualStats {
     pub model: VirtualModel,
     pub datagrams: u64,
     pub dropped_replies: u64,
+    pub transport_errors: u64,
     pub sii_reads: u64,
     pub coe_uploads: u64,
     pub coe_downloads: u64,
@@ -76,6 +81,7 @@ pub(crate) struct VirtualEsc {
     fault: VirtualFault,
     model: VirtualModel,
     clock_started: Instant,
+    transport_lost: bool,
 }
 
 impl VirtualEsc {
@@ -102,6 +108,7 @@ impl VirtualEsc {
             fault,
             model,
             clock_started: Instant::now(),
+            transport_lost: false,
         }
     }
 
@@ -118,6 +125,10 @@ impl VirtualEsc {
     }
 
     pub fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        if self.transport_lost {
+            self.stats.transport_errors += 1;
+            bail!("virtual Ethernet transport remains unavailable");
+        }
         ensure!(
             bytes.len() >= 16 && bytes[12..14] == [0x88, 0xa4],
             "virtual ESC requires Ethernet II EtherCAT"
@@ -186,9 +197,13 @@ impl VirtualEsc {
             {
                 drop_reply = true;
             }
-            if self.fault == VirtualFault::IoTimeout
-                && command == 0x0a
-                && self.stats.logical_reads.is_multiple_of(7)
+            if command == 0x0a
+                && match self.fault {
+                    VirtualFault::IoTimeout => self.stats.logical_reads.is_multiple_of(7),
+                    VirtualFault::IoBurst => (9..=48).contains(&self.stats.logical_reads),
+                    VirtualFault::IoLost => self.stats.logical_reads >= 9,
+                    _ => false,
+                }
             {
                 drop_reply = true;
             }
@@ -418,6 +433,15 @@ impl VirtualEsc {
 
     fn logical_read(&mut self, address: u32, data: &mut [u8]) -> Result<u16> {
         self.stats.logical_reads += 1;
+        if matches!(
+            self.fault,
+            VirtualFault::TransportError | VirtualFault::TransportLost
+        ) && self.stats.logical_reads == 9
+        {
+            self.transport_lost = self.fault == VirtualFault::TransportLost;
+            self.stats.transport_errors += 1;
+            bail!("virtual Ethernet transport failed during cyclic input");
+        }
         if word(&self.registers[0x0130..]) != 4 || !self.process_configuration_valid() {
             return Ok(0);
         }
