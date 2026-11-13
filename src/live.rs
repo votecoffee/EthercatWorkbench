@@ -1,3 +1,4 @@
+mod coe;
 mod pdo_readback;
 
 use crate::wire::{APRD, BRD, Datagram, ETHERCRAB_REPLY, Frame, input_datagrams, input_reply};
@@ -103,6 +104,8 @@ struct Transport {
     io: PacketIo,
     seq: u8,
     ignored_frames: u64,
+    mailbox_watch: Option<(u16, u16)>,
+    mailbox_counter: Option<u8>,
 }
 
 impl Transport {
@@ -128,6 +131,8 @@ impl Transport {
             io: PacketIo::Nic(cap),
             seq: 0,
             ignored_frames: 0,
+            mailbox_watch: None,
+            mailbox_counter: None,
         })
     }
 
@@ -225,7 +230,14 @@ impl Transport {
             while let Some(frame) = tx.next_sendable_frame() {
                 let mut inject_error = None;
                 let sent = frame.send_blocking(|bytes| match self.io.send(bytes) {
-                    Ok(()) => Ok(bytes.len()),
+                    Ok(()) => {
+                        if let Some((station, address)) = self.mailbox_watch
+                            && let Some(counter) = coe::outgoing_counter(bytes, station, address)
+                        {
+                            self.mailbox_counter = Some(counter);
+                        }
+                        Ok(bytes.len())
+                    }
                     Err(error) => {
                         inject_error = Some(error);
                         Err(ethercrab::error::Error::Internal)
@@ -301,6 +313,8 @@ pub fn virtual_safeop(
         io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(model, fault))),
         seq: 0,
         ignored_frames: 0,
+        mailbox_watch: None,
+        mailbox_counter: None,
     };
     let result = safeop_on(profile, stop, view, report, &mut port, run);
     if let PacketIo::Virtual(esc) = &port.io {
@@ -385,6 +399,25 @@ fn safeop_on(
             "bus identity {observed} differs from profile {expected}"
         );
 
+        let protocols = port.drive(
+            &mut tx,
+            &mut rx,
+            Some(stop),
+            sd.eeprom_read::<u16>(&main, 0x001c),
+        )?;
+        let coe = protocols & 0x0004 != 0;
+        let mut uploader = if coe {
+            let client = port.drive(
+                &mut tx,
+                &mut rx,
+                Some(stop),
+                coe::Client::discover(&sd, stop),
+            )?;
+            port.mailbox_watch = Some((sd.configured_address(), client.write_address()));
+            Some(client)
+        } else {
+            None
+        };
         check_cancel(Some(stop))?;
         let group = port
             .drive(&mut tx, &mut rx, Some(stop), group.into_pre_op_pdi(&main))
@@ -409,13 +442,23 @@ fn safeop_on(
             snapshot.phase = "Checking device PDO assignments".into();
             snapshot.report.clone_from(report);
         }
-        let protocols = port.drive(
-            &mut tx,
-            &mut rx,
-            Some(stop),
-            sd.eeprom_read::<u16>(&main, 0x001c),
-        )?;
-        let coe = protocols & 0x0004 != 0;
+        if let Some(client) = &mut uploader {
+            let checked = port.drive(
+                &mut tx,
+                &mut rx,
+                Some(stop),
+                coe::Client::discover(&sd, stop),
+            )?;
+            ensure!(
+                client.same_mailboxes(&checked),
+                "mailbox layout changed during EtherCrab PDI setup"
+            );
+            *client = checked;
+            client.seed(
+                port.mailbox_counter
+                    .context("no EtherCrab mailbox counter observed for readback handoff")?,
+            );
+        }
         let sync_source = match &port.io {
             PacketIo::Nic(_) => "Bus register readback",
             PacketIo::Virtual(_) => "Virtual ESC register readback",
@@ -437,12 +480,20 @@ fn safeop_on(
             if coe {
                 if profile.tx_bytes != 0 {
                     sync.tx_sync_type = Some(RegisterRead::from_result(
-                        sd.sdo_read::<u16>(0x1c33, 1u8).await,
+                        uploader
+                            .as_mut()
+                            .expect("CoE uploader")
+                            .u16(&sd, &main, stop, 0x1c33, 1)
+                            .await,
                     ));
                 }
                 if profile.rx_bytes != 0 {
                     sync.rx_sync_type = Some(RegisterRead::from_result(
-                        sd.sdo_read::<u16>(0x1c32, 1u8).await,
+                        uploader
+                            .as_mut()
+                            .expect("CoE uploader")
+                            .u16(&sd, &main, stop, 0x1c32, 1)
+                            .await,
                     ));
                 }
             }
@@ -456,6 +507,20 @@ fn safeop_on(
             }
             Ok::<_, anyhow::Error>(sync)
         })?;
+        if let Some(client) = &mut uploader {
+            let name = port.drive(
+                &mut tx,
+                &mut rx,
+                Some(stop),
+                client.bytes(&sd, &main, stop, 0x1008, 0, 128),
+            );
+            report.devices[0].coe_name = Some(RegisterRead::from_result(name.and_then(|data| {
+                String::from_utf8(data)
+                    .map(|s| s.trim_end_matches('\0').to_owned())
+                    .context("CoE device name is not UTF-8")
+            })));
+            client.healthy()?;
+        }
         report.device_sync = if coe {
             [
                 (&sync.tx_sync_type, "TxPDO", 0x1c33),
@@ -476,8 +541,13 @@ fn safeop_on(
         report.dc_sync = sync.dc.summary();
         report.synchronization = Some(sync);
         let readback = port.drive(&mut tx, &mut rx, Some(stop), async {
-            Ok::<_, anyhow::Error>(pdo_readback::readback(&sd, &main, coe, stop).await)
+            Ok::<_, anyhow::Error>(
+                pdo_readback::readback(&sd, &main, uploader.as_mut(), stop).await,
+            )
         })?;
+        if let Some(client) = &uploader {
+            client.healthy()?;
+        }
         let source = match (&port.io, coe) {
             (PacketIo::Nic(_), false) => "Bus SII PDO descriptors",
             (PacketIo::Virtual(_), false) => "Virtual ESC SII PDO descriptors",
@@ -729,6 +799,174 @@ mod cancellation_tests {
     };
 
     #[test]
+    fn bounded_upload_reads_valid_segments_that_the_pinned_stock_reader_rejects() {
+        use crate::virtual_esc::{VirtualFault, VirtualModel};
+        let storage = PduStorage::<8, { PduStorage::element_size(1400) }>::new();
+        let (mut tx, mut rx, pdu) = storage.try_split().unwrap();
+        let main = MainDevice::new(
+            pdu,
+            Timeouts {
+                wait_loop_delay: Duration::ZERO,
+                ..Timeouts::default()
+            },
+            MainDeviceConfig::default(),
+        );
+        let mut port = Transport {
+            io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(
+                VirtualModel::CoeSegmented,
+                VirtualFault::None,
+            ))),
+            seq: 0,
+            ignored_frames: 0,
+            mailbox_watch: None,
+            mailbox_counter: None,
+        };
+        let stop = AtomicBool::new(false);
+        let group = port
+            .drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                main.init_single_group::<2, 2048>(ethercat_now),
+            )
+            .unwrap();
+        let sd = group.subdevice(&main, 0).unwrap();
+        let mut client = port
+            .drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                coe::Client::discover(&sd, &stop),
+            )
+            .unwrap();
+        port.mailbox_watch = Some((sd.configured_address(), client.write_address()));
+        let group = port
+            .drive(&mut tx, &mut rx, Some(&stop), group.into_pre_op_pdi(&main))
+            .unwrap();
+        let sd = group.subdevice(&main, 0).unwrap();
+        // The pinned decoder lacks the legal zero command for a segment response.
+        let stock = port
+            .drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                sd.sdo_read::<u32>(0x2000, 0u8),
+            )
+            .unwrap_err();
+        assert!(stock.to_string().contains("Invalid decoded value"));
+        client.seed(port.mailbox_counter.unwrap());
+        let value = port
+            .drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                client.u32(&sd, &main, &stop, 0x2000, 0),
+            )
+            .unwrap();
+        assert_eq!(value, 0x4433_2211);
+        let name = port
+            .drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                client.bytes(&sd, &main, &stop, 0x1008, 0, 128),
+            )
+            .unwrap();
+        assert_eq!(name, b"Workbench CoE transfer fixture");
+        let too_long = port
+            .drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                client.bytes(&sd, &main, &stop, 0x1008, 0, 4),
+            )
+            .unwrap_err();
+        assert!(too_long.to_string().contains("bound"));
+        assert!(client.healthy().is_err());
+        assert_eq!(
+            request_init(&mut port, &mut tx, &mut rx, &main).unwrap(),
+            (1, 0)
+        );
+        if let PacketIo::Virtual(esc) = port.io {
+            assert_eq!(esc.stats().coe_downloads, 0);
+        }
+    }
+
+    #[test]
+    fn cancellation_during_a_segment_wait_releases_pdu_and_confirms_init() {
+        use crate::virtual_esc::{VirtualFault, VirtualModel};
+        let storage = PduStorage::<8, { PduStorage::element_size(1400) }>::new();
+        let (mut tx, mut rx, pdu) = storage.try_split().unwrap();
+        let main = MainDevice::new(
+            pdu,
+            Timeouts {
+                wait_loop_delay: Duration::ZERO,
+                ..Timeouts::default()
+            },
+            MainDeviceConfig::default(),
+        );
+        let mut port = Transport {
+            io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(
+                VirtualModel::CoeSegmented,
+                VirtualFault::SegmentTimeout,
+            ))),
+            seq: 0,
+            ignored_frames: 0,
+            mailbox_watch: None,
+            mailbox_counter: None,
+        };
+        let stop = AtomicBool::new(false);
+        let group = port
+            .drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                main.init_single_group::<2, 2048>(ethercat_now),
+            )
+            .unwrap();
+        let sd = group.subdevice(&main, 0).unwrap();
+        let mut client = port
+            .drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                coe::Client::discover(&sd, &stop),
+            )
+            .unwrap();
+        port.mailbox_watch = Some((sd.configured_address(), client.write_address()));
+        let group = port
+            .drive(&mut tx, &mut rx, Some(&stop), group.into_pre_op_pdi(&main))
+            .unwrap();
+        let sd = group.subdevice(&main, 0).unwrap();
+        client.seed(port.mailbox_counter.unwrap());
+        {
+            let mut upload = std::pin::pin!(client.bytes(&sd, &main, &stop, 0x1008, 0, 128));
+            let mut polls = 0;
+            let pending = std::future::poll_fn(|cx| {
+                polls += 1;
+                let result = upload.as_mut().poll(cx);
+                if polls >= 64 && result.is_pending() {
+                    stop.store(true, Relaxed);
+                }
+                result
+            });
+            assert!(
+                port.drive(&mut tx, &mut rx, Some(&stop), pending)
+                    .unwrap_err()
+                    .is::<SetupCancelled>()
+            );
+        }
+        assert_eq!(
+            request_init(&mut port, &mut tx, &mut rx, &main).unwrap(),
+            (1, 0)
+        );
+        if let PacketIo::Virtual(esc) = port.io {
+            assert!(esc.stats().coe_segments > 0);
+            assert_eq!(esc.stats().coe_downloads, 0);
+        }
+    }
+
+    #[test]
     fn cancellation_releases_pending_pdus_and_cleanup_ignores_the_stop_flag() {
         for await_response in [false, true] {
             let storage = PduStorage::<8, { PduStorage::element_size(1400) }>::new();
@@ -748,6 +986,8 @@ mod cancellation_tests {
                 ))),
                 seq: 0,
                 ignored_frames: 0,
+                mailbox_watch: None,
+                mailbox_counter: None,
             };
             let stop = AtomicBool::new(false);
             // Reclaim queued, sent and received futures repeatedly, beyond the eight storage slots.

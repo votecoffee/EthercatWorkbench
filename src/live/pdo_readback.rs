@@ -23,7 +23,7 @@ struct Channel {
 pub async fn readback<S: Deref<Target = SubDevice>>(
     sd: &SubDeviceRef<'_, S>,
     main: &MainDevice<'_>,
-    coe: bool,
+    mut coe: Option<&mut super::coe::Client>,
     stop: &AtomicBool,
 ) -> Readback {
     let started = Instant::now();
@@ -39,7 +39,7 @@ pub async fn readback<S: Deref<Target = SubDevice>>(
             };
         }
     };
-    if !coe {
+    if coe.is_none() {
         return match sii_categories(sd, main, stop, started)
             .await
             .and_then(|bytes| SiiPdos::parse(&bytes))
@@ -62,8 +62,26 @@ pub async fn readback<S: Deref<Target = SubDevice>>(
             Err(error) => unavailable(format!("SII PDO readback: {error:#}")),
         };
     }
-    let tx = layout(sd, &channels, true, stop, started).await;
-    let rx = layout(sd, &channels, false, stop, started).await;
+    let tx = layout(
+        sd,
+        main,
+        coe.as_deref_mut().expect("CoE client"),
+        &channels,
+        true,
+        stop,
+        started,
+    )
+    .await;
+    let rx = layout(
+        sd,
+        main,
+        coe.as_mut().expect("CoE client"),
+        &channels,
+        false,
+        stop,
+        started,
+    )
+    .await;
     Readback {
         tx_unavailable: tx.as_ref().err().map(|error| format!("{error:#}")),
         rx_unavailable: rx.as_ref().err().map(|error| format!("{error:#}")),
@@ -114,6 +132,8 @@ async fn channels<S: Deref<Target = SubDevice>>(
 
 async fn layout<S: Deref<Target = SubDevice>>(
     sd: &SubDeviceRef<'_, S>,
+    main: &MainDevice<'_>,
+    coe: &mut super::coe::Client,
     channels: &[Channel],
     tx: bool,
     stop: &AtomicBool,
@@ -124,16 +144,16 @@ async fn layout<S: Deref<Target = SubDevice>>(
     for channel in channels.iter().filter(|channel| channel.tx == tx) {
         let assignment = 0x1c10 + u16::from(channel.index);
         check(stop, start)?;
-        let count: u8 = sd
-            .sdo_read(assignment, 0u8)
+        let count: u8 = coe
+            .u8(sd, main, stop, assignment, 0)
             .await
             .with_context(|| format!("read CoE {assignment:#06x}:00"))?;
         let mut pdos = Vec::new();
         for sub in 1..=count {
             check(stop, start)?;
-            let index: u16 = sd.sdo_read(assignment, sub).await?;
+            let index: u16 = coe.u16(sd, main, stop, assignment, sub).await?;
             check(stop, start)?;
-            let count: u8 = sd.sdo_read(index, 0u8).await?;
+            let count: u8 = coe.u8(sd, main, stop, index, 0).await?;
             total_entries += usize::from(count);
             ensure!(
                 total_entries <= MAX_ENTRIES,
@@ -142,7 +162,7 @@ async fn layout<S: Deref<Target = SubDevice>>(
             let mut entries = Vec::with_capacity(usize::from(count));
             for sub in 1..=count {
                 check(stop, start)?;
-                let entry: u32 = sd.sdo_read(index, sub).await?;
+                let entry: u32 = coe.u32(sd, main, stop, index, sub).await?;
                 entries.push(entry);
             }
             pdos.push(Pdo { index, entries });

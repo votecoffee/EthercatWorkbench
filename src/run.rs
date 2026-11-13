@@ -24,6 +24,7 @@ pub struct DeviceInfo {
     pub link_ports: [bool; 4],
     pub identity: Option<Identity>,
     pub name: Option<String>,
+    pub coe_name: Option<crate::sync::RegisterRead<String>>,
     pub serial: Option<u32>,
     pub tx_bytes: Option<usize>,
     pub rx_bytes: Option<usize>,

@@ -544,6 +544,16 @@ impl App {
                     ethercat_workbench::virtual_esc::VirtualModel::CoeDc,
                     "CoE / DC virtual device",
                 );
+                ui.selectable_value(
+                    &mut self.virtual_model,
+                    ethercat_workbench::virtual_esc::VirtualModel::CoeNormal,
+                    "CoE normal readback",
+                );
+                ui.selectable_value(
+                    &mut self.virtual_model,
+                    ethercat_workbench::virtual_esc::VirtualModel::CoeSegmented,
+                    "CoE segmented readback",
+                );
             });
         if ui.button("Start virtual EtherCAT controller").clicked() {
             self.start(Mode::Virtual {
@@ -919,6 +929,14 @@ fn device_info(ui: &mut egui::Ui, device: &DeviceInfo) {
             device.tx_bytes,
             device.rx_bytes,
             device.dc_support
+        ));
+    }
+    if let Some(name) = &device.coe_name {
+        ui.label(format!(
+            "CoE 0x1008 name · {}",
+            name.value
+                .as_deref()
+                .unwrap_or_else(|| name.unavailable.as_deref().unwrap_or("unavailable"))
         ));
     }
 }

@@ -17,6 +17,8 @@ pub enum VirtualModel {
     Coe,
     Sii,
     CoeDc,
+    CoeNormal,
+    CoeSegmented,
 }
 
 impl VirtualModel {
@@ -42,6 +44,12 @@ pub enum VirtualFault {
     TransportLost,
     DcActive,
     DcReadbackUnavailable,
+    SegmentToggle,
+    SegmentSize,
+    SegmentTimeout,
+    SegmentAbort,
+    MailboxCounter,
+    SegmentInitialData,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -53,6 +61,11 @@ pub struct VirtualStats {
     pub sii_reads: u64,
     pub coe_uploads: u64,
     pub coe_downloads: u64,
+    pub coe_normal_uploads: u64,
+    pub coe_segmented_uploads: u64,
+    pub coe_segments: u64,
+    pub coe_duplicate_requests: u64,
+    pub mailbox_counter_errors: u64,
     pub dc_latches: u64,
     pub dc_offset_writes: u64,
     pub dc_delay_writes: u64,
@@ -71,6 +84,14 @@ pub struct VirtualStats {
     pub final_al_code: u16,
 }
 
+struct Upload {
+    index: u16,
+    sub: u8,
+    data: Vec<u8>,
+    offset: usize,
+    toggle: bool,
+}
+
 pub(crate) struct VirtualEsc {
     registers: Box<[u8; 65_536]>,
     eeprom: Vec<u8>,
@@ -82,6 +103,9 @@ pub(crate) struct VirtualEsc {
     model: VirtualModel,
     clock_started: Instant,
     transport_lost: bool,
+    upload: Option<Upload>,
+    last_request: Option<Vec<u8>>,
+    last_response: Option<[u8; MAILBOX_BYTES]>,
 }
 
 impl VirtualEsc {
@@ -109,6 +133,9 @@ impl VirtualEsc {
             model,
             clock_started: Instant::now(),
             transport_lost: false,
+            upload: None,
+            last_request: None,
+            last_response: None,
         }
     }
 
@@ -328,6 +355,9 @@ impl VirtualEsc {
                 self.registers[0x0134..0x0136].fill(0);
                 if requested == 1 {
                     self.mailbox = None;
+                    self.upload = None;
+                    self.last_request = None;
+                    self.last_response = None;
                     self.registers[0x080d] = 0;
                 }
             }
@@ -346,7 +376,10 @@ impl VirtualEsc {
     fn process_configuration_valid(&self) -> bool {
         // Independently verify the SM/FMMU layout required by this authored fixture.
         let sms = match self.model {
-            VirtualModel::Coe | VirtualModel::CoeDc => [(2, OUTPUTS, 2, 4), (3, INPUTS, 8, 0)],
+            VirtualModel::Coe
+            | VirtualModel::CoeDc
+            | VirtualModel::CoeNormal
+            | VirtualModel::CoeSegmented => [(2, OUTPUTS, 2, 4), (3, INPUTS, 8, 0)],
             VirtualModel::Sii => [(0, OUTPUTS, 2, 4), (1, INPUTS, 8, 0)],
         };
         let sms_ok = sms.into_iter().all(|(index, physical, len, direction)| {
@@ -357,9 +390,10 @@ impl VirtualEsc {
                 && sm[6] & 1 == 1
         });
         let fmmus = match self.model {
-            VirtualModel::Coe | VirtualModel::CoeDc => {
-                [(0, 0u32, INPUTS, 8, 1), (1, 8, OUTPUTS, 2, 2)]
-            }
+            VirtualModel::Coe
+            | VirtualModel::CoeDc
+            | VirtualModel::CoeNormal
+            | VirtualModel::CoeSegmented => [(0, 0u32, INPUTS, 8, 1), (1, 8, OUTPUTS, 2, 2)],
             VirtualModel::Sii => [(1, 0u32, INPUTS, 8, 1), (0, 8, OUTPUTS, 2, 2)],
         };
         sms_ok
@@ -380,39 +414,148 @@ impl VirtualEsc {
 
     fn coe_request(&mut self, request: &[u8]) -> Result<()> {
         ensure!(
-            request.len() >= 16 && request[5] & 0x0f == 3,
-            "virtual fixture expects a CoE mailbox request"
+            request.len() >= 16 && request[5] & 15 == 3 && request[7] >> 4 == 2,
+            "virtual fixture expects a CoE upload request"
         );
+        let counter = (request[5] >> 4) & 7;
+        ensure!(
+            counter != 0,
+            "virtual fixture requires mailbox counters 1–7"
+        );
+        if let Some(last) = &self.last_request
+            && (last[5] >> 4) & 7 == counter
+        {
+            if last == request {
+                self.stats.coe_duplicate_requests += 1;
+                self.mailbox = self.last_response;
+                if self.mailbox.is_some() {
+                    self.registers[0x080d] |= 8;
+                }
+                return Ok(());
+            }
+            self.stats.mailbox_counter_errors += 1;
+            bail!("virtual fixture detected a repeated mailbox counter with different data");
+        }
         let mut response = [0u8; MAILBOX_BYTES];
         response[0] = 10;
-        response[5] = request[5]; // Echo mailbox counter and CoE type.
-        response[7] = 0x30; // SDO response.
-        response[9..12].copy_from_slice(&request[9..12]);
-        let index = word(&request[9..]);
-        let sub = request[11];
-        let value = if request[8] & 0xe0 == 0x40 {
+        response[5] = request[5];
+        response[7] = 0x30;
+        let command = request[8] & 0xe0;
+        let abort = |r: &mut [u8; MAILBOX_BYTES], index: u16, sub: u8, code: u32| {
+            r[0] = 10;
+            r[8] = 0x80;
+            r[9..11].copy_from_slice(&index.to_le_bytes());
+            r[11] = sub;
+            r[12..16].copy_from_slice(&code.to_le_bytes());
+        };
+        if command == 0x40 {
             self.stats.coe_uploads += 1;
-            if self.fault == VirtualFault::MailboxAbort
+            let index = word(&request[9..]);
+            let sub = request[11];
+            response[9..12].copy_from_slice(&request[9..12]);
+            self.upload = None;
+            let data = if self.fault == VirtualFault::MailboxAbort
                 || (self.fault == VirtualFault::ReadbackUnavailable
                     && self.process_configuration_valid())
             {
                 None
+            } else if index == 0x1008 && sub == 0 {
+                Some(b"Workbench CoE transfer fixture".to_vec())
+            } else if index == 0x2000 && sub == 0 {
+                Some(vec![0x11, 0x22, 0x33, 0x44])
             } else {
                 self.object(index, sub)
+                    .map(|(v, n)| v.to_le_bytes()[..usize::from(n)].to_vec())
+            };
+            if let Some(data) = data {
+                let segmented =
+                    self.model == VirtualModel::CoeSegmented && self.process_configuration_valid();
+                let normal = (self.model == VirtualModel::CoeNormal
+                    && self.process_configuration_valid())
+                    || data.len() > 4;
+                if segmented {
+                    self.stats.coe_segmented_uploads += 1;
+                    let initial = if self.fault == VirtualFault::SegmentInitialData {
+                        data.len().saturating_sub(1).min(3)
+                    } else {
+                        0
+                    };
+                    response[0] = 10 + initial as u8;
+                    response[8] = 0x41;
+                    let total = if self.fault == VirtualFault::SegmentSize && index == 0x1008 {
+                        u32::MAX
+                    } else {
+                        data.len() as u32
+                    };
+                    response[12..16].copy_from_slice(&total.to_le_bytes());
+                    response[16..16 + initial].copy_from_slice(&data[..initial]);
+                    self.upload = Some(Upload {
+                        index,
+                        sub,
+                        data,
+                        offset: initial,
+                        toggle: false,
+                    });
+                } else if normal {
+                    self.stats.coe_normal_uploads += 1;
+                    ensure!(
+                        data.len() <= MAILBOX_BYTES - 16,
+                        "virtual normal payload too large"
+                    );
+                    response[0] = 10 + data.len() as u8;
+                    response[8] = 0x41;
+                    response[12..16].copy_from_slice(&(data.len() as u32).to_le_bytes());
+                    response[16..16 + data.len()].copy_from_slice(&data);
+                } else {
+                    response[8] = 0x43 | (((4 - data.len()) as u8) << 2);
+                    response[12..12 + data.len()].copy_from_slice(&data);
+                }
+                if self.fault == VirtualFault::MailboxCounter && index == 0x1008 {
+                    response[5] ^= 0x10;
+                }
+            } else {
+                abort(&mut response, index, sub, 0x0602_0000);
+            }
+        } else if command == 0x60 {
+            self.stats.coe_segments += 1;
+            if let Some(mut upload) = self.upload.take() {
+                if (request[8] & 0x10 != 0) != upload.toggle {
+                    abort(&mut response, upload.index, upload.sub, 0x0503_0000);
+                } else if self.fault == VirtualFault::SegmentAbort && upload.index == 0x1008 {
+                    abort(&mut response, upload.index, upload.sub, 0x0800_0020);
+                } else if self.fault == VirtualFault::SegmentTimeout && upload.index == 0x1008 {
+                    self.last_request = Some(request.to_vec());
+                    self.last_response = None;
+                    return Ok(());
+                } else {
+                    let n = (upload.data.len() - upload.offset).min(7);
+                    let last = upload.offset + n == upload.data.len();
+                    let toggle = upload.toggle
+                        ^ (self.fault == VirtualFault::SegmentToggle
+                            && upload.index == 0x1008
+                            && upload.offset >= 7);
+                    response[8] = (u8::from(toggle) << 4)
+                        | (u8::from(last))
+                        | if last { ((7 - n) as u8) << 1 } else { 0 };
+                    response[9..9 + n]
+                        .copy_from_slice(&upload.data[upload.offset..upload.offset + n]);
+                    upload.offset += n;
+                    upload.toggle = !upload.toggle;
+                    if !last {
+                        self.upload = Some(upload);
+                    }
+                }
+            } else {
+                abort(&mut response, 0, 0, 0x0504_0001);
             }
         } else {
             self.stats.coe_downloads += 1;
-            None
-        };
-        if let Some((value, size)) = value {
-            response[8] = 0x43 | ((4 - size) << 2);
-            response[12..16].copy_from_slice(&value.to_le_bytes());
-        } else {
-            response[8] = 0x80;
-            response[12..16].copy_from_slice(&0x0602_0000u32.to_le_bytes());
+            abort(&mut response, word(&request[9..]), request[11], 0x0601_0002);
         }
+        self.last_request = Some(request.to_vec());
+        self.last_response = Some(response);
         self.mailbox = Some(response);
-        self.registers[0x080d] |= 0x08;
+        self.registers[0x080d] |= 8;
         Ok(())
     }
 
@@ -495,6 +638,8 @@ fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
                 VirtualModel::Coe => 1,
                 VirtualModel::Sii => 2,
                 VirtualModel::CoeDc => 3,
+                VirtualModel::CoeNormal => 4,
+                VirtualModel::CoeSegmented => 5,
             },
         ),
         (0x18, 1),
@@ -517,7 +662,10 @@ fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
     let mut categories = Vec::new();
     categories.extend_from_slice(&[40, 0, 1, 0, 2, 1]);
     let channels = match model {
-        VirtualModel::Coe | VirtualModel::CoeDc => vec![
+        VirtualModel::Coe
+        | VirtualModel::CoeDc
+        | VirtualModel::CoeNormal
+        | VirtualModel::CoeSegmented => vec![
             (MAILBOX_IN as u16, MAILBOX_BYTES as u16, 0x26, 1),
             (MAILBOX_OUT as u16, MAILBOX_BYTES as u16, 0x22, 2),
             (OUTPUTS as u16, 2, 0x04, 3),
@@ -603,6 +751,7 @@ mod tests {
         let mut esc = VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
         let mut request = [0u8; MAILBOX_BYTES];
         request[5] = 0x13;
+        request[7] = 0x20;
         request[8] = 0x23; // SDO expedited download, four bytes.
         request[9..11].copy_from_slice(&0x1a00u16.to_le_bytes());
         request[11] = 1;

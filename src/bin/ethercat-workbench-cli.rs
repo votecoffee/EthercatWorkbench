@@ -345,6 +345,19 @@ fn main() -> Result<()> {
                     ),
                 "selected virtual fault requires the coe-dc model"
             );
+            ensure!(
+                virtual_model == ethercat_workbench::virtual_esc::VirtualModel::CoeSegmented
+                    || !matches!(
+                        virtual_fault,
+                        ethercat_workbench::virtual_esc::VirtualFault::SegmentToggle
+                            | ethercat_workbench::virtual_esc::VirtualFault::SegmentSize
+                            | ethercat_workbench::virtual_esc::VirtualFault::SegmentTimeout
+                            | ethercat_workbench::virtual_esc::VirtualFault::SegmentAbort
+                            | ethercat_workbench::virtual_esc::VirtualFault::MailboxCounter
+                            | ethercat_workbench::virtual_esc::VirtualFault::SegmentInitialData
+                    ),
+                "selected virtual fault requires the coe-segmented model"
+            );
             let mode = match backend {
                 Backend::Simulate => Mode::Simulate {
                     faults: simulate_faults,

@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "name": "Authored CoE segmented readback fixture",
+  "requested_cycle_us": 1000,
+  "input_loss_timeout_ms": 1000,
+  "scheduler": "deadline",
+  "mode": "every",
+  "queue_capacity": 4096,
+  "rotate_rows": 500,
+  "tx_bytes": 8,
+  "rx_bytes": 2,
+  "tx": [
+    {
+      "name": "Counter",
+      "bit": 0,
+      "width": 16,
+      "pdo_index": 6656,
+      "object_index": 24576,
+      "subindex": 1
+    },
+    {
+      "name": "Sensor active",
+      "bit": 16,
+      "width": 1,
+      "kind": "bool",
+      "pdo_index": 6656,
+      "object_index": 24576,
+      "subindex": 2
+    },
+    {
+      "name": "Scaled counter",
+      "bit": 32,
+      "width": 32,
+      "kind": "f32",
+      "pdo_index": 6656,
+      "object_index": 24576,
+      "subindex": 3
+    }
+  ],
+  "rx": [
+    {
+      "name": "Staged setpoint",
+      "bit": 0,
+      "width": 16,
+      "kind": "signed",
+      "log": false,
+      "pdo_index": 5632,
+      "object_index": 28672,
+      "subindex": 1
+    }
+  ],
+  "staged_rx_hex": "FE FF",
+  "expected_identity": {
+    "vendor": 16715776,
+    "product": 5,
+    "revision": 1
+  }
+}

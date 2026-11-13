@@ -31,7 +31,7 @@ def rows(path):
     return parts, result
 
 
-def verify_csv(report, base, generation=1, change=False, faults=False):
+def verify_csv(report, base, generation=1, change=False, faults=False, virtual=False):
     assert report["error"] is None, report
     assert report["valid"] > 0 and report["expected_wkc"] == 1
     assert report["send_spacing"]["count"] == report["cycles"] - 1
@@ -47,12 +47,23 @@ def verify_csv(report, base, generation=1, change=False, faults=False):
     cycles = [int(r["cycle_index"]) for r in entries]
     assert all(a < b for a, b in zip(cycles, cycles[1:]))
     assert datetime.datetime.fromisoformat(cap["utc_start"]).utcoffset() == datetime.timedelta()
+    previous_counter = -1
     for index, (row, cycle) in enumerate(zip(entries, cycles), 1):
         assert int(row["connection_generation"]) == generation
         assert int(row["sample_index"]) == index
         assert row["capture_start_utc"] == cap["utc_start"]
-        counter = ((cycle - 1) // 4) % 65536
-        assert int(row["Counter"]) == counter
+        counter = int(row["Counter"])
+        if virtual:
+            # The authored ESC advances per LRD, while cycle_index includes skipped deadline slots.
+            if change:
+                assert previous_counter < counter <= (report["cycles"] - 1) // 4
+                if report["timeouts"] == 0:
+                    assert counter == index - 1
+            else:
+                assert (index - 1) // 4 <= counter <= (index - 1 + report["timeouts"]) // 4
+            previous_counter = counter
+        else:
+            assert counter == ((cycle - 1) // 4) % 65536
         assert row["Sensor active"] == str(bool(counter & 1)).lower()
         assert float(row["Scaled counter"]) == counter / 4
         if faults:
@@ -270,6 +281,66 @@ def verify_virtual(cli, profile, destination, reports, model="coe"):
         assert audit["error_acknowledgements"] == 2
         assert audit["dc_enable_requests"] == audit["dc_clock_distribution"] == 0
     (destination / "virtual-faults.json").write_text(json.dumps(faults, indent=2), encoding="utf-8")
+
+
+def verify_coe_uploads(cli, destination, reports):
+    def audit(report, cyclic):
+        esc = report["virtual_esc"]
+        assert report["stopped_al"] == [1, 0], report
+        assert esc["state_requests"] == ([1, 2, 4, 1] if cyclic else [1, 2, 1])
+        assert all(esc[key] == 0 for key in ["coe_downloads", "logical_writes",
+            "physical_output_writes", "op_requests", "mailbox_counter_errors",
+            "coe_duplicate_requests", "dc_enable_requests", "dc_clock_distribution"]), esc
+
+    def matched(report):
+        assert all(f["state"] == "matched" for d in ("tx", "rx")
+                   for f in report["pdo_verification"][d]["fields"]), report
+        sync = report["synchronization"]
+        assert sync["tx_sync_type"]["value"] == sync["rx_sync_type"]["value"] == 0
+
+    for model in ("normal", "segmented"):
+        profile = ROOT / f"samples/virtual-{model}.json"
+        for change in (False, True):
+            label = f"coe-{model}-{'change' if change else 'every'}"
+            base = destination / (label + ".csv")
+            report = cli_call(cli, "run", profile, "--backend", "virtual",
+                "--virtual-model", f"coe-{model}", "--seconds", 1, "--csv", base,
+                *(["--on-change"] if change else []))
+            verify_csv(report, base, change=change, virtual=True)
+            audit(report, True)
+            matched(report)
+            assert report["devices"][0]["coe_name"] == {
+                "value": "Workbench CoE transfer fixture", "unavailable": None}
+            esc = report["virtual_esc"]
+            assert esc[f"coe_{model}_uploads"] >= 14
+            assert esc["coe_segments"] >= 18 if model == "segmented" else esc["coe_segments"] == 0
+            reports[label] = report
+
+    profile = ROOT / "samples/virtual-segmented.json"
+    faults = {}
+    for fault, text in [("segment-toggle", "toggle"), ("segment-size", "object bound"),
+                        ("segment-timeout", "500 ms"), ("mailbox-counter", "counter"),
+                        ("segment-abort", None), ("segment-initial-data", None)]:
+        base = destination / (fault + ".csv")
+        start = time.monotonic()
+        report = cli_call(cli, "run", profile, "--backend", "virtual", "--virtual-model", "coe-segmented",
+            "--virtual-fault", fault, "--seconds", 1, "--csv", base, success=text is None)
+        assert time.monotonic() - start < 5, "bounded CoE failure or run took too long"
+        audit(report, text is None)
+        if text:
+            assert "CoE readback integrity failed" in report["error"] and text in report["error"], report
+            assert report["cycles"] == report["valid"] == 0 and report["capture"] is None
+            assert report["setup_failure_al"] == [2, 0] and not list(destination.glob(f"{fault}*.csv"))
+        else:
+            verify_csv(report, base, virtual=True)
+            matched(report)
+            name = report["devices"][0]["coe_name"]
+            if fault == "segment-abort":
+                assert name["value"] is None and "0x08000020" in name["unavailable"]
+            else:
+                assert name["value"] == "Workbench CoE transfer fixture"
+        faults[fault] = report
+    (destination / "coe-faults.json").write_text(json.dumps(faults, indent=2), encoding="utf-8")
 
 
 def verify_input_loss(cli, profile, destination, model="coe"):
@@ -638,6 +709,10 @@ def main():
     dc_destination.mkdir()
     verify_virtual(cli, ROOT / "samples/virtual-dc.json", dc_destination, reports, model="coe-dc")
     verify_input_loss(cli, ROOT / "samples/virtual-dc.json", dc_destination, model="coe-dc")
+
+    coe_destination = destination / "coe-uploads"
+    coe_destination.mkdir()
+    verify_coe_uploads(cli, coe_destination, reports)
 
     sync_destination = destination / "sync-modes"
     sync_destination.mkdir()
