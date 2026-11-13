@@ -4,7 +4,7 @@ This repository is a Windows x64 Rust EtherCAT MainDevice workbench. Start with 
 
 - [Operations](docs/operations.md): ESI import, manual profiles, NIC/discovery, headless workflows, typed mappings/staging, timing/loss interpretation and hardware authorization.
 - [Development](docs/development.md): ownership, acquisition/GUI/writer boundaries, source review, tests, packaging and documentation maintenance.
-- [Interfaces roadmap](docs/interfaces-roadmap.md): implemented read-only [HTTP input](docs/http-input-feed.md) and [MQTT publishing](docs/mqtt-input-feed.md), and [Windows shared-memory input](docs/shared-input-feed.md), with a [native reader/saved inspector](docs/shared-input-review.md) and optional C ABI/C# embedding planned.
+- [Interfaces roadmap](docs/interfaces-roadmap.md): implemented read-only [HTTP input](docs/http-input-feed.md) and [MQTT publishing](docs/mqtt-input-feed.md), and [Windows shared-memory input](docs/shared-input-feed.md), with a [native reader/saved inspector](docs/shared-input-review.md), [desktop saved-snapshot review](docs/desktop-review.md#inspect-a-saved-shared-input-snapshot) and optional C ABI/C# embedding planned.
 - [Roadmap](ROADMAP.md) and [verification record](VERIFICATION.md): remaining work and the evidence actually collected.
 - [Codex skill](skills/ethercat-workbench/SKILL.md): app-specific operating instructions. `tools/install-skill.ps1` installs a discoverable local copy with an application-root binding.
 

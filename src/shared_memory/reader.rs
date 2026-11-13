@@ -205,7 +205,7 @@ pub fn load_decoding_profile(
     check_profile(&profile)?;
     Ok(Some(profile))
 }
-fn check_profile(profile: &Profile) -> Result<()> {
+pub(crate) fn check_profile(profile: &Profile) -> Result<()> {
     profile.validate()?;
     ensure!(
         profile.tx.iter().map(|f| f.name.len()).sum::<usize>() <= 16384,
@@ -226,6 +226,18 @@ pub fn inspect_file(path: &Path, profile: Option<&Profile>) -> Result<Capture> {
         None,
         profile,
     )
+}
+
+/// Saved-file work has cancellation boundaries around bounded I/O and decoding.
+pub(crate) fn inspect_file_cancelable(
+    path: &Path,
+    profile: Option<&Profile>,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<Capture> {
+    crate::review::check_cancel(Some(stop))?;
+    let capture = inspect_file(path, profile)?;
+    crate::review::check_cancel(Some(stop))?;
+    Ok(capture)
 }
 /// One zero-wait read. Opens existing objects only, closes all handles before returning.
 pub fn read_once(name: &str, profile: Option<&Profile>) -> Result<Capture> {

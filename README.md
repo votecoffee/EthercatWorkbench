@@ -103,7 +103,7 @@ The desktop's **4 Saved run review** panel runs those audits and comparisons on 
 
 See the [EtherCrab source review](docs/ethercrab-review.md), [verification results](VERIFICATION.md), and [roadmap](ROADMAP.md).
 
-An opt-in [read-only loopback HTTP input feed](docs/http-input-feed.md) now exposes status, latest input, bounded cursor history and setup metadata. Start `run samples/http-input.json --seconds 20` and read `http://127.0.0.1:8766/v1/latest`. It has separate queue/history/client loss counters, explicit freshness and no output/configuration routes. The opt-in [MQTT input publisher](docs/mqtt-input-feed.md) sends latest input/status to a trusted local broker with independent coalescing/error counters. The opt-in [Windows shared-memory input](docs/shared-input-feed.md) provides a fixed C-readable raw/quality snapshot with zero-wait publication, process/age checks and independent contention counters. The portable CLI now [reads and inspects these snapshots](docs/shared-input-review.md) with exact-profile typed decoding and explicit historical/stale state. Optional C-compatible FFI/C# embedding remains [planned](docs/interfaces-roadmap.md).
+An opt-in [read-only loopback HTTP input feed](docs/http-input-feed.md) now exposes status, latest input, bounded cursor history and setup metadata. Start `run samples/http-input.json --seconds 20` and read `http://127.0.0.1:8766/v1/latest`. It has separate queue/history/client loss counters, explicit freshness and no output/configuration routes. The opt-in [MQTT input publisher](docs/mqtt-input-feed.md) sends latest input/status to a trusted local broker with independent coalescing/error counters. The opt-in [Windows shared-memory input](docs/shared-input-feed.md) provides a fixed C-readable raw/quality snapshot with zero-wait publication, process/age checks and independent contention counters. The portable CLI [reads and inspects these snapshots](docs/shared-input-review.md) with exact-profile typed decoding and explicit historical/stale state. The desktop now [reviews saved snapshot files](docs/desktop-review.md#inspect-a-saved-shared-input-snapshot) using the same decoder, three mapping choices and a cancellable file worker. Optional C-compatible FFI/C# embedding remains [planned](docs/interfaces-roadmap.md).
 
 ## Maintainers
 
@@ -111,7 +111,7 @@ An opt-in [read-only loopback HTTP input feed](docs/http-input-feed.md) now expo
 
 ## Contributing
 
-Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.21.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.22.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
 
 ## License
 

@@ -4,7 +4,8 @@ use ethercat_workbench::{
     capture_audit::Audit,
     model::Profile,
     pcap_inspect,
-    review::{Controller, Input, Outcome, State, Task},
+    review::{Controller, Input, Outcome, SharedDecoding, State, Task},
+    shared_memory::reader,
 };
 use std::path::{Path, PathBuf};
 
@@ -31,6 +32,16 @@ pub struct Panel {
     pcap_path: String,
     station: String,
     preview_limit: usize,
+    shared_path: String,
+    shared_mapping: SharedMapping,
+    shared_report: String,
+}
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum SharedMapping {
+    #[default]
+    Raw,
+    CurrentProfile,
+    RunReport,
 }
 impl Default for Panel {
     fn default() -> Self {
@@ -43,6 +54,9 @@ impl Default for Panel {
             pcap_path: String::new(),
             station: "0x1000".into(),
             preview_limit: 16,
+            shared_path: String::new(),
+            shared_mapping: SharedMapping::Raw,
+            shared_report: String::new(),
         }
     }
 }
@@ -67,9 +81,25 @@ impl Panel {
         };
     }
 
+    fn shared_task(&self, profile: &Profile) -> anyhow::Result<Task> {
+        let decoding = match self.shared_mapping {
+            SharedMapping::Raw => SharedDecoding::Raw,
+            SharedMapping::CurrentProfile => SharedDecoding::Profile(Box::new(profile.clone())),
+            SharedMapping::RunReport => {
+                SharedDecoding::RunReport(PathBuf::from(self.shared_report.trim()))
+            }
+        };
+        let task = Task::InspectShared {
+            file: PathBuf::from(self.shared_path.trim()),
+            decoding,
+        };
+        task.validate()?;
+        Ok(task)
+    }
+
     pub fn draw(&mut self, ui: &mut egui::Ui, bus_busy: bool, profile: &Profile) {
         ui.label(
-            "Review saved run reports, CSV files or Ethernet PCAP. These actions do not access the bus.",
+            "Review saved run reports, CSV, Ethernet PCAP or shared-input snapshots. These actions do not access the bus.",
         );
         if bus_busy {
             ui.label("Stop the active bus or discovery job before starting a file review.");
@@ -118,6 +148,22 @@ impl Panel {
                 }
             });
             ui.label("Up to 64 MiB. PCAPNG requires one Ethernet interface and microsecond/nanosecond timestamps. VLAN decoding is unsupported. Capture timestamps remain separate from application cycle timing.");
+        });
+        ui.collapsing("Inspect a saved shared-input snapshot",|ui|{
+            ui.label("Historical file only. No IPC, process-liveness query, NIC or current-input check.");
+            ui.add_enabled_ui(!self.is_running() && !bus_busy,|ui|{
+                ui.horizontal(|ui|{ui.label("Snapshot (.bin)");ui.add(egui::TextEdit::singleline(&mut self.shared_path).hint_text(".local/input.bin").desired_width(410.0));});
+                ui.horizontal(|ui|{ui.radio_value(&mut self.shared_mapping,SharedMapping::Raw,"Raw/status only");ui.radio_value(&mut self.shared_mapping,SharedMapping::CurrentProfile,"Current profile (frozen)");ui.radio_value(&mut self.shared_mapping,SharedMapping::RunReport,"Saved run's effective profile");});
+                match self.shared_mapping {
+                    SharedMapping::Raw=>{ui.label("Typed values are omitted. Raw bytes and recorded quality remain available.");},
+                    SharedMapping::CurrentProfile=>{ui.label(format!("Freeze current profile · {} · {} input bytes · {} fields",profile.name,profile.tx_bytes,profile.tx.len()));},
+                    SharedMapping::RunReport=>{ui.horizontal(|ui|{ui.label("Mapping run report");ui.add(egui::TextEdit::singleline(&mut self.shared_report).hint_text(".local/run.json").desired_width(410.0));});},
+                }
+                ui.label("Typed decoding requires the exact full profile hash. A mismatch fails; choose raw/status explicitly to inspect without a mapping.");
+                let ready=!self.shared_path.trim().is_empty() && (self.shared_mapping!=SharedMapping::RunReport || !self.shared_report.trim().is_empty());
+                if ui.add_enabled(ready,egui::Button::new("Inspect saved snapshot")).clicked(){match self.shared_task(profile){Ok(task)=>self.start(task),Err(error)=>self.message=format!("{error:#}")}}
+            });
+            ui.label("Exactly 2560 bytes, binary schema 1. Saved active/fresh flags never establish current usable input.");
         });
         ui.separator();
         let mut audit = None;
@@ -169,7 +215,7 @@ impl Panel {
             let inputs = match &completed.task {
                 Task::Audit(input) => std::slice::from_ref(input),
                 Task::Compare { inputs, .. } => inputs.as_slice(),
-                Task::InspectPcap { .. } => &[],
+                Task::InspectPcap { .. } | Task::InspectShared { .. } => &[],
             };
             ui.collapsing("Inputs used", |ui| {
                 let used_csv = matches!(
@@ -197,11 +243,20 @@ impl Panel {
                     }
                     ui.label("Export JSON for the complete frozen profile, including ESI provenance and field transformations.");
                 }
+                if let Task::InspectShared{file,decoding}=&completed.task{
+                    ui.label(format!("Saved snapshot · {}",file.display()));
+                    match decoding {
+                        SharedDecoding::Raw=>{ui.label("Mapping choice · raw/status only");},
+                        SharedDecoding::Profile(profile)=>{ui.label(format!("Frozen profile · {} · {} input bytes",profile.name,profile.tx_bytes));},
+                        SharedDecoding::RunReport(path)=>{ui.label(format!("Mapping extracted from saved run · {}",path.display()));ui.label("Mapping extraction does not qualify that run or prove this snapshot came from it.");},
+                    }
+                }
             });
             match &completed.outcome {
                 Outcome::Audit(result) => show_audit(ui, result),
                 Outcome::Comparison(result) => show_comparison(ui, result),
                 Outcome::Pcap(result) => show_pcap(ui, result),
+                Outcome::Shared(result) => show_shared(ui, result),
             }
             ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
                 ui.horizontal(|ui| {
@@ -238,6 +293,185 @@ fn warnings(ui: &mut egui::Ui, warnings: &[String]) {
                 ui.label(warning);
             }
         });
+}
+
+fn shared_preview(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut preview: String = chars.by_ref().take(512).collect();
+    if chars.next().is_some() {
+        preview.push_str(" … [preview truncated]");
+    }
+    preview
+}
+fn shared_payload(
+    ui: &mut egui::Ui,
+    title: &str,
+    data: &reader::Payload,
+    decoding: Option<&reader::Decoding>,
+) {
+    ui.collapsing(title,|ui|{
+        ui.label("Raw TxPDO hex (complete captured payload)");ui.monospace(&data.payload_hex);
+        if let Some(values)=&data.values {
+            ui.label("Verified-profile typed input values. Long text previews stop at 512 characters; export JSON for complete values and definitions.");
+            egui::ScrollArea::both().id_salt(title).max_height(260.0).show(ui,|ui|{
+                egui::Grid::new((title,"values")).striped(true).show(ui,|ui|{
+                    for label in ["Input field","Definition source","Bit:width","Recorded value"]{ui.strong(label);}ui.end_row();
+                    for (name,value) in values {
+                        let field=decoding.and_then(|d|d.tx_fields.iter().find(|f|f.name==*name));
+                        ui.label(shared_preview(name));ui.label(field.map_or("unavailable".into(),|f|format!("{:?}",f.source)));
+                        ui.label(field.map_or("unavailable".into(),|f|format!("{}:{}",f.bit,f.width)));ui.monospace(shared_preview(value));ui.end_row();
+                    }
+                });
+            });
+        }else{ui.label("Raw/status only · no verified typed mapping selected.");}
+    });
+}
+fn show_shared(ui: &mut egui::Ui, report: &reader::Inspection) {
+    ui.strong("Historical shared-input snapshot");
+    if !matches!(&report.source, reader::Source::SavedFile { .. })
+        || report.current_usable
+        || report.observation.is_some()
+    {
+        ui.colored_label(egui::Color32::LIGHT_RED,"Unexpected live evidence in saved-file review; this result cannot be shown as historical input.");
+        return;
+    }
+    ui.label(
+        "Saved-file evidence only · current usable input: no · current age/liveness: unavailable.",
+    );
+    ui.label(format!(
+        "Inspection schema {} · status {:?} · inspector {}",
+        report.schema, report.status, report.app_version
+    ));
+    if let reader::Source::SavedFile { path } = &report.source {
+        ui.label(format!("Snapshot file · {}", path.display()));
+    }
+    if let Some(hash) = &report.raw_sha256 {
+        ui.label("Exact saved-byte SHA-256");
+        ui.monospace(hash);
+    }
+    let Some(s) = &report.snapshot else {
+        ui.label("Reserved/not-ready image · no input payload or verified mapping was captured.");
+        return;
+    };
+    ui.label(format!(
+        "Recorded backend · {} · stream {} · generation {}",
+        s.backend, s.stream_id, s.generation
+    ));
+    ui.label(format!("Recorded producer flags · active {} · fresh at publication {}. These flags do not establish current input.",s.active,s.fresh_at_publication));
+    ui.label(format!(
+        "Recorded PID {} · process creation FILETIME {} (not queried)",
+        s.publisher_pid, s.publisher_created_filetime
+    ));
+    ui.label(format!(
+        "UTC anchor {} Unix µs · publication elapsed {} µs · publication attempt {}",
+        s.utc_start_us, s.publication_elapsed_us, s.publication_index
+    ));
+    ui.label(format!(
+        "Recorded publication QPC {} · frequency {}. No current clock comparison is performed.",
+        s.publication_qpc, s.qpc_frequency
+    ));
+    ui.label(format!("Requested host cycle {} µs · publication period {} ms · freshness threshold {} ms · input bytes {}",s.requested_cycle_us,s.period_ms,s.freshness_ms,s.tx_bytes));
+    ui.label("Device/DC synchronization, mapping verification and physical PDO meaning require the original run/profile evidence.");
+    ui.collapsing("Recorded identity and mapping", |ui| {
+        ui.label(format!(
+            "Expected profile identity · {}",
+            s.expected_identity
+                .as_ref()
+                .map_or("unavailable".into(), ToString::to_string)
+        ));
+        ui.label(format!(
+            "Setup-observed identity · {}",
+            s.observed_identity
+                .as_ref()
+                .map_or("unavailable".into(), ToString::to_string)
+        ));
+        ui.label(format!(
+            "Setup station {:#06x} · bus position {}",
+            s.station, s.position
+        ));
+        ui.label("Snapshot profile SHA-256");
+        ui.monospace(s.profile_sha256.as_deref().unwrap_or("unavailable"));
+        if let Some(decoding) = &report.decoding {
+            ui.label(format!(
+                "Verified full-profile hash · {} input definitions",
+                decoding.tx_fields.len()
+            ));
+            ui.monospace(&decoding.profile_sha256);
+        } else {
+            ui.label("No typed mapping was verified; this is raw/status review.");
+        }
+    });
+    if let Some(latest) = &s.latest {
+        ui.strong(format!(
+            "Latest recorded attempt · event {} · cycle {} · {}",
+            latest.event_index,
+            latest.cycle_index,
+            if latest.valid_at_exchange {
+                "valid at exchange"
+            } else {
+                "invalid input quality"
+            }
+        ));
+        ui.label(format!("Receive/failed-attempt elapsed {} µs · age at publication {} µs · reply received {} · issue {}",latest.elapsed_us,latest.age_us_at_publication,latest.received,latest.issue));
+        ui.label(format!(
+            "Recorded WKC · expected {} · actual {}",
+            latest.expected_wkc,
+            latest
+                .actual_wkc
+                .map_or("unavailable".into(), |v| v.to_string())
+        ));
+        if let Some((status, code)) = latest.al_status.zip(latest.al_code) {
+            let al = ethercat_workbench::esc::al_status(status, code);
+            ui.label(format!(
+                "Recorded AL {status:#06x} · {} · code {code:#06x}: {}",
+                al.state, al.description
+            ));
+        } else {
+            ui.label("Recorded AL status/code · unavailable");
+        }
+        if let Some(data) = &latest.data {
+            shared_payload(
+                ui,
+                "Latest recorded payload",
+                data,
+                report.decoding.as_ref(),
+            );
+        } else {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "Invalid input · no current payload or typed values were exported.",
+            );
+        }
+    } else {
+        ui.label("No cyclic attempt was recorded in this initialized image.");
+    }
+    if let Some(last) = &s.last_valid {
+        ui.strong(format!(
+            "Historical last-valid input · event {} · cycle {}",
+            last.event_index, last.cycle_index
+        ));
+        ui.label(format!(
+            "Elapsed {} µs · age at publication {} µs · current age unavailable",
+            last.elapsed_us, last.age_us_at_publication
+        ));
+        ui.label(
+            "Historical payload only; its earlier WKC/AL readback is not stored in this format.",
+        );
+        shared_payload(
+            ui,
+            "Historical last-valid payload",
+            &last.data,
+            report.decoding.as_ref(),
+        );
+    } else {
+        ui.label("No historical last-valid input is present.");
+    }
+    ui.collapsing("Recorded acquisition and consumer counters",|ui|{
+        ui.label(format!("Bus · cycles {} · valid {} · timeouts {} · WKC mismatches {} · AL mismatches {} · transport errors {} · missed deadlines {}",s.cycles,s.valid_exchanges,s.timeouts,s.wkc_mismatches,s.al_mismatches,s.transport_errors,s.missed_deadlines));
+        ui.label(format!("Shared input · offered {} · drained {} · queue drops {} · queue pending {} · coalesced {} · written events {} · copies {} · mutex misses {} · abandoned recoveries {}",s.offered,s.drained,s.queue_drops,s.queue_pending,s.coalesced,s.written_events,s.writes,s.lock_misses,s.abandoned_recoveries));
+        if let Some(csv)=s.csv{ui.label(format!("CSV · selected {} · written {} · overruns {}",csv.selected,csv.written,csv.overruns));}else{ui.label("CSV counters · unavailable");}
+        ui.label("Counters were separate live atomic observations, not a final drain proof. Use final reports and CSV audits for run acceptance.");
+    });
 }
 
 fn show_pcap(ui: &mut egui::Ui, report: &pcap_inspect::Report) {
@@ -717,5 +951,164 @@ mod tests {
                 "missing {expected:?} from layout: {text}"
             );
         }
+    }
+
+    #[test]
+    fn shared_editor_freezes_mapping_choices_and_retains_bus_exclusion() {
+        let mut profile = Profile {
+            name: "Frozen input profile".into(),
+            tx_bytes: 1,
+            tx: vec![ethercat_workbench::model::Field {
+                name: "Input".into(),
+                width: 8,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut panel = Panel {
+            shared_path: ".local/input.bin".into(),
+            shared_mapping: SharedMapping::CurrentProfile,
+            ..Default::default()
+        };
+        let task = panel.shared_task(&profile).unwrap();
+        profile.name = "Edited after capture request".into();
+        profile.tx[0].name = "Changed".into();
+        panel.shared_path = "changed.bin".into();
+        let Task::InspectShared {
+            file,
+            decoding: SharedDecoding::Profile(frozen),
+        } = task
+        else {
+            unreachable!()
+        };
+        assert_eq!(file, PathBuf::from(".local/input.bin"));
+        assert_eq!(frozen.name, "Frozen input profile");
+        assert_eq!(frozen.tx[0].name, "Input");
+        panel.shared_mapping = SharedMapping::RunReport;
+        assert!(panel.shared_task(&profile).is_err());
+        panel.shared_report = ".local/run.json".into();
+        assert!(matches!(
+            panel.shared_task(&profile).unwrap(),
+            Task::InspectShared {
+                decoding: SharedDecoding::RunReport(_),
+                ..
+            }
+        ));
+        let text = text_from_layout(|ui| panel.draw(ui, true, &profile));
+        assert!(!panel.is_running());
+        for expected in [
+            "Stop the active bus",
+            "Historical file only",
+            "Raw/status only",
+            "Current profile (frozen)",
+            "Saved run's effective profile",
+            "exact full profile hash",
+            "never establish current usable input",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+    }
+
+    fn authored_shared_inspection() -> reader::Inspection {
+        use sha2::{Digest, Sha256};
+        use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let profile = Profile {
+            tx_bytes: 1,
+            tx: vec![ethercat_workbench::model::Field {
+                name: "Saved counter".into(),
+                width: 8,
+                source: ethercat_workbench::model::Source::Override,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut bytes = [0; 2560];
+        bytes[..8].copy_from_slice(b"ECWBIN01");
+        for (o, v) in [
+            (8, 1u32),
+            (12, 2560),
+            (16, 512),
+            (20, 1024),
+            (264, 123),
+            (268, 1 | 2 | 8 | 512),
+            (280, 1),
+            (284, 1),
+            (292, 1),
+            (320, 1000),
+            (324, 100),
+            (328, 10),
+        ] {
+            bytes[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        for (o, v) in [
+            (24, 3u64),
+            (32, 1700000000000000),
+            (40, 7),
+            (48, 200),
+            (56, 2),
+            (64, 2),
+            (72, 2),
+            (80, 150),
+            (88, 1),
+            (96, 1),
+            (104, 100),
+            (248, 1000),
+            (256, 1000000),
+            (336, 456),
+        ] {
+            bytes[o..o + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        bytes[272..274].copy_from_slice(&1u16.to_le_bytes());
+        bytes[344..354].copy_from_slice(b"gui-shared");
+        bytes[440..447].copy_from_slice(b"Fixture");
+        bytes[1536] = 42;
+        bytes[408..440].copy_from_slice(&Sha256::digest(serde_json::to_vec(&profile).unwrap()));
+        let parent = std::env::current_dir().unwrap().join(".local");
+        std::fs::create_dir_all(&parent).unwrap();
+        let file = parent.join(format!(
+            "shared-layout-{}-{}.bin",
+            std::process::id(),
+            NEXT.fetch_add(1, Relaxed)
+        ));
+        use std::io::Write;
+        let mut out = std::fs::File::create_new(&file).unwrap();
+        out.write_all(&bytes).unwrap();
+        drop(out);
+        let inspection = reader::inspect_file(&file, Some(&profile))
+            .unwrap()
+            .inspection;
+        std::fs::remove_file(file).unwrap();
+        inspection
+    }
+    #[test]
+    fn shared_layout_separates_invalid_latest_historical_values_and_unavailable_current_time() {
+        let mut report = authored_shared_inspection();
+        let text = text_from_layout(|ui| show_shared(ui, &report));
+        for expected in [
+            "Historical shared-input snapshot",
+            "current usable input: no",
+            "current age/liveness: unavailable",
+            "invalid input quality",
+            "no current payload or typed values",
+            "Recorded AL status/code · unavailable",
+            "Historical last-valid input",
+            "earlier WKC/AL readback is not stored",
+            "Saved counter",
+            "Override",
+            "42",
+            "2A",
+            "Verified full-profile hash",
+            "No current clock comparison",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+        assert!(!report.current_usable && report.observation.is_none());
+        report.source = reader::Source::LiveSharedMemory {
+            name: "not-opened".into(),
+        };
+        let text = text_from_layout(|ui| show_shared(ui, &report));
+        assert!(text.contains("Unexpected live evidence"));
+        assert!(!text.contains("Saved counter"));
     }
 }

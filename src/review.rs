@@ -1,5 +1,5 @@
 //! Background saved-file review, shared with the desktop without owning any bus state.
-use crate::{benchmark, capture_audit, model::Profile, pcap_inspect};
+use crate::{benchmark, capture_audit, model::Profile, pcap_inspect, shared_memory::reader};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{
@@ -27,7 +27,18 @@ pub struct Input {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SharedDecoding {
+    Raw,
+    Profile(Box<Profile>),
+    RunReport(PathBuf),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Task {
+    InspectShared {
+        file: PathBuf,
+        decoding: SharedDecoding,
+    },
     Audit(Input),
     Compare {
         inputs: Vec<Input>,
@@ -44,6 +55,21 @@ pub enum Task {
 impl Task {
     pub fn validate(&self) -> Result<()> {
         let (inputs, csv) = match self {
+            Self::InspectShared { file, decoding } => {
+                ensure!(
+                    !file.as_os_str().is_empty(),
+                    "enter a saved shared-input snapshot path"
+                );
+                match decoding {
+                    SharedDecoding::Raw => {}
+                    SharedDecoding::Profile(profile) => reader::check_profile(profile)?,
+                    SharedDecoding::RunReport(path) => ensure!(
+                        !path.as_os_str().is_empty(),
+                        "enter the saved run report used for mapping"
+                    ),
+                }
+                return Ok(());
+            }
             Self::InspectPcap {
                 file,
                 profile,
@@ -84,6 +110,22 @@ impl Task {
         self.validate()?;
         check_cancel(Some(stop))?;
         let outcome = match self {
+            Self::InspectShared { file, decoding } => {
+                let from_report = if let SharedDecoding::RunReport(path) = decoding {
+                    reader::load_decoding_profile(None, Some(path))?
+                } else {
+                    None
+                };
+                check_cancel(Some(stop))?;
+                let profile = match decoding {
+                    SharedDecoding::Profile(profile) => Some(profile.as_ref()),
+                    SharedDecoding::RunReport(_) => from_report.as_ref(),
+                    SharedDecoding::Raw => None,
+                };
+                Outcome::Shared(Box::new(
+                    reader::inspect_file_cancelable(file, profile, stop)?.inspection,
+                ))
+            }
             Self::InspectPcap {
                 file,
                 profile,
@@ -122,6 +164,7 @@ impl Task {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum Outcome {
+    Shared(Box<reader::Inspection>),
     Audit(Box<capture_audit::Audit>),
     Comparison(Box<benchmark::Comparison>),
     Pcap(Box<pcap_inspect::Report>),
@@ -387,6 +430,65 @@ mod tests {
                 preview_limit: 16,
             }
         }
+
+        fn shared_task(&self) -> Task {
+            use sha2::{Digest, Sha256};
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(self.0.join("run.json")).unwrap()).unwrap();
+            let profile: Profile =
+                serde_json::from_value(saved["context"]["profile"].clone()).unwrap();
+            // Independent authored schema-1 bytes; no producer, mapping or NIC is opened.
+            let mut bytes = [0u8; crate::shared_memory::SIZE];
+            bytes[..8].copy_from_slice(b"ECWBIN01");
+            for (o, v) in [
+                (8, 1u32),
+                (12, 2560),
+                (16, 512),
+                (20, 1024),
+                (264, 123),
+                (268, 0x37f),
+                (284, 1),
+                (288, 1),
+                (292, 1),
+                (320, 1000),
+                (324, 100),
+                (328, 10),
+            ] {
+                bytes[o..o + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            for (o, v) in [
+                (24, 1u64),
+                (32, 1700000000000000),
+                (40, 1),
+                (48, 200),
+                (56, 1),
+                (64, 1),
+                (72, 1),
+                (80, 100),
+                (88, 1),
+                (96, 1),
+                (104, 100),
+                (248, 1000),
+                (256, 1000000),
+                (336, 456),
+            ] {
+                bytes[o..o + 8].copy_from_slice(&v.to_le_bytes());
+            }
+            for (o, v) in [(272, 1u16), (274, 1), (276, 4)] {
+                bytes[o..o + 2].copy_from_slice(&v.to_le_bytes());
+            }
+            bytes[344..358].copy_from_slice(b"review-fixture");
+            bytes[440..447].copy_from_slice(b"Fixture");
+            bytes[512] = 42;
+            bytes[1536] = 42;
+            bytes[408..440].copy_from_slice(&Sha256::digest(serde_json::to_vec(&profile).unwrap()));
+            let file = self.0.join("shared.bin");
+            std::fs::write(&file, bytes).unwrap();
+            Task::InspectShared {
+                file,
+                decoding: SharedDecoding::Profile(Box::new(profile)),
+            }
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -400,6 +502,8 @@ mod tests {
                 "trial-1.csv",
                 "capture.pcap",
                 "pcap-result.json",
+                "shared.bin",
+                "shared-result.json",
             ] {
                 let _ = std::fs::remove_file(self.0.join(name));
             }
@@ -779,6 +883,181 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|a| a.rows == 2)
+        );
+    }
+
+    #[test]
+    fn shared_worker_freezes_profile_and_exports_the_cli_file_schema() {
+        let fixture = Fixture::new();
+        let task = fixture.shared_task();
+        let mut edited = task.clone();
+        let expected = if let Task::InspectShared {
+            file,
+            decoding: SharedDecoding::Profile(profile),
+        } = &task
+        {
+            // The CLI's public file-inspection operation is the reference for worker/export parity.
+            reader::inspect_file(file, Some(profile))
+                .unwrap()
+                .inspection
+        } else {
+            unreachable!()
+        };
+        let mut controller = Controller::default();
+        controller.start(task.clone()).unwrap();
+        if let Task::InspectShared {
+            file,
+            decoding: SharedDecoding::Profile(profile),
+        } = &mut edited
+        {
+            *file = "edited.bin".into();
+            profile.name = "Edited after start".into();
+            profile.tx[0].name = "Changed mapping".into();
+        }
+        finish(&mut controller);
+        assert_eq!(
+            controller.state(),
+            State::Complete,
+            "{:?}",
+            controller.error()
+        );
+        assert_eq!(controller.completed().unwrap().task, task);
+        let Outcome::Shared(report) = &controller.completed().unwrap().outcome else {
+            panic!("shared outcome");
+        };
+        assert!(!report.current_usable && report.observation.is_none());
+        let s = report.snapshot.as_ref().unwrap();
+        assert!(s.active && s.fresh_at_publication);
+        assert_eq!(
+            s.latest
+                .as_ref()
+                .unwrap()
+                .data
+                .as_ref()
+                .unwrap()
+                .values
+                .as_ref()
+                .unwrap()["Counter"],
+            "42"
+        );
+        let out = fixture.0.join("shared-result.json");
+        controller.save_new(&out).unwrap();
+        let exported = std::fs::read(&out).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&exported).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(controller.save_new(&out).is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), exported);
+        let Task::InspectShared { file, .. } = task else {
+            unreachable!()
+        };
+        controller
+            .start(Task::InspectShared {
+                file: file.clone(),
+                decoding: SharedDecoding::RunReport(fixture.0.join("run.json")),
+            })
+            .unwrap();
+        finish(&mut controller);
+        let via_report = serde_json::to_value(&controller.completed().unwrap().outcome).unwrap();
+        assert_eq!(
+            via_report,
+            serde_json::from_slice::<serde_json::Value>(&exported).unwrap()
+        );
+        controller
+            .start(Task::InspectShared {
+                file,
+                decoding: SharedDecoding::Raw,
+            })
+            .unwrap();
+        finish(&mut controller);
+        let Outcome::Shared(raw) = &controller.completed().unwrap().outcome else {
+            unreachable!()
+        };
+        assert!(raw.decoding.is_none());
+        assert!(
+            raw.snapshot
+                .as_ref()
+                .unwrap()
+                .latest
+                .as_ref()
+                .unwrap()
+                .data
+                .as_ref()
+                .unwrap()
+                .values
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn shared_profile_failure_requires_explicit_raw_recovery_and_cancelled_work_publishes_nothing()
+    {
+        let fixture = Fixture::new();
+        let mut task = fixture.shared_task();
+        if let Task::InspectShared {
+            decoding: SharedDecoding::Profile(profile),
+            ..
+        } = &mut task
+        {
+            profile.tx[0].name = "Wrong profile".into();
+        }
+        let mut controller = Controller::default();
+        controller.start(task.clone()).unwrap();
+        finish(&mut controller);
+        assert_eq!(controller.state(), State::Failed);
+        assert!(
+            controller
+                .error()
+                .unwrap()
+                .contains("profile hash mismatch")
+        );
+        assert!(controller.completed().is_none());
+        let out = fixture.0.join("shared-result.json");
+        assert!(controller.save_new(&out).is_err());
+        assert!(!out.exists());
+        let Task::InspectShared { file, .. } = task else {
+            unreachable!()
+        };
+        let raw = Task::InspectShared {
+            file,
+            decoding: SharedDecoding::Raw,
+        };
+        assert!(
+            raw.execute(&AtomicBool::new(true))
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        controller.start(raw).unwrap();
+        controller.cancel();
+        finish(&mut controller);
+        assert_eq!(controller.state(), State::Cancelled);
+        assert!(controller.completed().is_none());
+        assert!(controller.save_new(&out).is_err());
+        controller
+            .start(Task::InspectShared {
+                file: fixture.0.join("shared.bin"),
+                decoding: SharedDecoding::Raw,
+            })
+            .unwrap();
+        finish(&mut controller);
+        assert_eq!(controller.state(), State::Complete);
+        assert!(
+            Task::InspectShared {
+                file: PathBuf::new(),
+                decoding: SharedDecoding::Raw
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Task::InspectShared {
+                file: "unused.bin".into(),
+                decoding: SharedDecoding::RunReport(PathBuf::new())
+            }
+            .validate()
+            .is_err()
         );
     }
 }

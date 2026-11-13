@@ -15,6 +15,10 @@ Version 0.21 adds `read-shared` and `inspect-shared` to the portable CLI. Readin
 
 Create `.local/` beforehand and use fresh output paths. `--out` writes UTF-8 JSON directly and stdout also receives the inspection. `--save-raw` is only on `read-shared` and writes the exact copied 2560 bytes to a new `.bin` file. Neither export overwrites an existing path; paths/extensions are checked before IPC/file inspection. Raw export requires a coherent initialized `ready` snapshot. Busy, abandoned or reserved/not-ready input creates no raw export. A failed write/flush can leave an owned partial output; inspect that outcome rather than overwrite/retry it automatically.
 
+## Desktop saved-file review
+
+Version 0.22 adds the same saved-file decoder to **4 Saved run review → Inspect a saved shared-input snapshot**. Choose raw/status, a frozen copy of the current profile, or a saved run's effective profile. The existing cancellable worker preserves the original request and exports the same inspection JSON without overwriting files. It never performs live IPC or process/clock queries, and shows historical/current-invalid versus last-good data separately. [Desktop instructions](desktop-review.md#inspect-a-saved-shared-input-snapshot) explain mapping failures, display limits and cancellation boundaries. Native GUI interaction remains unqualified by the headless tests.
+
 ## One-shot live read
 
 `read-shared NAME` opens existing objects only, with a read-only mapping and synchronization/mutex-release rights. It attempts the mutex once with zero wait. It copies into a preallocated private buffer while owning the mutex, releases it and closes all mapping/mutex handles before validation, typed decoding or file output. It neither creates missing objects nor retains handles that would keep a finished producer's names alive. These Windows operations follow [OpenFileMapping](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-openfilemappingw) and [OpenMutex](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-openmutexw).
