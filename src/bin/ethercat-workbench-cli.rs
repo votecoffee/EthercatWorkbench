@@ -161,6 +161,9 @@ enum Command {
         /// Enable the read-only HTTP feed on 127.0.0.1 (0 chooses a free port). No device writes.
         #[arg(long)]
         http_port: Option<u16>,
+        /// Enable publish-only MQTT on a local broker at 127.0.0.1:PORT.
+        #[arg(long)]
+        mqtt_port: Option<u16>,
         /// Confirm approval for ESC initialization, SAFEOP and return to INIT on one isolated device.
         #[arg(long)]
         approve_esc_writes: bool,
@@ -432,6 +435,7 @@ fn main() -> Result<()> {
             virtual_model,
             generation,
             http_port,
+            mqtt_port,
             approve_esc_writes,
         } => {
             ensure!(
@@ -515,6 +519,9 @@ fn main() -> Result<()> {
             let mut profile = Profile::load(&profile)?;
             if let Some(port) = http_port {
                 profile.http.get_or_insert_with(Default::default).port = port;
+            }
+            if let Some(port) = mqtt_port {
+                profile.mqtt.get_or_insert_with(Default::default).port = port;
             }
             if let Some(scheduler) = scheduler {
                 profile.scheduler = match scheduler {

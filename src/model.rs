@@ -247,6 +247,8 @@ pub struct Profile {
     pub staged_rx_hex: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http: Option<crate::http_feed::Config>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mqtt: Option<crate::mqtt_feed::Config>,
 }
 
 impl Default for Profile {
@@ -272,6 +274,7 @@ impl Default for Profile {
             rx: Vec::new(),
             staged_rx_hex: String::new(),
             http: None,
+            mqtt: None,
         }
     }
 }
@@ -285,9 +288,14 @@ impl Profile {
         );
         if let Some(http) = &self.http {
             http.validate()?;
+        }
+        if let Some(mqtt) = &self.mqtt {
+            mqtt.validate()?;
+        }
+        if self.http.is_some() || self.mqtt.is_some() {
             ensure!(
                 self.tx.iter().map(|f| f.name.len()).sum::<usize>() <= 16_384,
-                "HTTP input field names exceed 16 KiB"
+                "Input feed field names exceed 16 KiB"
             );
         }
         ensure!(

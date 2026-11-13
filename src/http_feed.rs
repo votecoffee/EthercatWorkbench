@@ -1,12 +1,19 @@
 //! Opt-in loopback input feed. The cycle offers fixed records; this worker owns all HTTP/JSON.
+pub use crate::input_feed::{Counts, CsvCounts};
+#[cfg(test)]
 use crate::{
     health::InputIssue,
-    model::{Field, MAX_PAYLOAD, Profile},
+    input_feed::{Limited, MAX_RESPONSE},
+    model::{Field, MAX_PAYLOAD},
+};
+use crate::{
+    input_feed::{Metadata, Observation, Record, Sample, is_fresh, json, sample},
+    model::Profile,
     run::Report,
 };
 use anyhow::{Context, Result, ensure};
 use crossbeam_queue::ArrayQueue;
-use serde::{Deserialize, Serialize, ser::SerializeMap};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
@@ -21,8 +28,6 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-
-const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -58,50 +63,6 @@ impl Config {
         );
         Ok(())
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, Serialize)]
-pub struct CsvCounts {
-    pub selected: u64,
-    pub written: u64,
-    pub overruns: u64,
-}
-#[derive(Clone, Copy, Debug, Default, Serialize)]
-pub struct Counts {
-    pub cycles: u64,
-    pub valid: u64,
-    pub timeouts: u64,
-    pub wkc_mismatches: u64,
-    pub al_mismatches: u64,
-    pub transport_errors: u64,
-    pub missed_deadlines: u64,
-    pub csv: Option<CsvCounts>,
-}
-#[derive(Clone, Copy)]
-struct Record {
-    event_index: u64,
-    elapsed_us: u64,
-    cycle_index: u64,
-    received: bool,
-    valid: bool,
-    expected_wkc: u16,
-    actual_wkc: Option<u16>,
-    al: Option<(u16, u16)>,
-    issue: Option<InputIssue>,
-    counts: Counts,
-    data: [u8; MAX_PAYLOAD],
-}
-pub(crate) struct Observation<'a> {
-    pub cycle_index: u64,
-    pub received: Option<Instant>,
-    pub observed: Instant,
-    pub valid: bool,
-    pub expected_wkc: u16,
-    pub actual_wkc: Option<u16>,
-    pub al: Option<(u16, u16)>,
-    pub issue: Option<InputIssue>,
-    pub counts: Counts,
-    pub data: &'a [u8; MAX_PAYLOAD],
 }
 
 struct Shared {
@@ -160,20 +121,6 @@ impl Bound {
     }
 }
 
-#[derive(Serialize)]
-struct Metadata {
-    app_version: String,
-    backend: String,
-    profile_sha256: Option<String>,
-    requested_cycle_us: u64,
-    expected_identity: Option<crate::model::Identity>,
-    tx_bytes: usize,
-    fields: Vec<Field>,
-    device_setup_snapshot: Vec<crate::run::DeviceInfo>,
-    pdo_verification: Option<Arc<crate::pdo::Verification>>,
-    synchronization: Option<crate::sync::Synchronization>,
-}
-
 pub(crate) struct Hub {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<Result<()>>>,
@@ -185,16 +132,7 @@ pub(crate) struct Hub {
 }
 impl Hub {
     pub fn start(bound: Bound, profile: &Profile, report: &Report) -> Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let now = chrono::Utc::now();
-        let start = Instant::now();
-        let utc = now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
-        let stream_id = format!(
-            "{}-{}-{}",
-            now.timestamp_micros(),
-            std::process::id(),
-            NEXT.fetch_add(1, Relaxed)
-        );
+        let (start, utc, stream_id) = crate::input_feed::anchor();
         let address = format!("http://{}", bound.listener.local_addr()?);
         let shared = Arc::new(Shared {
             queue: ArrayQueue::new(bound.config.queue_capacity),
@@ -209,18 +147,7 @@ impl Hub {
             io_errors: 0.into(),
             worker_failed: false.into(),
         });
-        let metadata = Metadata {
-            app_version: env!("CARGO_PKG_VERSION").into(),
-            backend: report.backend.clone(),
-            profile_sha256: report.context.as_ref().map(|c| c.profile_sha256.clone()),
-            requested_cycle_us: profile.requested_cycle_us,
-            expected_identity: profile.expected_identity.clone(),
-            tx_bytes: profile.tx_bytes,
-            fields: profile.tx.clone(),
-            device_setup_snapshot: report.devices.clone(),
-            pdo_verification: report.pdo_verification.clone(),
-            synchronization: report.synchronization.clone(),
-        };
+        let metadata = Metadata::new(profile, report);
         let shared_worker = shared.clone();
         let id = stream_id.clone();
         let anchor = utc.clone();
@@ -257,27 +184,7 @@ impl Hub {
     }
     pub fn offer(&mut self, event: Observation<'_>) {
         self.offered += 1;
-        let record = Record {
-            event_index: self.offered,
-            elapsed_us: event
-                .received
-                .unwrap_or(event.observed)
-                .saturating_duration_since(self.start)
-                .as_micros() as u64,
-            cycle_index: event.cycle_index,
-            received: event.received.is_some(),
-            valid: event.valid,
-            expected_wkc: event.expected_wkc,
-            actual_wkc: event.actual_wkc,
-            al: event.al,
-            issue: event.issue,
-            counts: event.counts,
-            data: if event.valid {
-                *event.data
-            } else {
-                [0; MAX_PAYLOAD]
-            },
-        };
+        let record = Record::new(self.offered, self.start, event);
         self.shared.offered.store(self.offered, Release);
         if self.shared.queue.push(record).is_err() {
             self.shared.dropped.fetch_add(1, Relaxed);
@@ -355,79 +262,6 @@ impl History {
             shared.dispatched.fetch_add(1, Relaxed);
         }
     }
-}
-
-struct Values<'a> {
-    record: &'a Record,
-    metadata: &'a Metadata,
-}
-impl Serialize for Values<'_> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut map = s.serialize_map(Some(self.metadata.fields.len()))?;
-        for field in &self.metadata.fields {
-            map.serialize_entry(
-                &field.name,
-                &field.decode(&self.record.data[..self.metadata.tx_bytes]),
-            )?;
-        }
-        map.end()
-    }
-}
-#[derive(Serialize)]
-struct Sample<'a> {
-    event_index: u64,
-    cycle_index: u64,
-    elapsed_us: u64,
-    timestamp_kind: &'static str,
-    age_us: u64,
-    valid: bool,
-    expected_wkc: u16,
-    actual_wkc: Option<u16>,
-    al_status: Option<u16>,
-    al_code: Option<u16>,
-    issue: Option<InputIssue>,
-    counts: Counts,
-    payload_hex: Option<String>,
-    values: Option<Values<'a>>,
-}
-fn sample<'a>(record: &'a Record, metadata: &'a Metadata, now: u64) -> Sample<'a> {
-    Sample {
-        event_index: record.event_index,
-        cycle_index: record.cycle_index,
-        elapsed_us: record.elapsed_us,
-        timestamp_kind: if record.received {
-            "receive"
-        } else {
-            "failed_attempt_observed"
-        },
-        age_us: now.saturating_sub(record.elapsed_us),
-        valid: record.valid,
-        expected_wkc: record.expected_wkc,
-        actual_wkc: record.actual_wkc,
-        al_status: record.al.map(|v| v.0),
-        al_code: record.al.map(|v| v.1),
-        issue: record.issue,
-        counts: record.counts,
-        payload_hex: record
-            .valid
-            .then(|| hex::encode_upper(&record.data[..metadata.tx_bytes])),
-        values: record.valid.then_some(Values { record, metadata }),
-    }
-}
-
-fn is_fresh(
-    active: bool,
-    offered: u64,
-    latest: Option<&Record>,
-    now: u64,
-    freshness_ms: u64,
-) -> bool {
-    active
-        && latest.is_some_and(|r| {
-            r.valid
-                && r.event_index == offered
-                && now.saturating_sub(r.elapsed_us) <= freshness_ms * 1000
-        })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -523,27 +357,6 @@ fn request(bytes: &[u8], authority: &str) -> std::result::Result<Route, u16> {
         }
         _ => Err(404),
     }
-}
-
-struct Limited(Vec<u8>);
-impl Write for Limited {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > MAX_RESPONSE - self.0.len() {
-            return Err(io::Error::other(
-                "HTTP response exceeds 2 MiB; request fewer samples",
-            ));
-        }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-fn json(value: &impl Serialize) -> Result<Vec<u8>> {
-    let mut out = Limited(Vec::new());
-    serde_json::to_writer(&mut out, value)?;
-    Ok(out.0)
 }
 
 fn read_request(socket: &mut TcpStream, shared: &Shared) -> io::Result<Vec<u8>> {

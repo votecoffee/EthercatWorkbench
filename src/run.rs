@@ -119,6 +119,7 @@ pub struct Report {
     pub cancelled: bool,
     pub error: Option<String>,
     pub http: Option<crate::http_feed::Stats>,
+    pub mqtt: Option<crate::mqtt_feed::Stats>,
 }
 
 #[derive(Clone, Debug)]
@@ -376,6 +377,24 @@ fn cycle(
             return combine(Err(error), cleanup);
         }
     };
+    let mut mqtt = match profile
+        .mqtt
+        .as_ref()
+        .map(|config| crate::mqtt_feed::Hub::start(config, profile, report))
+        .transpose()
+    {
+        Ok(mqtt) => mqtt,
+        Err(error) => {
+            if let Some(http) = &http {
+                http.deactivate();
+            }
+            let cleanup = bus.stop().map(|al| report.stopped_al = al);
+            if let Some(http) = http.take() {
+                report.http = Some(http.finish());
+            }
+            return combine(Err(error), cleanup);
+        }
+    };
     let mut capture = match options
         .csv
         .as_ref()
@@ -387,9 +406,15 @@ fn cycle(
             if let Some(http) = &http {
                 http.deactivate();
             }
+            if let Some(mqtt) = &mqtt {
+                mqtt.deactivate();
+            }
             let cleanup = bus.stop().map(|al| report.stopped_al = al);
             if let Some(http) = http.take() {
                 report.http = Some(http.finish());
+            }
+            if let Some(mqtt) = mqtt.take() {
+                report.mqtt = Some(mqtt.finish());
             }
             return combine(Err(error), cleanup);
         }
@@ -441,19 +466,23 @@ fn cycle(
                         Instant::now(),
                     );
                     last = Some(([0; MAX_PAYLOAD], false, false));
+                    let observation = crate::input_feed::Observation {
+                        cycle_index: index,
+                        received: None,
+                        observed: Instant::now(),
+                        valid: false,
+                        expected_wkc: report.expected_wkc,
+                        actual_wkc: None,
+                        al: None,
+                        issue: Some(InputIssue::TransportError),
+                        counts: feed_counts(report, capture.as_ref()),
+                        data: &[0; MAX_PAYLOAD],
+                    };
                     if let Some(http) = http.as_mut() {
-                        http.offer(crate::http_feed::Observation {
-                            cycle_index: index,
-                            received: None,
-                            observed: Instant::now(),
-                            valid: false,
-                            expected_wkc: report.expected_wkc,
-                            actual_wkc: None,
-                            al: None,
-                            issue: Some(InputIssue::TransportError),
-                            counts: feed_counts(report, capture.as_ref()),
-                            data: &[0; MAX_PAYLOAD],
-                        });
+                        http.offer(observation);
+                    }
+                    if let Some(mqtt) = mqtt.as_mut() {
+                        mqtt.offer(observation);
                     }
                     return Err(error.context("cyclic Ethernet transport failed"));
                 }
@@ -515,19 +544,23 @@ fn cycle(
                 health.invalid(&mut report.input_health, issue, exchange.sent, observed);
             }
             last = Some((exchange.data, exchange.received.is_some(), valid));
+            let observation = crate::input_feed::Observation {
+                cycle_index: index,
+                received: exchange.received,
+                observed,
+                valid,
+                expected_wkc: report.expected_wkc,
+                actual_wkc: exchange.received.map(|_| exchange.wkc),
+                al: exchange.received.and(exchange.status),
+                issue: report.input_health.current_issue,
+                counts: feed_counts(report, capture.as_ref()),
+                data: &exchange.data,
+            };
             if let Some(http) = http.as_mut() {
-                http.offer(crate::http_feed::Observation {
-                    cycle_index: index,
-                    received: exchange.received,
-                    observed,
-                    valid,
-                    expected_wkc: report.expected_wkc,
-                    actual_wkc: exchange.received.map(|_| exchange.wkc),
-                    al: exchange.received.and(exchange.status),
-                    issue: report.input_health.current_issue,
-                    counts: feed_counts(report, capture.as_ref()),
-                    data: &exchange.data,
-                });
+                http.offer(observation);
+            }
+            if let Some(mqtt) = mqtt.as_mut() {
+                mqtt.offer(observation);
             }
             if !valid {
                 check_input_loss(&report.input_health, profile.input_loss_timeout_ms)?;
@@ -536,6 +569,7 @@ fn cycle(
                 if let Ok(mut snapshot) = view.try_lock() {
                     update(report, &sends, &receives, capture.as_ref());
                     report.http = http.as_ref().map(crate::http_feed::Hub::stats);
+                    report.mqtt = mqtt.as_ref().map(crate::mqtt_feed::Hub::stats);
                     snapshot.report.clone_from(report);
                     snapshot.phase = "Cycling".into();
                     publish_payload(&mut snapshot, last, profile.tx_bytes, health.last_valid);
@@ -559,6 +593,10 @@ fn cycle(
         http.deactivate();
         report.http = Some(http.stats());
     }
+    if let Some(mqtt) = &mqtt {
+        mqtt.deactivate();
+        report.mqtt = Some(mqtt.stats());
+    }
     if let Ok(mut snapshot) = view.try_lock() {
         snapshot.phase = "Stopping cyclic input".into();
         snapshot.report.clone_from(report);
@@ -574,6 +612,9 @@ fn cycle(
     }
     if let Some(http) = http.take() {
         report.http = Some(http.finish());
+    }
+    if let Some(mqtt) = mqtt.take() {
+        report.mqtt = Some(mqtt.finish());
     }
     if let Ok(mut snapshot) = view.lock() {
         publish_payload(&mut snapshot, last, profile.tx_bytes, health.last_valid);
@@ -751,6 +792,9 @@ mod cycle_tests {
             if let Some(http) = &snapshot.report.http {
                 assert!(!http.active);
             }
+            if let Some(mqtt) = &snapshot.report.mqtt {
+                assert!(!mqtt.active);
+            }
             self.stopped.store(true, Relaxed);
             anyhow::bail!("authored INIT cleanup failure")
         }
@@ -763,12 +807,17 @@ mod cycle_tests {
     }
 
     fn check_transport_cleanup(with_http: bool) {
+        let broker = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let profile = Profile {
             tx_bytes: 1,
             requested_cycle_us: 250,
             http: with_http.then_some(crate::http_feed::Config {
                 port: 0,
                 queue_capacity: 8,
+                ..Default::default()
+            }),
+            mqtt: with_http.then_some(crate::mqtt_feed::Config {
+                port: broker.local_addr().unwrap().port(),
                 ..Default::default()
             }),
             ..Profile::default()
@@ -826,6 +875,12 @@ mod cycle_tests {
             assert_eq!(feed.dispatched, 2);
             assert_eq!(feed.pending, 0);
             assert_eq!(feed.queue_drops, 0);
+        }
+        if let Some(feed) = report.mqtt {
+            assert!(!feed.active && !feed.connected && !feed.worker_failed);
+            assert_eq!(feed.offered, 2);
+            assert_eq!(feed.drained, 2);
+            assert_eq!(feed.queue_pending, 0);
         }
     }
 }

@@ -31,6 +31,8 @@ Output retains each trial's input-file hash, UTC anchor, generation, elapsed int
 
 By default the command inspects saved JSON counters and sets `csv_audits` to null. Repeat `--csv BASE` once per report to stream and hash the CSV parts and check their headers, typed text and metadata. The [CSV audit rules](capture-audit.md) describe this additional evidence. Neither mode independently verifies original payload bits or physical field meaning. Input-file hashes bind the result to particular saved bytes. The JSON and hashes are editable evidence, not signed runtime attestation. Results do not select a winner or grant bench acceptance.
 
+Version 0.19 also retains independent [MQTT counters](mqtt-input-feed.md). Final inactive/disconnected reports must balance queue and coalescing/attempt domains. Network errors, dropped/unsent input and worker failures produce separate warnings; normal latest-value coalescing is visible without becoming CSV or bus loss. TCP writes do not prove subscriber delivery. Enabled MQTT settings must match between trials; use separate compatible groups for enabled/disabled workloads.
+
 ## Desktop review
 
 The **4 Saved run review** panel can compare the same reports without the CLI, with optional CSV audits, per-trial timing/loss tables and new-file JSON export. See [desktop review](desktop-review.md) for worker and cancellation behavior.

@@ -14,6 +14,10 @@ import socket
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+if __package__:
+    from .mqtt_fixture import verify_mqtt
+else:
+    from mqtt_fixture import verify_mqtt
 
 
 def cli_call(cli, *args, success=True):
@@ -1275,6 +1279,9 @@ def main():
     assert ".local" in destination.parts, "keep synthetic captures under .local"
     destination.mkdir(parents=True, exist_ok=False)
     cli = bin_dir / "ethercat-workbench-cli.exe"
+    mqtt_destination = destination / "mqtt"
+    mqtt_destination.mkdir()
+    verify_mqtt(cli, ROOT, mqtt_destination, cli_call)
     profile = ROOT / "samples/synthetic.json"
     http_destination = destination / "http"
     http_destination.mkdir()

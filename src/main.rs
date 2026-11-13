@@ -455,6 +455,30 @@ impl App {
     }
 
     fn bench_controls(&mut self, ui: &mut egui::Ui) {
+        let mut mqtt_enabled = self.profile.mqtt.is_some();
+        if ui
+            .checkbox(&mut mqtt_enabled, "Enable read-only MQTT input publisher")
+            .changed()
+        {
+            self.profile.mqtt = mqtt_enabled.then(Default::default);
+        }
+        if let Some(config) = &mut self.profile.mqtt {
+            ui.horizontal(|ui| {
+                ui.label("Local broker 127.0.0.1 port");
+                ui.add(egui::DragValue::new(&mut config.port).range(1..=65535));
+                ui.label("Topic");
+                ui.text_edit_singleline(&mut config.topic);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Publish ms");
+                ui.add(egui::DragValue::new(&mut config.period_ms).range(1..=60000));
+                ui.label("Freshness ms");
+                ui.add(egui::DragValue::new(&mut config.freshness_ms).range(1..=60000));
+                ui.label("MQTT queue");
+                ui.add(egui::DragValue::new(&mut config.queue_capacity).range(1..=8192));
+            });
+            ui.small("Latest input/status to a trusted local broker. QoS 0, non-retained; TCP writes do not prove consumer delivery.");
+        }
         let mut enabled = self.profile.http.is_some();
         if ui
             .checkbox(&mut enabled, "Enable read-only local HTTP input feed")
@@ -1087,6 +1111,13 @@ fn write_report(path: &Path, report: &Report) -> anyhow::Result<()> {
 
 fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
     let r = &snapshot.report;
+    if let Some(mqtt) = &r.mqtt {
+        ui.label(format!("MQTT {} · topic {} · active {} · connected {} · offered {} · queue drops {} · coalesced {} · unsent {} · TCP writes {} · errors {} · worker failed {}",
+            mqtt.address,mqtt.topic,mqtt.active,mqtt.connected,mqtt.offered,mqtt.queue_drops,mqtt.coalesced,mqtt.unsent_events,mqtt.write_completions,mqtt.errors,mqtt.worker_failed));
+        if let Some(error) = mqtt.worker_error.as_ref().or(mqtt.last_error.as_ref()) {
+            ui.colored_label(egui::Color32::LIGHT_RED, format!("MQTT: {error}"));
+        }
+    }
     if let Some(http) = &r.http {
         ui.label(format!("HTTP {} · active {} · offered {} · dispatched {} · queue drops {} · pending {} · history evictions {} · rejected requests {} · I/O errors {} · worker failed {}",
             http.address,http.active,http.offered,http.dispatched,http.queue_drops,http.pending,http.history_evictions,http.rejected_requests,http.io_errors,http.worker_failed));

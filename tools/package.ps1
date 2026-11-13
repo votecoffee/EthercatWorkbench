@@ -35,6 +35,8 @@ try {
         'docs/development.md' = 'docs/development.md'
         'docs/interfaces-roadmap.md' = 'docs/interfaces-roadmap.md'
         'docs/http-input-feed.md' = 'docs/http-input-feed.md'
+        'docs/mqtt-input-feed.md' = 'docs/mqtt-input-feed.md'
+        'samples/mqtt-input.json' = 'samples/mqtt-input.json'
         'samples/http-input.json' = 'samples/http-input.json'
         'skills/ethercat-workbench/SKILL.md' = 'skills/ethercat-workbench/SKILL.md'
         'skills/ethercat-workbench/agents/openai.yaml' = 'skills/ethercat-workbench/agents/openai.yaml'

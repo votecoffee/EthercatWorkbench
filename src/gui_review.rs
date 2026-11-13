@@ -451,6 +451,10 @@ fn show_audit(ui: &mut egui::Ui, audit: &Audit) {
 
 fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
     for (index, trial) in result.trials.iter().enumerate() {
+        if let Some(mqtt) = &trial.mqtt {
+            ui.label(format!("Trial {} MQTT · queue drops {} · coalesced {} · unsent {} · TCP writes {} · errors {} · worker failed {}",
+                index+1,mqtt.queue_drops,mqtt.coalesced,mqtt.unsent_events,mqtt.write_completions,mqtt.errors,mqtt.worker_failed));
+        }
         if let Some(http) = &trial.http {
             ui.label(format!("Trial {} HTTP · offered {} · dispatched {} · queue drops {} · pending {} · history evictions {} · I/O errors {} · worker failed {}",
                 index+1,http.offered,http.dispatched,http.queue_drops,http.pending,http.history_evictions,http.io_errors,http.worker_failed));

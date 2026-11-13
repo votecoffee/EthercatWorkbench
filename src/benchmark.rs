@@ -144,6 +144,7 @@ struct SavedRun {
     cancelled: bool,
     error: Option<String>,
     http: Option<crate::http_feed::Stats>,
+    mqtt: Option<crate::mqtt_feed::Stats>,
 }
 
 impl SavedRun {
@@ -152,6 +153,31 @@ impl SavedRun {
             "report has no versioned run context; collect a new trial with Workbench 0.10 or later",
         )?;
         ctx.validate()?;
+        ensure!(
+            self.mqtt.is_some() == ctx.profile.mqtt.is_some(),
+            "MQTT feed report/configuration disagree"
+        );
+        if let Some(mqtt) = &self.mqtt {
+            ensure!(
+                !mqtt.active
+                    && !mqtt.connected
+                    && mqtt.offered == self.cycles
+                    && mqtt
+                        .drained
+                        .checked_add(mqtt.queue_drops)
+                        .and_then(|n| n.checked_add(mqtt.queue_pending))
+                        == Some(mqtt.offered)
+                    && mqtt
+                        .coalesced
+                        .checked_add(mqtt.attempted_events)
+                        .and_then(|n| n.checked_add(mqtt.unsent_events))
+                        == Some(mqtt.drained)
+                    && mqtt.unsent_events <= 1
+                    && mqtt.write_completions.checked_add(mqtt.publish_errors)
+                        == Some(mqtt.publish_attempts),
+                "MQTT feed counters are inconsistent or still active/connected"
+            );
+        }
         ensure!(
             self.http.is_some() == ctx.profile.http.is_some(),
             "HTTP feed report/configuration disagree"
@@ -337,6 +363,7 @@ pub struct Trial {
     pub receive_spacing: Spacing,
     pub capture: CaptureStats,
     pub http: Option<crate::http_feed::Stats>,
+    pub mqtt: Option<crate::mqtt_feed::Stats>,
 }
 
 #[derive(Debug, Serialize)]
@@ -568,6 +595,17 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
         {
             result.warnings.push(format!("Trial {} has HTTP feed loss, client errors or worker failure; inspect its independent interface counters.",file.display()));
         }
+        if let Some(mqtt) = &r.mqtt
+            && (mqtt.queue_drops > 0
+                || mqtt.queue_pending > 0
+                || mqtt.unsent_events > 0
+                || mqtt.errors > 0
+                || mqtt.publish_errors > 0
+                || mqtt.worker_failed
+                || mqtt.worker_error.is_some())
+        {
+            result.warnings.push(format!("Trial {} has MQTT feed loss, unsent input, network errors or worker failure; coalescing and TCP write completion are independent of CSV/bus quality and do not prove consumer delivery.",file.display()));
+        }
         result.trials.push(Trial {
             file: file.clone(),
             sha256: sha256.clone(),
@@ -587,6 +625,7 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
             receive_spacing: r.receive_spacing.clone(),
             capture: cap.clone(),
             http: r.http.clone(),
+            mqtt: r.mqtt.clone(),
         });
     }
     for scheduler in [Scheduler::Deadline, Scheduler::Relative] {
@@ -763,6 +802,42 @@ mod tests {
                 .to_string()
                 .contains("configuration differs")
         );
+    }
+
+    #[test]
+    fn mqtt_comparison_retains_coalescing_and_checks_both_accounting_domains() {
+        let enable = |run: &mut SavedRun| {
+            let ctx = run.context.as_mut().unwrap();
+            ctx.profile.mqtt = Some(crate::mqtt_feed::Config::default());
+            (ctx.profile_sha256, ctx.comparison_sha256) = RunContext::hashes(&ctx.profile).unwrap();
+            run.mqtt = Some(crate::mqtt_feed::Stats {
+                offered: 1000,
+                drained: 997,
+                queue_drops: 3,
+                coalesced: 996,
+                unsent_events: 1,
+                errors: 1,
+                ..Default::default()
+            });
+        };
+        let mut runs = vec![
+            fixture(Scheduler::Deadline, 0, 100),
+            fixture(Scheduler::Relative, 1, 200),
+        ];
+        for run in &mut runs {
+            enable(run);
+        }
+        let result = compare(inputs(runs)).unwrap();
+        assert_eq!(result.trials[0].mqtt.as_ref().unwrap().coalesced, 996);
+        assert_eq!(result.trials[0].capture.overruns, 0);
+        assert!(result.warnings.iter().any(|w| w.contains("MQTT feed loss")));
+        let mut bad = fixture(Scheduler::Deadline, 0, 100);
+        enable(&mut bad);
+        bad.mqtt.as_mut().unwrap().coalesced += 1;
+        assert!(bad.checked().is_err());
+        bad.mqtt.as_mut().unwrap().coalesced -= 1;
+        bad.mqtt.as_mut().unwrap().queue_drops += 1;
+        assert!(bad.checked().is_err());
     }
 
     #[test]
