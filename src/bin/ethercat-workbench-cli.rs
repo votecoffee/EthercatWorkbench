@@ -40,6 +40,20 @@ enum Command {
     },
     /// Interpret an offline ESC register snapshot (no bus access).
     DecodeEsc { file: PathBuf },
+    /// Inspect classic Ethernet PCAP offline; never opens a NIC or transmits captured frames.
+    InspectPcap {
+        profile: PathBuf,
+        file: PathBuf,
+        /// Expected station address (decimal or 0x hex), not discovered from the capture.
+        #[arg(long, default_value = "0x1000", value_parser = esi::number)]
+        station: u32,
+        /// Number of returned-frame payload previews (0..64); all frames are counted.
+        #[arg(long, default_value_t = 16)]
+        preview: usize,
+        /// Save UTF-8 JSON to a new .json file after inspection; preserve existing paths.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// List products and revisions in an ESI XML.
     EsiList { file: PathBuf },
     /// Write a new profile from one zero-based ESI list selection.
@@ -207,6 +221,34 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::DecodeEsc { file } => output(&ethercat_workbench::esc::load(&file)?),
+        Command::InspectPcap {
+            profile,
+            file,
+            station,
+            preview,
+            out,
+        } => {
+            let report = ethercat_workbench::pcap_inspect::inspect(
+                &file,
+                &Profile::load(&profile)?,
+                u16::try_from(station).context("station address exceeds 16 bits")?,
+                preview,
+            )?;
+            if let Some(path) = out {
+                use std::io::Write;
+                ensure!(
+                    path.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("json")),
+                    "inspection export path must end in .json"
+                );
+                let mut file = std::fs::File::create_new(&path)
+                    .context("create new inspection export; existing paths are preserved")?;
+                serde_json::to_writer_pretty(&mut file, &report)?;
+                writeln!(file)?;
+                file.sync_all().context("flush inspection export")?;
+            }
+            output(&report)
+        }
         Command::CompareRuns { reports, csv } => {
             let result = if csv.is_empty() {
                 ethercat_workbench::benchmark::compare_files(&reports)?

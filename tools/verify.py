@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -886,6 +887,98 @@ def verify_discovery(cli, destination):
     (destination/"scans.json").write_text(json.dumps(reports,indent=2),encoding="utf-8")
 
 
+def verify_pcap(cli, destination):
+    """Authored PCAP records: no capture hardware or packet transmission."""
+    fixture = json.loads((ROOT / "samples/synthetic-replay.json").read_text(encoding="utf-8"))
+    request = bytes.fromhex(fixture["exchanges"][0]["request_hex"])
+    reply = bytes.fromhex(fixture["exchanges"][0]["received_hex"][0])
+
+    def frame(raw, sequence, wkc=None, state=None):
+        packet = bytearray(raw)
+        packet[17] = packet[37] = sequence
+        if wkc is not None:
+            packet[34:36] = struct.pack("<H", wkc)
+        if state is not None:
+            packet[46] = state
+        return bytes(packet)
+
+    other = bytearray(reply)
+    other[12:14] = b"\x08\x00"
+    vlan = bytearray(reply)
+    vlan[12:14] = b"\x81\x00"
+    wrong = bytearray(reply)
+    wrong[38] = 1
+    packets = [(0, frame(request, 1), None), (100, frame(reply, 1), None),
+               (1000, frame(request, 2), None), (1100, frame(reply, 2, wkc=0), None),
+               (2000, frame(request, 3), None), (2100, frame(reply, 3, state=0x14), None),
+               (3100, frame(reply, 4), None), (3100, frame(reply, 4), None),
+               (3200, other, None), (3300, vlan, None), (3400, wrong, None),
+               (3500, reply, 100)]
+
+    def pcap(endian, nano, records=packets):
+        data = struct.pack(endian + "IHHIIII", 0xa1b23c4d if nano else 0xa1b2c3d4,
+                           2, 4, 0, 0, 65535, 1)
+        for fraction, packet, original in records:
+            data += struct.pack(endian + "IIII", 1700000000,
+                                fraction * (1000 if nano else 1), len(packet),
+                                len(packet) if original is None else original) + packet
+        return data
+
+    reports = []
+    for endian in ("<", ">"):
+        for nano in (False, True):
+            path = destination / f"authored-{'le' if endian == '<' else 'be'}-{'ns' if nano else 'us'}.pcap"
+            data = pcap(endian, nano)
+            path.write_bytes(data)
+            result = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path,
+                              "--station", "0x1000", "--preview", 64)
+            assert result["file_sha256"] == hashlib.sha256(data).hexdigest()
+            assert result["file_bytes"] == len(data) and result["profile"]["requested_cycle_us"] == 1000
+            assert result["timestamp_resolution"] == ("nanoseconds" if nano else "microseconds")
+            assert result["counts"] == dict(packets=12, snapshot_truncated=1, ethercat=10,
+                requests=3, replies=5, valid_safeop_replies=3, wkc_mismatches=1, al_mismatches=1,
+                unmatched_ethercat=2, other_packets=2, vlan_packets=1, timestamp_regressions=0)
+            assert result["request_spacing"]["longest_gap_ns"] == 1000000
+            assert result["reply_spacing"]["longest_gap_ns"] == 1000000
+            assert result["valid_reply_spacing"]["longest_gap_ns"] == 3000000
+            assert result["request_spacing"]["count"] == 2 and result["reply_spacing"]["count"] == 4
+            assert len(result["preview"]) == 5
+            assert [v["value"] for v in result["preview"][0]["values"]] == ["4", "false", "1"]
+            assert [v["valid_safeop"] for v in result["preview"]] == [True, False, False, True, True]
+            assert result["capture_first_utc"] == "2023-11-14T22:13:20.000000000Z"
+            limited = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--preview", 1)
+            assert limited["counts"] == result["counts"] and len(limited["preview"]) == 1
+            reports.append(result)
+    path = destination / "regressing.pcap"
+    path.write_bytes(pcap("<", True, [(100, reply, None), (90, reply, None)]))
+    result = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--preview", 0)
+    assert result["counts"]["timestamp_regressions"] == 1 and result["preview"] == []
+    assert result["request_spacing"] is None and result["reply_spacing"] is None and result["valid_reply_spacing"] is None
+    good = pcap("<", False)
+    bad_cases = {"pcapng": b"\x0a\x0d\x0d\x0a" + bytes(24), "truncated": good[:-1],
+                 "partial-header": good + b"\x00", "linktype": good[:20] + struct.pack("<I", 101) + good[24:],
+                 "fraction": good[:28] + struct.pack("<I", 1000000) + good[32:]}
+    for name, data in bad_cases.items():
+        path = destination / f"bad-{name}.pcap"
+        path.write_bytes(data)
+        failure = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, success=False)
+        assert "Error" in failure
+    path = destination / "authored-le-us.pcap"
+    exported = destination / "inspection.json"
+    result = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--out", exported)
+    saved = exported.read_bytes()
+    assert not saved.startswith(b"\xef\xbb\xbf") and saved.endswith(b"\n")
+    assert json.loads(saved) == result
+    cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--out", exported, success=False)
+    assert exported.read_bytes() == saved
+    before = path.read_bytes()
+    cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--out", path, success=False)
+    assert path.read_bytes() == before
+    for option, value in [("--preview", 65), ("--station", 0), ("--station", 65536)]:
+        cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, option, value, success=False)
+    (destination / "inspection-reports.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -900,6 +993,9 @@ def main():
     destination.mkdir(parents=True, exist_ok=False)
     cli = bin_dir / "ethercat-workbench-cli.exe"
     profile = ROOT / "samples/synthetic.json"
+    pcap_destination = destination / "pcap"
+    pcap_destination.mkdir()
+    verify_pcap(cli, pcap_destination)
     esi = ROOT / "samples/synthetic.esi.xml"
     legacy = json.loads(profile.read_text(encoding="utf-8"))
     legacy.pop("input_loss_timeout_ms", None)
