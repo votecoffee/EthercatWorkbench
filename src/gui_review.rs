@@ -96,7 +96,7 @@ impl Panel {
             ui.label(format!("Current profile · {} · {} input bytes · {} fields", profile.name, profile.tx_bytes, profile.tx.len()));
             ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Classic PCAP");
+                    ui.label("PCAP / PCAPNG");
                     ui.add(egui::TextEdit::singleline(&mut self.pcap_path)
                         .hint_text(".local/bench.pcap").desired_width(410.0));
                 });
@@ -117,7 +117,7 @@ impl Panel {
                     });
                 }
             });
-            ui.label("Up to 64 MiB. PCAPNG and VLAN decoding are unsupported. Capture timestamps remain separate from application cycle timing.");
+            ui.label("Up to 64 MiB. PCAPNG requires one Ethernet interface and microsecond/nanosecond timestamps. VLAN decoding is unsupported. Capture timestamps remain separate from application cycle timing.");
         });
         ui.separator();
         let mut audit = None;
@@ -242,6 +242,15 @@ fn warnings(ui: &mut egui::Ui, warnings: &[String]) {
 
 fn show_pcap(ui: &mut egui::Ui, report: &pcap_inspect::Report) {
     let counts = &report.counts;
+    ui.label(format!(
+        "Capture container · {} · inspection schema {}",
+        report.capture_format, report.schema
+    ));
+    if let Some(metadata) = &report.pcapng {
+        ui.label(format!("Interface 0 · Ethernet · snaplen {} · 10^-{} s ticks · signed offset {} s · blocks {} · skipped blocks/options {}/{}",
+            metadata.snaplen, metadata.timestamp_resolution_exponent, metadata.timestamp_offset_seconds,
+            metadata.blocks, metadata.skipped_blocks, metadata.skipped_options));
+    }
     ui.strong(format!(
         "{} saved packets · {} recognized returned frames · {} valid SAFEOP frames",
         counts.packets, counts.replies, counts.valid_safeop_replies
@@ -592,7 +601,7 @@ mod tests {
     #[test]
     fn pcap_layout_labels_invalid_payloads_and_unavailable_capture_spacing() {
         let report = pcap_inspect::Report {
-            schema: 1,
+            schema: 2,
             app_version: env!("CARGO_PKG_VERSION").into(),
             file: "Authored UI fixture".into(),
             file_bytes: 100,
@@ -606,6 +615,19 @@ mod tests {
             station_address: 0x1000,
             expected_input_wkc: 1,
             timestamp_resolution: "nanoseconds".into(),
+            capture_format: "pcapng".into(),
+            pcapng: Some(pcap_inspect::PcapngMetadata {
+                minor_version: 0,
+                declared_section_bytes: None,
+                interface_id: 0,
+                link_type: 1,
+                snaplen: 65535,
+                timestamp_resolution_exponent: 9,
+                timestamp_offset_seconds: -2,
+                blocks: 4,
+                skipped_blocks: 0,
+                skipped_options: 1,
+            }),
             capture_first_utc: None,
             first_timestamp_unix_ns: Some(100),
             last_timestamp_unix_ns: Some(90),
@@ -651,6 +673,8 @@ mod tests {
             "Frozen profile",
             "Recorded capture spacing in nanoseconds",
             "hardware validity is unknown",
+            "Capture container · pcapng",
+            "signed offset -2 s",
         ] {
             assert!(
                 text.contains(expected),
@@ -672,7 +696,7 @@ mod tests {
             "Stop the active bus",
             "frozen copy",
             "Station must be 1–65534",
-            "PCAPNG and VLAN decoding are unsupported",
+            "PCAPNG requires one Ethernet interface",
             "Inspect PCAP with current profile",
         ] {
             assert!(

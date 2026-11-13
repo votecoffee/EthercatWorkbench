@@ -1,9 +1,9 @@
-//! Bounded offline inspection of classic PCAP. Never opens a driver or replays traffic.
+//! Bounded offline inspection of PCAP and single-interface PCAPNG. Never opens a driver or replays traffic.
 use crate::{
     model::Profile,
     wire::{Frame, input_datagrams, input_reply},
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use hdrhistogram::Histogram;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -11,7 +11,7 @@ use std::{fs::File, io::Read, path::Path, sync::atomic::AtomicBool};
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PACKETS: u64 = 1_000_000;
-const MAX_SNAPLEN: u32 = 262_144;
+pub use crate::capture_file::PcapngMetadata;
 
 #[derive(Debug, Default, Serialize)]
 pub struct Counts {
@@ -111,6 +111,8 @@ pub struct Report {
     pub station_address: u16,
     pub expected_input_wkc: u16,
     pub timestamp_resolution: String,
+    pub capture_format: String,
+    pub pcapng: Option<PcapngMetadata>,
     pub capture_first_utc: Option<String>,
     pub first_timestamp_unix_ns: Option<u64>,
     pub last_timestamp_unix_ns: Option<u64>,
@@ -221,50 +223,7 @@ fn parse_with_stop(
 ) -> Result<Report> {
     crate::review::check_cancel(stop)?;
     validate_settings(profile, station, preview_limit)?;
-    ensure!(
-        bytes.len() >= 24 && bytes.len() as u64 <= MAX_BYTES,
-        "PCAP header truncated or file exceeds 64 MiB"
-    );
-    let (little, nano) = match &bytes[..4] {
-        [0xd4, 0xc3, 0xb2, 0xa1] => (true, false),
-        [0xa1, 0xb2, 0xc3, 0xd4] => (false, false),
-        [0x4d, 0x3c, 0xb2, 0xa1] => (true, true),
-        [0xa1, 0xb2, 0x3c, 0x4d] => (false, true),
-        [0x0a, 0x0d, 0x0d, 0x0a] => {
-            bail!("PCAPNG is unsupported; export classic Ethernet PCAP 2.4")
-        }
-        _ => bail!("unsupported PCAP magic"),
-    };
-    let word = |at| {
-        let raw = [bytes[at], bytes[at + 1]];
-        if little {
-            u16::from_le_bytes(raw)
-        } else {
-            u16::from_be_bytes(raw)
-        }
-    };
-    let number = |data: &[u8], at| {
-        let raw = [data[at], data[at + 1], data[at + 2], data[at + 3]];
-        if little {
-            u32::from_le_bytes(raw)
-        } else {
-            u32::from_be_bytes(raw)
-        }
-    };
-    ensure!(
-        word(4) == 2 && word(6) == 4,
-        "only PCAP version 2.4 is supported"
-    );
-    let snaplen = number(bytes, 16);
-    ensure!(
-        (1..=MAX_SNAPLEN).contains(&snaplen),
-        "PCAP snaplen must be 1..262144"
-    );
-    ensure!(
-        number(bytes, 20) == 1,
-        "only Ethernet link type 1 without additional FCS flags is supported"
-    );
-
+    ensure!(bytes.len() as u64 <= MAX_BYTES, "capture exceeds 64 MiB");
     let mut counts = Counts::default();
     let mut requests = Gaps::new()?;
     let mut replies = Gaps::new()?;
@@ -272,53 +231,30 @@ fn parse_with_stop(
     let mut preview = Vec::new();
     let mut first = None;
     let mut previous = None;
-    let mut offset = 24;
-    while offset < bytes.len() {
-        crate::review::check_cancel(stop)?;
+    let info = crate::capture_file::packets(bytes, stop, |record| {
         ensure!(
             counts.packets < MAX_PACKETS,
-            "PCAP exceeds one million packets"
+            "capture exceeds one million packets"
         );
-        ensure!(bytes.len() - offset >= 16, "truncated PCAP packet header");
-        let header = &bytes[offset..offset + 16];
-        let seconds = number(header, 0) as u64;
-        let fraction = number(header, 4) as u64;
-        let resolution = if nano { 1_000_000_000 } else { 1_000_000 };
-        ensure!(
-            fraction < resolution,
-            "PCAP timestamp fraction out of range"
-        );
-        let timestamp = seconds * 1_000_000_000 + fraction * if nano { 1 } else { 1000 };
-        let captured = number(header, 8);
-        let original = number(header, 12);
-        ensure!(
-            captured <= snaplen && captured <= original,
-            "invalid PCAP captured/original packet lengths"
-        );
-        offset += 16;
-        ensure!(
-            captured as usize <= bytes.len() - offset,
-            "truncated PCAP packet data"
-        );
-        let packet = &bytes[offset..offset + captured as usize];
-        offset += captured as usize;
+        let timestamp = record.timestamp;
+        let packet = record.bytes;
+        let truncated = packet.len() < record.original as usize;
         counts.packets += 1;
         counts.timestamp_regressions += u64::from(previous.is_some_and(|at| timestamp < at));
         first.get_or_insert(timestamp);
         previous = Some(timestamp);
-        let truncated = captured < original;
         counts.snapshot_truncated += u64::from(truncated);
         let ether_type = packet.get(12..14);
         if ether_type != Some(&[0x88, 0xa4][..]) {
             counts.other_packets += 1;
             counts.vlan_packets +=
                 u64::from(matches!(ether_type, Some([0x81, 0x00] | [0x88, 0xa8])));
-            continue;
+            return Ok(());
         }
         counts.ethercat += 1;
         if truncated || packet.len() < 18 {
             counts.unmatched_ethercat += 1;
-            continue;
+            return Ok(());
         }
         let sequence = packet[17];
         let frame = Frame::new(sequence, input_datagrams(station, profile.tx_bytes));
@@ -366,13 +302,18 @@ fn parse_with_stop(
         } else {
             counts.unmatched_ethercat += 1;
         }
-    }
+        Ok(())
+    })?;
     let monotonic = counts.timestamp_regressions == 0;
     let mut notes = vec![
         "Offline file evidence only. Capture clock, placement, direction and dropped packets are unknown; recorded timestamps are not the application monotonic receive clock or qualified wire timing.".into(),
         "Only the Workbench untagged input-only LRD at logical address 0 plus FPRD AL-status signature is recognized. Station address and profile are user-supplied expectations; device identity and PDO meaning are not verified.".into(),
         "Requests and replies are counted independently, without pairing, deduplication, timeout inference, cycle indexes or deadline estimates. Duplicate frames are retained. Percentiles use a three-significant-digit histogram; longest gap is exact.".into(),
     ];
+    if let Some(metadata) = &info.pcapng {
+        notes.push(format!("PCAPNG single Ethernet interface 0; signed timestamp offset {} seconds applied. {} blocks and {} options skipped without interpreting their contents, including any capture-tool statistics. Packet pairing, losses and interface identity remain unverified.",
+            metadata.timestamp_offset_seconds, metadata.skipped_blocks, metadata.skipped_options));
+    }
     if !monotonic {
         notes.push("Capture timestamps regress; all spacing summaries are unavailable.".into());
     }
@@ -399,7 +340,7 @@ fn parse_with_stop(
     let profile_sha256 = crate::benchmark::hash(&serde_json::to_vec(profile)?);
     crate::review::check_cancel(stop)?;
     Ok(Report {
-        schema: 1,
+        schema: 2,
         app_version: env!("CARGO_PKG_VERSION").into(),
         file: String::new(),
         file_bytes: bytes.len() as u64,
@@ -408,7 +349,14 @@ fn parse_with_stop(
         profile_sha256,
         station_address: station,
         expected_input_wkc: 1,
-        timestamp_resolution: if nano { "nanoseconds" } else { "microseconds" }.into(),
+        timestamp_resolution: if info.nano {
+            "nanoseconds"
+        } else {
+            "microseconds"
+        }
+        .into(),
+        capture_format: info.format.into(),
+        pcapng: info.pcapng,
         capture_first_utc: first
             .and_then(|at| {
                 chrono::DateTime::from_timestamp(

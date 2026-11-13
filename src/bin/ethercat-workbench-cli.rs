@@ -40,7 +40,7 @@ enum Command {
     },
     /// Interpret an offline ESC register snapshot (no bus access).
     DecodeEsc { file: PathBuf },
-    /// Inspect classic Ethernet PCAP offline; never opens a NIC or transmits captured frames.
+    /// Inspect Ethernet PCAP or single-interface PCAPNG offline; never opens a NIC or transmits frames.
     InspectPcap {
         profile: PathBuf,
         file: PathBuf,

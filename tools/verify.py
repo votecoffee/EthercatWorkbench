@@ -935,6 +935,7 @@ def verify_pcap(cli, destination):
             assert result["file_sha256"] == hashlib.sha256(data).hexdigest()
             assert result["file_bytes"] == len(data) and result["profile"]["requested_cycle_us"] == 1000
             assert result["timestamp_resolution"] == ("nanoseconds" if nano else "microseconds")
+            assert result["schema"] == 2 and result["capture_format"] == "pcap" and result["pcapng"] is None
             assert result["counts"] == dict(packets=12, snapshot_truncated=1, ethercat=10,
                 requests=3, replies=5, valid_safeop_replies=3, wkc_mismatches=1, al_mismatches=1,
                 unmatched_ethercat=2, other_packets=2, vlan_packets=1, timestamp_regressions=0)
@@ -979,6 +980,93 @@ def verify_pcap(cli, destination):
     (destination / "inspection-reports.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
 
 
+def verify_pcapng(cli, destination, classic_fixture):
+    """Independent block/option writer, using already-checked authored Ethernet records."""
+    raw = classic_fixture.read_bytes()
+    records = []
+    at = 24
+    while at < len(raw):
+        sec, fraction, captured, original = struct.unpack_from("<IIII", raw, at)
+        records.append((sec * 1000000000 + fraction * 1000, raw[at + 16:at + 16 + captured], original))
+        at += 16 + captured
+    reference = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", classic_fixture, "--preview", 64)
+
+    def block(endian, kind, body):
+        body += bytes((-len(body)) % 4)
+        return struct.pack(endian + "II", kind, len(body) + 12) + body + struct.pack(endian + "I", len(body) + 12)
+
+    def option(endian, code, value):
+        return struct.pack(endian + "HH", code, len(value)) + value + bytes((-len(value)) % 4)
+
+    def capture(endian="<", nano=False, offset=0, *, opts=None, selected=records):
+        shb = block(endian, 0x0a0d0d0a, struct.pack(endian + "IHHq", 0x1a2b3c4d, 1, 0, -1))
+        if opts is None:
+            opts = option(endian, 9, bytes([9 if nano else 6])) + option(endian, 14, struct.pack(endian + "q", offset))
+        idb = block(endian, 1, struct.pack(endian + "HHI", 1, 0, 65535) + opts)
+        epbs = []
+        for timestamp, packet, original in selected:
+            ticks = timestamp // (1 if nano else 1000)
+            epbs.append(block(endian, 6, struct.pack(endian + "IIIII", 0, ticks >> 32, ticks & 0xffffffff,
+                                                   len(packet), original) + packet + bytes((-len(packet)) % 4)))
+        return shb, idb, epbs
+
+    results = []
+    for endian in ("<", ">"):
+        for nano in (False, True):
+            for offset in (-2, 3):
+                shb, idb, epbs = capture(endian, nano, offset)
+                data = shb + idb + b"".join(epbs)
+                path = destination / f"authored-{'le' if endian == '<' else 'be'}-{'ns' if nano else 'us'}-{offset}.pcapng"
+                path.write_bytes(data)
+                r = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--preview", 64)
+                assert r["schema"] == 2 and r["capture_format"] == "pcapng"
+                assert r["file_sha256"] == hashlib.sha256(data).hexdigest() and r["file_bytes"] == len(data)
+                assert r["counts"] == reference["counts"]
+                assert all(r[k] == reference[k] for k in ["request_spacing", "reply_spacing", "valid_reply_spacing"])
+                assert r["timestamp_resolution"] == ("nanoseconds" if nano else "microseconds")
+                assert r["pcapng"] == dict(minor_version=0, declared_section_bytes=None, interface_id=0, link_type=1,
+                    snaplen=65535, timestamp_resolution_exponent=9 if nano else 6, timestamp_offset_seconds=offset,
+                    blocks=14, skipped_blocks=0, skipped_options=0)
+                for expected, actual in zip(reference["preview"], r["preview"], strict=True):
+                    expected = dict(expected, timestamp_unix_ns=expected["timestamp_unix_ns"] + offset * 1000000000)
+                    assert actual == expected
+                results.append(r)
+    shb, idb, epbs = capture()
+    good = shb + idb + b"".join(epbs)
+    cases = {"second-interface": good + idb, "second-section": good + shb,
+             "no-interface": shb + epbs[0], "simple-packet": shb + idb + block("<", 3, b"\x00" * 8),
+             "repeated-length": good[:-4] + struct.pack("<I", 12), "truncated": good[:-1],
+             "binary-resolution": b"".join(capture(opts=option("<", 9, b"\x89"))[:2]) + b"".join(epbs),
+             "duplicate-resolution": shb + capture(opts=option("<", 9, b"\x06") * 2)[1] + b"".join(epbs),
+             "bad-offset-size": shb + capture(opts=option("<", 14, b"\x00" * 7))[1] + b"".join(epbs)}
+    for name, data in cases.items():
+        path = destination / f"bad-{name}.pcapng"
+        path.write_bytes(data)
+        export = destination / f"bad-{name}.json"
+        cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path, "--out", export, success=False)
+        assert not export.exists()
+    # Unknown metadata is counted, not interpreted; the default clock is microseconds.
+    shb, idb, epbs = capture(opts=option("<", 1, b"Authored comment"))
+    path = destination / "default-clock-and-skipped-metadata.pcapng"
+    path.write_bytes(shb + idb + block("<", 0x12345678, b"Authored custom data") + b"".join(epbs))
+    result = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path)
+    assert result["pcapng"]["skipped_blocks"] == result["pcapng"]["skipped_options"] == 1
+    assert result["pcapng"]["timestamp_resolution_exponent"] == 6 and result["counts"] == reference["counts"]
+    # Regressions still suppress all spacing, regardless of the container.
+    shb, idb, epbs = capture(nano=True, selected=[records[1], (records[1][0] - 1, records[1][1], records[1][2])])
+    path = destination / "regressing.pcapng"
+    path.write_bytes(shb + idb + b"".join(epbs))
+    result = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path)
+    assert result["counts"]["timestamp_regressions"] == 1 and result["reply_spacing"] is None
+    shb, idb, epbs = capture(nano=True, selected=[(0, records[1][1], records[1][2]),
+        ((1 << 63) - 1, records[1][1], records[1][2])])
+    path = destination / "timestamp-boundary.pcapng"
+    path.write_bytes(shb + idb + b"".join(epbs))
+    result = cli_call(cli, "inspect-pcap", ROOT / "samples/synthetic.json", path)
+    assert result["reply_spacing"]["longest_gap_ns"] == (1 << 63) - 1
+    (destination / "inspection-reports.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -996,6 +1084,9 @@ def main():
     pcap_destination = destination / "pcap"
     pcap_destination.mkdir()
     verify_pcap(cli, pcap_destination)
+    pcapng_destination = destination / "pcapng"
+    pcapng_destination.mkdir()
+    verify_pcapng(cli, pcapng_destination, pcap_destination / "authored-le-us.pcap")
     esi = ROOT / "samples/synthetic.esi.xml"
     legacy = json.loads(profile.read_text(encoding="utf-8"))
     legacy.pop("input_loss_timeout_ms", None)
