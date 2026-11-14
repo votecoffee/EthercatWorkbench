@@ -452,6 +452,98 @@ def verify_input_loss(cli, profile, destination, model="coe"):
     (destination / "input-health.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
 
 
+def verify_esi_identity(cli, destination):
+    """Independent multi-product/revision XML checks for exact import selection."""
+    from copy import deepcopy
+    import xml.etree.ElementTree as ET
+
+    base = (ROOT / "samples/mode-pdo-staging.esi.xml").read_bytes()
+    tree = ET.fromstring(base)
+    container = tree.find("Descriptions/Devices")
+    first = container[0]
+    second = deepcopy(first)
+    second.find("Type").set("RevisionNo", "#x00000002")
+    second.find("TxPdo/Entry/Name").text = "Revision two input"
+    third = deepcopy(first)
+    third.find("Type").set("ProductCode", "#x00000004")
+    container.extend([second, third])
+    source = destination / "multiple-revisions.esi.xml"
+    source.write_bytes(ET.tostring(tree, encoding="utf-8", xml_declaration=True))
+    original = source.read_bytes()
+    entries = cli_call(cli, "esi-list", source)
+    target = entries[1]["source"]["identity"]
+    assert [(e["source"]["identity"]["product"], e["source"]["identity"]["revision"]) for e in entries] == [(3, 1), (3, 2), (4, 1)]
+    selector = "0x00ff1000/0x00000003/0x00000002"
+    extras = ["--dc-mode", 1, "--sync-unit-cycle-ns", 1000000, "--tx-pdo", "0x1a01@3"]
+    profiles = []
+    for label, args in [
+        ("legacy", ["--device", 1]),
+        ("exact", ["--identity", selector]),
+        ("guarded", ["--device", 1, "--identity", selector]),
+        ("decimal", ["--identity", f'{target["vendor"]}/3/2']),
+        ("esi-hex", ["--identity", "#x00FF1000/#x3/#x2"]),
+    ]:
+        path = destination / f"{label}.json"
+        cli_call(cli, "esi-import", source, *args, *extras, "--out", path)
+        profile = cli_call(cli, "validate", path)
+        assert profile["expected_identity"] == profile["esi"]["identity"] == target
+        assert profile["esi"]["sha256"] == hashlib.sha256(original).hexdigest()
+        assert profile["staged_esi_dc_mode"] == 1 and profile["sync_unit_cycle_ns"] == 1000000
+        assert profile["esi_pdo_selection"]["tx"] == [{"index": 0x1a01, "sm": 3}]
+        profiles.append(profile)
+    assert all(p == profiles[0] for p in profiles)
+
+    failures = [
+        ("missing-selector", [], "required arguments"),
+        ("bad-format", ["--identity", "1/2"], "VENDOR/PRODUCT/REVISION"),
+        ("overflow", ["--identity", "4294967296/3/2"], "invalid value"),
+        ("zero-literal", ["--identity", "0x00ff1000/3/0"], "was not found"),
+        ("unknown-vendor", ["--identity", "1/3/2"], "was not found"),
+        ("unknown-product", ["--identity", "0x00ff1000/5/2"], "was not found"),
+        ("guard-mismatch", ["--device", 0, "--identity", selector], "expected"),
+        ("bad-index", ["--device", 3, "--identity", selector], "index out of range"),
+    ]
+    for label, args, message in failures:
+        path = destination / f"rejected-{label}.json"
+        error = cli_call(cli, "esi-import", source, *args, "--out", path, success=False)
+        assert message in error, (label, error)
+        assert not path.exists() and source.read_bytes() == original
+
+    # Reordering changes source provenance but not exact-selection configuration.
+    container[:] = [third, first, second]
+    reordered = destination / "reordered.esi.xml"
+    reordered.write_bytes(ET.tostring(tree, encoding="utf-8", xml_declaration=True))
+    out = destination / "reordered.json"
+    cli_call(cli, "esi-import", reordered, "--identity", selector, *extras, "--out", out)
+    selected = cli_call(cli, "validate", out)
+    expected = deepcopy(profiles[0])
+    expected["esi"]["file_name"] = reordered.name
+    expected["esi"]["sha256"] = hashlib.sha256(reordered.read_bytes()).hexdigest()
+    assert selected == expected
+    stale = destination / "stale-index.json"
+    assert "expected" in cli_call(cli, "esi-import", reordered, "--device", 1, "--identity", selector, "--out", stale, success=False)
+    assert not stale.exists()
+
+    # Duplicate exact identities can have distinct entries. Never silently choose the first.
+    duplicate = deepcopy(second)
+    duplicate.find("Name").text = "Explicit duplicate entry"
+    container.append(duplicate)
+    duplicates = destination / "duplicates.esi.xml"
+    duplicates.write_bytes(ET.tostring(tree, encoding="utf-8", xml_declaration=True))
+    ambiguous = destination / "ambiguous.json"
+    assert "matches multiple entries" in cli_call(cli, "esi-import", duplicates, "--identity", selector, "--out", ambiguous, success=False)
+    assert not ambiguous.exists()
+    chosen = destination / "explicit-duplicate.json"
+    cli_call(cli, "esi-import", duplicates, "--device", 3, "--identity", selector, "--out", chosen)
+    assert cli_call(cli, "validate", chosen)["name"] == "Explicit duplicate entry"
+    collision = (destination / "exact.json").read_bytes()
+    cli_call(cli, "esi-import", source, "--identity", selector, "--out", destination / "exact.json", success=False)
+    assert (destination / "exact.json").read_bytes() == collision and source.read_bytes() == original
+    (destination / "identity-selection-check.json").write_text(json.dumps({"identity": target,
+        "equivalent_imports": len(profiles), "rejected_selectors": len(failures),
+        "reordered_selection": selected, "explicit_duplicate": str(chosen)}, indent=2), encoding="utf-8")
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -1792,6 +1884,9 @@ def main():
     sync_destination = destination / "sync-modes"
     sync_destination.mkdir()
     verify_sync_modes(cli, sync_destination)
+    identity_destination = destination / "esi-identity"
+    identity_destination.mkdir()
+    verify_esi_identity(cli, identity_destination)
     mode_destination = destination / "mode-pdo-staging"
     mode_destination.mkdir()
     verify_mode_pdo_staging(cli, mode_destination)

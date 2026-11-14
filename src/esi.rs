@@ -52,6 +52,54 @@ pub fn load(path: &Path) -> Result<Vec<Device>> {
     parse(&file, &bytes)
 }
 
+/// Parse an exact unsigned vendor/product/revision selector. Zero is a literal value.
+pub fn identity_selector(text: &str) -> Result<Identity> {
+    ensure!(text.len() <= 128, "ESI identity selector exceeds 128 bytes");
+    let parts = text.split('/').collect::<Vec<_>>();
+    ensure!(
+        parts.len() == 3 && parts.iter().all(|part| !part.trim().is_empty()),
+        "expected VENDOR/PRODUCT/REVISION with three unsigned 32-bit integers"
+    );
+    Ok(Identity {
+        vendor: number(parts[0]).context("invalid ESI vendor selector")?,
+        product: number(parts[1]).context("invalid ESI product selector")?,
+        revision: number(parts[2]).context("invalid ESI revision selector")?,
+    })
+}
+
+/// Select a unique exact identity, or explicitly choose an index with an optional identity guard.
+pub fn select_device<'a>(
+    devices: &'a [Device],
+    index: Option<usize>,
+    identity: Option<&Identity>,
+) -> Result<&'a Device> {
+    if let Some(index) = index {
+        let device = devices
+            .get(index)
+            .context("ESI device index out of range")?;
+        if let Some(expected) = identity {
+            ensure!(
+                &device.source.identity == expected,
+                "ESI device index {index} has identity {}, expected {expected}",
+                device.source.identity
+            );
+        }
+        return Ok(device);
+    }
+    let identity = identity.context("select an ESI device with --device or --identity")?;
+    let mut matching = devices
+        .iter()
+        .filter(|device| &device.source.identity == identity);
+    let selected = matching
+        .next()
+        .with_context(|| format!("ESI identity {identity} was not found"))?;
+    ensure!(
+        matching.next().is_none(),
+        "ESI identity {identity} matches multiple entries; inspect esi-list and use --device with --identity to choose one explicitly"
+    );
+    Ok(selected)
+}
+
 pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
     ensure!(bytes.len() <= 16 * 1024 * 1024, "ESI exceeds 16 MiB");
     let text = xml_text(bytes)?;
@@ -578,6 +626,86 @@ fn dc_modes(device: Node<'_, '_>) -> Result<Vec<crate::sync_review::DcMode>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_identity_selector_accepts_numeric_forms_and_rejects_partial_or_overflow() {
+        let expected = Identity {
+            vendor: 16,
+            product: 32,
+            revision: 0,
+        };
+        for text in ["16/32/0", "0x10/0X20/0", " #x10 / #X20 / 0 "] {
+            assert_eq!(identity_selector(text).unwrap(), expected);
+        }
+        for text in [
+            "",
+            "1/2",
+            "1/2/3/4",
+            "1//3",
+            "1/2/*",
+            "1/2/-1",
+            "1/2/4294967296",
+            "0x100000000/2/3",
+        ] {
+            assert!(identity_selector(text).is_err(), "{text:?}");
+        }
+        assert!(identity_selector(&"0".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn exact_selection_distinguishes_revisions_and_guards_reordered_indexes() {
+        let bytes = include_bytes!("../samples/mode-pdo-staging.esi.xml");
+        let mut devices = parse("multi.xml", bytes).unwrap();
+        let original = devices[0].source.identity.clone();
+        let mut revision = parse("multi.xml", bytes).unwrap().remove(0);
+        revision.source.identity.revision = 2;
+        devices.push(revision);
+        assert_eq!(
+            select_device(&devices, None, Some(&original))
+                .unwrap()
+                .source
+                .identity,
+            original
+        );
+        let second = devices[1].source.identity.clone();
+        assert!(std::ptr::eq(
+            select_device(&devices, None, Some(&second)).unwrap(),
+            &devices[1]
+        ));
+        assert!(select_device(&devices, Some(0), Some(&second)).is_err());
+        devices.swap(0, 1);
+        assert!(std::ptr::eq(
+            select_device(&devices, None, Some(&original)).unwrap(),
+            &devices[1]
+        ));
+        assert!(select_device(&devices, Some(0), Some(&original)).is_err());
+        assert!(select_device(&devices, Some(1), Some(&original)).is_ok());
+        assert!(select_device(&devices, Some(0), None).is_ok());
+    }
+
+    #[test]
+    fn ambiguous_missing_and_absent_selectors_never_choose_a_default() {
+        let bytes = include_bytes!("../samples/mode-pdo-staging.esi.xml");
+        let mut devices = parse("duplicates.xml", bytes).unwrap();
+        let identity = devices[0].source.identity.clone();
+        devices.push(parse("duplicates.xml", bytes).unwrap().remove(0));
+        assert!(
+            select_device(&devices, None, Some(&identity))
+                .unwrap_err()
+                .to_string()
+                .contains("matches multiple entries")
+        );
+        assert!(std::ptr::eq(
+            select_device(&devices, Some(1), Some(&identity)).unwrap(),
+            &devices[1]
+        ));
+        let mut missing = identity;
+        missing.revision = 0; // Literal zero is not a wildcard for revisions 1 or later.
+        assert!(select_device(&devices, None, Some(&missing)).is_err());
+        assert!(select_device(&devices, None, None).is_err());
+        assert!(select_device(&devices, Some(2), None).is_err());
+        assert!(select_device(&[], None, Some(&missing)).is_err());
+    }
 
     #[test]
     fn mode_sync_manager_hints_preserve_order_forms_and_unresolved_annotations() {

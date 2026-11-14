@@ -41,13 +41,14 @@ New-Item -ItemType Directory -Force .local | Out-Null
 .\ethercat-workbench-cli.exe run samples/synthetic.json --backend replay --replay samples/synthetic-replay.json --seconds 2 --csv .local/replayed.csv
 ```
 
-The ESI reader accepts UTF-8/UTF-16 and lists devices by vendor, product and revision. It retains a PDO catalog, including candidates without a default `Sm` assignment. Default choices follow the ESI assignments. It sorts the built image by SyncManager and preserves chosen PDO order, padding and byte alignment between SyncManagers. It records the ESI basename, hash, identity and field sources. The editable bit offsets and lengths are Workbench decoding settings. Use a new profile path to save edits. Select TxPDO fields for CSV and stage RxPDO hex with the expected image length. For aligned numeric fields, transforms apply in the order swap bytes in each 16-bit word, reverse the 16-bit words, then interpret endian order. Bit fields number bit 0 as the least-significant bit of the first byte.
+The ESI reader accepts UTF-8/UTF-16 and lists devices by vendor, product and revision. Headless import now accepts a unique exact `--identity VENDOR/PRODUCT/REVISION` or a zero-based `--device` index; combine them to reject an index whose identity differs. Ambiguous identity matches require an explicit index. See [exact selection](docs/pdo-selection.md#select-an-exact-esi-device) for examples and bounds. It retains a PDO catalog, including candidates without a default `Sm` assignment. Default choices follow the ESI assignments. It sorts the built image by SyncManager and preserves chosen PDO order, padding and byte alignment between SyncManagers. It records the ESI basename, hash, identity and field sources. The editable bit offsets and lengths are Workbench decoding settings. Use a new profile path to save edits. Select TxPDO fields for CSV and stage RxPDO hex with the expected image length. For aligned numeric fields, transforms apply in the order swap bytes in each 16-bit word, reverse the 16-bit words, then interpret endian order. Bit fields number bit 0 as the least-significant bit of the first byte.
 
 PDO catalog choices can be edited in the GUI before building an imported profile and after reloading a saved profile. Choose candidates, set their SyncManagers and adjust order within a SyncManager, then rebuild the offline fields. Rebuilding clears staged RxPDO bytes. Mandatory selections, exclusions, duplicate choices and mixed Tx/Rx assignments on one SyncManager are checked. Virtual and module-dependent PDOs require further implementation. Choice changes mark their direction's fields as overrides. The separate decoder editor remains available; detach the ESI selection to change image lengths independently.
 
 ```powershell
 .\ethercat-workbench-cli.exe esi-list samples/pdo-choices.esi.xml
 .\ethercat-workbench-cli.exe esi-import samples/pdo-choices.esi.xml --device 0 --out .local/choices.json
+.\ethercat-workbench-cli.exe esi-import samples/pdo-choices.esi.xml --identity '0x00FF1000/1/1' --out .local/identity-choices.json
 .\ethercat-workbench-cli.exe review-pdos .local/choices.json
 .\ethercat-workbench-cli.exe select-pdos .local/choices.json --tx-pdo '0x1a01@3' --out .local/alternative.json
 ```
@@ -113,7 +114,7 @@ An opt-in [read-only loopback HTTP input feed](docs/http-input-feed.md) now expo
 
 ## Contributing
 
-Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.29.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.30.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
 
 ## License
 

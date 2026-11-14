@@ -85,11 +85,16 @@ enum Command {
     },
     /// List products and revisions in an ESI XML.
     EsiList { file: PathBuf },
-    /// Write a new profile from one zero-based ESI list selection.
+    /// Write a new profile from an exact ESI identity or zero-based list selection.
+    #[command(group(clap::ArgGroup::new("esi_selector").required(true).multiple(true).args(["device", "identity"])))]
     EsiImport {
         file: PathBuf,
+        /// Zero-based esi-list index. Combine with --identity to guard the chosen entry.
         #[arg(long)]
-        device: usize,
+        device: Option<usize>,
+        /// Exact VENDOR/PRODUCT/REVISION, in decimal, 0x hex or #x hex; rejects ambiguous matches.
+        #[arg(long, value_parser = esi::identity_selector)]
+        identity: Option<ethercat_workbench::model::Identity>,
         #[arg(long)]
         out: PathBuf,
         /// Stage an ESI DC mode for offline review only (zero-based index).
@@ -402,6 +407,7 @@ fn main() -> Result<()> {
         Command::EsiImport {
             file,
             device,
+            identity,
             out,
             dc_mode,
             sync_unit_cycle_ns,
@@ -409,9 +415,7 @@ fn main() -> Result<()> {
             rx_pdo,
         } => {
             let devices = esi::load(&file)?;
-            let selected = devices
-                .get(device)
-                .context("ESI device index out of range")?;
+            let selected = esi::select_device(&devices, device, identity.as_ref())?;
             let mut profile = Profile::default();
             let mut selection =
                 ethercat_workbench::pdo_catalog::defaults(&selected.source.pdo_catalog);

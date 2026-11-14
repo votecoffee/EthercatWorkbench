@@ -2,6 +2,22 @@
 
 The profile retains a catalog of direct device TxPDO and RxPDO candidates. It stores their indexes, labels, default SyncManagers, entries, padding, types, fixed/mandatory flags and exclusions. Candidates without `Sm`, or with `Sm="-1"`, remain available for explicit choices. ESI filename, SHA-256 and exact identity remain the source baseline. Older profiles without a catalog continue to load; reimport their ESI to use the selector.
 
+## Select an exact ESI device
+
+Version 0.30 supports exact headless selection by the imported vendor/product/revision values. Either an index or an identity is required; supplying both checks the index against that identity before building or saving a profile:
+
+```powershell
+.\ethercat-workbench-cli.exe esi-list samples/mode-pdo-staging.esi.xml
+.\ethercat-workbench-cli.exe esi-import samples/mode-pdo-staging.esi.xml --identity '0x00FF1000/3/1' --out .local/exact-device.json
+.\ethercat-workbench-cli.exe esi-import samples/mode-pdo-staging.esi.xml --device 0 --identity '0x00FF1000/3/1' --out .local/guarded-device.json
+```
+
+The three slash-separated components accept decimal, `0x` or `#x` hexadecimal integers, each within unsigned 32-bit range. Zero is literal, with no wildcard, revision mask, newest-revision choice or product-only fallback. The complete selector is bounded to 128 UTF-8 bytes. A unique identity remains selectable when entries move within an ESI. If an exact identity appears more than once, inspect `esi-list` and explicitly supply both `--device` and `--identity` to choose an entry. The original index-only option remains supported.
+
+An unknown identity, ambiguous match, out-of-range index, identity/index mismatch or invalid selector fails before creating a profile. Existing destinations remain protected. Mode staging, cycle assumptions and explicit PDO choices work with either selector. The profile retains the selected entry's catalog, labels, imported identity and the complete ESI file's basename/hash; reordering the XML therefore changes source provenance even when the selected configuration is otherwise unchanged. Selector checks use imported values, so warnings about an absent revision still apply. They do not discover a bus or establish physical identity, device compatibility, ESI authenticity or hardware permission.
+
+## Catalog choices
+
 The [pinned ESI base schema](https://github.com/synapticon/siitool/blob/c46570adb1228eada44ae1f38bd61a81fab99c98/examples/ModulesSlots_DS402_Simple/EtherCATBase.xsd) distinguishes fixed entry mapping from mandatory assignment and describes the default `Sm` and exclusion list. Workbench preserves fixed entries while allowing assignment choices. Mandatory PDOs must be selected. Exclusions are conservatively checked across all chosen PDOs. Duplicate indexes in a direction, duplicate choices, unknown candidates, out-of-range SyncManagers and sharing one SyncManager between Tx and Rx are rejected.
 
 The chosen order is stable within each SyncManager; SyncManagers are sorted ascending. Padding entries remain in the expected descriptors, and each SyncManager ends on a byte boundary. Generated fields include the ESI object references. A direction whose selection differs from ESI defaults is marked as an override. These are offline decoding expectations. Building a profile never writes assignments, PDO entries, outputs or device state. The general catalog rebuild clears staged RxPDO data so bytes from an earlier image are not retained accidentally. The explicit mode staging workflow below preserves them only when the complete Rx layout is unchanged.
