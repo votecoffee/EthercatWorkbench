@@ -65,6 +65,23 @@ pub enum VirtualFault {
     SegmentInitialData,
     SyncTimingUnavailable,
     SyncTimingSize,
+    InitNormalUpload,
+    InitSegmentedUpload,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InitialUploadForm {
+    Normal,
+    SegmentedInitiation,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InitialMappingUpload {
+    pub object_index: u16,
+    pub subindex: u8,
+    pub declared_bytes: u32,
+    pub form: InitialUploadForm,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -98,6 +115,8 @@ pub struct VirtualStats {
     pub state_requests: Vec<u8>,
     pub final_al_status: u16,
     pub final_al_code: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_mapping_upload: Option<InitialMappingUpload>,
 }
 
 struct Upload {
@@ -534,10 +553,30 @@ impl VirtualEsc {
                     .map(|(v, n)| v.to_le_bytes()[..usize::from(n)].to_vec())
             };
             if let Some(data) = data {
-                let segmented =
-                    self.model == VirtualModel::CoeSegmented && self.process_configuration_valid();
+                let early_mapping = !self.process_configuration_valid()
+                    && matches!(index, 0x1c12 | 0x1c13 | 0x1600 | 0x1a00);
+                let early_normal = early_mapping && self.fault == VirtualFault::InitNormalUpload;
+                let early_segmented =
+                    early_mapping && self.fault == VirtualFault::InitSegmentedUpload;
+                if (early_normal || early_segmented) && self.stats.initial_mapping_upload.is_none()
+                {
+                    self.stats.initial_mapping_upload = Some(InitialMappingUpload {
+                        object_index: index,
+                        subindex: sub,
+                        declared_bytes: data.len() as u32,
+                        form: if early_segmented {
+                            InitialUploadForm::SegmentedInitiation
+                        } else {
+                            InitialUploadForm::Normal
+                        },
+                    });
+                }
+                let segmented = early_segmented
+                    || (self.model == VirtualModel::CoeSegmented
+                        && self.process_configuration_valid());
                 let normal = (self.model == VirtualModel::CoeNormal
                     && self.process_configuration_valid())
+                    || early_normal
                     || data.len() > 4;
                 if segmented {
                     self.stats.coe_segmented_uploads += 1;

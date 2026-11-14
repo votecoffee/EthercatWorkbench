@@ -33,3 +33,20 @@ SOEM's `ecx_SDOread` accepts normal and segmented replies, retains the initial d
 ## CoE cycle diagnostics in version 0.26
 
 After PDI configuration, Workbench optionally uploads four-byte cycle/minimum values from `0x1C33:02/:05` and `0x1C32:02/:05` for the corresponding nonempty images. These are setup snapshots; they do not schedule the host, enable DC or issue the measurement/reset command at `:08`. The units and interpretation are device-dependent CoE metadata, illustrated by [manufacturer object documentation](https://infosys.beckhoff.com/content/1033/ej3124-0090/17202653963.html). Optional server aborts retain unavailable reasons; malformed/protocol/timeout failures retain partial observations and stop setup before SAFEOP with INIT cleanup. The existing Workbench uploader performs these reads outside cyclic I/O and CSV writing. Virtual expedited/normal/segmented, optional-abort and wrong-size cases exercise this path; physical acceptance remains pending.
+
+## Initializer compatibility fixtures in version 0.27
+
+The pinned configuration code calls the private sdo_read_expedited helper for assignment counts, PDO indexes and mapping descriptors. That helper explicitly returns Error::Internal when the response's expedited flag is clear. The Workbench post-PDI uploader is not used for those calls. This was reconfirmed in the exact local source checkout at fec2730823ce1eb62425f83d5df49d678f03b104. [Private helper](https://github.com/ethercrab-rs/ethercrab/blob/fec2730823ce1eb62425f83d5df49d678f03b104/src/mailbox/coe/mod.rs#L524), [PDO initializer](https://github.com/ethercrab-rs/ethercrab/blob/fec2730823ce1eb62425f83d5df49d678f03b104/src/subdevice/configuration.rs#L303)
+
+Two authored virtual faults now reproduce that boundary: init-normal-upload returns a normal reply with its one-byte mapping count; init-segmented-upload returns a size-declared segmented initiation before process-image configuration is valid. They use the existing normal/segmented response encoder and apply only to early PDO/assignment objects. The first emitted reply is retained under virtual_esc.initial_mapping_upload with object_index, subindex, declared_bytes and form (normal or segmented_initiation). The current pinned build rejects both at 0x1C13:00 with one declared byte. Segmented initiation fails before any continuation request. The absent field on ordinary runs means this fixture injected no early reply; it is not a physical-protocol observation.
+
+These commands intentionally exit with setup failure and preserve a failure report at a fresh path:
+
+```powershell
+.\ethercat-workbench-cli.exe run samples/virtual.json --backend virtual --virtual-fault init-normal-upload --seconds 1 --report .local/init-normal.json
+.\ethercat-workbench-cli.exe run samples/virtual.json --backend virtual --virtual-fault init-segmented-upload --seconds 1 --report .local/init-segmented.json
+```
+
+Both receipts confirm PREOP-to-INIT cleanup with no SAFEOP/OP request, no cyclic reads or samples and no output/PDO-download/DC-enable/clock-distribution requests. The post-PDI synchronization readback remains absent and no CSV writer starts. Ordinary expedited CoE setup and the no-CoE SII control still reach input acquisition; the existing CoENormal/CoeSegmented models still exercise non-expedited uploads after PDI configuration. SII models issue no CoE upload, so the new injection does not apply to them.
+
+This is a reproducible compatibility limitation in authored transport, not a fix or physical-device qualification. A generic internal error on a real device does not by itself identify this cause. The device's actual reply policy and the need for an initializer change or SOEM comparison remain bench questions. No dependency, native initializer, approval boundary or live configuration/output behavior was changed.

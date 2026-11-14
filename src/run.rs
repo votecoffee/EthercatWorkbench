@@ -790,6 +790,76 @@ mod cycle_tests {
 
     #[cfg(windows)]
     #[test]
+    fn early_non_expedited_mapping_replies_expose_the_pinned_initializer_gap_and_confirm_init() {
+        use crate::virtual_esc::{InitialUploadForm, VirtualFault, VirtualModel};
+        for (fault, form) in [
+            (VirtualFault::InitNormalUpload, InitialUploadForm::Normal),
+            (
+                VirtualFault::InitSegmentedUpload,
+                InitialUploadForm::SegmentedInitiation,
+            ),
+        ] {
+            let profile: Profile =
+                serde_json::from_str(include_str!("../samples/virtual.json")).unwrap();
+            let report = run(
+                profile,
+                RunOptions {
+                    frontend: crate::benchmark::Frontend::Cli,
+                    mode: Mode::Virtual {
+                        model: VirtualModel::Coe,
+                        fault,
+                    },
+                    duration: Duration::from_millis(50),
+                    csv: None,
+                    generation: 1,
+                },
+                &AtomicBool::new(false),
+                &Mutex::new(Snapshot::default()),
+            );
+            assert!(
+                report.error.is_some(),
+                "expected initializer incompatibility"
+            );
+            assert_eq!(report.stopped_al, Some((1, 0)), "{:?}", report.error);
+            assert_eq!((report.cycles, report.valid), (0, 0));
+            assert!(report.synchronization.is_none()); // Workbench post-PDI uploader was never reached.
+            let audit = report.virtual_esc.unwrap();
+            let upload = audit.initial_mapping_upload.unwrap();
+            assert_eq!(
+                (
+                    upload.object_index,
+                    upload.subindex,
+                    upload.declared_bytes,
+                    upload.form
+                ),
+                (0x1c13, 0, 1, form)
+            );
+            assert_eq!(audit.state_requests, vec![1, 2, 1]);
+            assert_eq!(
+                (
+                    audit.logical_reads,
+                    audit.logical_writes,
+                    audit.physical_output_writes,
+                    audit.op_requests,
+                    audit.coe_downloads,
+                    audit.dc_enable_requests,
+                    audit.dc_clock_distribution
+                ),
+                (0, 0, 0, 0, 0, 0, 0)
+            );
+            assert_eq!(audit.coe_segments, 0); // Segmented initiation was rejected before any continuation.
+            if form == InitialUploadForm::Normal {
+                assert_eq!(audit.coe_normal_uploads, 1);
+                assert_eq!(audit.coe_segmented_uploads, 0);
+            } else {
+                assert_eq!(audit.coe_normal_uploads, 0);
+                assert_eq!(audit.coe_segmented_uploads, 1);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn coe_cycle_setup_observations_preserve_optional_failures_and_reject_bad_primitive_sizes() {
         use crate::virtual_esc::{VirtualFault, VirtualModel};
         for (model, fault) in [

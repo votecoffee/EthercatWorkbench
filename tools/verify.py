@@ -328,6 +328,7 @@ def verify_coe_uploads(cli, destination, reports):
             "coe_duplicate_requests", "dc_enable_requests", "dc_clock_distribution"]), esc
 
     def matched(report):
+        assert report["virtual_esc"].get("initial_mapping_upload") is None
         assert all(f["state"] == "matched" for d in ("tx", "rx")
                    for f in report["pdo_verification"][d]["fields"]), report
         sync = report["synchronization"]
@@ -1508,6 +1509,38 @@ def verify_coe_cycle(cli, destination):
     (destination / "coe-cycle-checks.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
 
 
+def verify_initializer_compatibility(cli, destination):
+    """Legal non-expedited PDO replies before Workbench's own uploader can be used."""
+    results = {}
+    for fault, form in [("init-normal-upload", "normal"), ("init-segmented-upload", "segmented_initiation")]:
+        report_path = destination / f"{fault}.json"
+        csv_path = destination / f"{fault}.csv"
+        cli_call(cli, "run", ROOT / "samples/virtual.json", "--backend", "virtual", "--virtual-fault", fault,
+                 "--seconds", 1, "--report", report_path, "--csv", csv_path, success=False)
+        r = json.loads(report_path.read_bytes())
+        assert r["error"] and "configure FMMU/SyncManagers" in r["error"]
+        assert r["cycles"] == r["valid"] == r["replies"] == 0
+        assert r["stopped_al"] == [1, 0] and r["synchronization"] is None
+        audit = r["virtual_esc"]
+        assert audit["initial_mapping_upload"] == dict(object_index=0x1c13, subindex=0, declared_bytes=1, form=form)
+        assert audit["state_requests"] == [1, 2, 1] and audit["coe_segments"] == 0
+        assert audit["coe_normal_uploads"] == (1 if form == "normal" else 0)
+        assert audit["coe_segmented_uploads"] == (1 if form == "segmented_initiation" else 0)
+        assert all(audit[k] == 0 for k in ["logical_reads", "logical_writes", "physical_output_writes", "coe_downloads", "op_requests", "dc_enable_requests", "dc_clock_distribution"])
+        assert not csv_path.exists() and r["capture"] is None
+        assert r["context"]["source"]["kind"] == "virtual"
+        results[fault] = r
+    for model, profile in [("coe", "virtual.json"), ("sii", "virtual-sii.json")]:
+        flags = ["--virtual-fault", "init-normal-upload"] if model == "sii" else []
+        r = cli_call(cli, "run", ROOT / "samples" / profile, "--backend", "virtual", "--virtual-model", model, *flags, "--seconds", 1)
+        assert r["error"] is None and r["valid"] > 100 and r["stopped_al"] == [1, 0]
+        assert r["virtual_esc"].get("initial_mapping_upload") is None
+        if model == "sii":
+            assert r["virtual_esc"]["coe_uploads"] == 0
+        results[model + "-control"] = r
+    (destination / "initializer-compatibility.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("bin_dir", type=Path)
@@ -1521,6 +1554,9 @@ def main():
     assert ".local" in destination.parts, "keep synthetic captures under .local"
     destination.mkdir(parents=True, exist_ok=False)
     cli = bin_dir / "ethercat-workbench-cli.exe"
+    initializer_destination = destination / "initializer-compatibility"
+    initializer_destination.mkdir()
+    verify_initializer_compatibility(cli, initializer_destination)
     cycle_destination = destination / "coe-cycle"
     cycle_destination.mkdir()
     verify_coe_cycle(cli, cycle_destination)
