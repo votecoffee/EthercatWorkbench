@@ -452,6 +452,85 @@ def verify_input_loss(cli, profile, destination, model="coe"):
     (destination / "input-health.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
 
 
+def verify_mode_pdo_staging(cli, destination):
+    """Exercise offline candidate saving and independent actual-mapping rejection."""
+    esi = ROOT / "samples/mode-pdo-staging.esi.xml"
+    results = {}
+    for mode in range(4):
+        source = destination / f"mode-{mode}.json"
+        cli_call(cli, "esi-import", esi, "--device", 0, "--dc-mode", mode, "--out", source)
+        profile = json.loads(source.read_bytes())
+        profile["staged_rx_hex"] = "FEFF"
+        profile["tx"][0].update(name="Custom input", log=False, big_endian=True, source="override")
+        profile["rx"][0].update(name="Custom output", source="override")
+        source.write_text(json.dumps(profile), encoding="utf-8")
+        before = source.read_bytes()
+        target = destination / f"candidate-{mode}.json"
+        if mode == 3:
+            error = cli_call(cli, "stage-mode-pdos", source, "--out", target, success=False)
+            assert "unsupported annotations" in error and not target.exists()
+            assert source.read_bytes() == before
+            continue
+        review = cli_call(cli, "stage-mode-pdos", source)
+        assert source.read_bytes() == before and not target.exists()
+        assert review["scope"] == "offline_profile_only" and review["mode_index"] == mode
+        assert review["tx_layout_changed"] == (mode == 1)
+        assert review["rx_layout_changed"] == review["staged_rx_will_clear"] == (mode == 2)
+        args = []
+        if mode == 2:
+            error = cli_call(cli, "stage-mode-pdos", source, "--out", target, success=False)
+            assert "--clear-staged-rx" in error and not target.exists()
+            assert source.read_bytes() == before
+            args = ["--clear-staged-rx"]
+        assert cli_call(cli, "stage-mode-pdos", source, "--out", target, *args) == review
+        saved = cli_call(cli, "validate", target)
+        assert saved["tx"] == review["after"]["tx_fields"]
+        assert saved["rx"] == review["after"]["rx_fields"]
+        assert saved["esi_pdo_selection"] == review["after"]["selection"]
+        assert saved["staged_rx_hex"] == ("" if mode == 2 else "FEFF")
+        expected = dict(profile)
+        for key in ("tx", "rx", "tx_bytes", "rx_bytes", "esi_pdo_selection", "staged_rx_hex"):
+            expected[key] = saved[key]
+        assert saved == expected  # All other settings remain exact.
+        if mode != 1:
+            assert saved["tx"] == profile["tx"]
+        if mode != 2:
+            assert saved["rx"] == profile["rx"]
+            decoded = cli_call(cli, "decode", target, "FEFF", "--rx")
+            assert decoded  # Same typed Rx decoder still accepts the saved bytes.
+        offline = cli_call(cli, "review-sync", target)
+        assert all(sm["pdo_state"] == "matched" for sm in offline["sync_managers"])
+        assert cli_call(cli, "review-pdos", target)["selection"] == saved["esi_pdo_selection"]
+        existing = target.read_bytes()
+        cli_call(cli, "stage-mode-pdos", source, "--out", target, *args, success=False)
+        assert target.read_bytes() == existing and source.read_bytes() == before
+        results[str(mode)] = review
+        if mode == 1:
+            # Equal image lengths and matched offline hints cannot prove the actual device map.
+            base = destination / "actual-map-mismatch.csv"
+            rejected = cli_call(cli, "run", target, "--backend", "virtual", "--virtual-model",
+                                "coe-dc", "--seconds", 1, "--csv", base, success=False)
+            assert "device PDO layout differs from profile" in rejected["error"]
+            assert rejected["cycles"] == rejected["valid"] == 0
+            verification = rejected["pdo_verification"]
+            assert verification["tx"]["image_bytes"] == saved["tx_bytes"] == 8
+            assert verification["tx"]["fields"][0]["state"] == "mismatch"
+            assert not verification["rx"]["errors"]
+            assert rejected["stopped_al"] == [1, 0] and rejected["capture"] is None
+            assert rejected["virtual_esc"]["state_requests"] == [1, 2, 1]
+            assert not list(destination.glob("actual-map-mismatch*.csv"))
+            esc = rejected["virtual_esc"]
+            assert all(esc[k] == 0 for k in ["coe_downloads", "logical_writes",
+                "physical_output_writes", "op_requests", "dc_enable_requests", "dc_clock_distribution"])
+            results["actual_mapping_rejection"] = rejected
+    detached = json.loads(before)
+    detached["esi_pdo_selection"] = None
+    path = destination / "detached.json"
+    path.write_text(json.dumps(detached), encoding="utf-8")
+    assert "attached ESI PDO selection" in cli_call(cli, "stage-mode-pdos", path, success=False)
+    (destination / "mode-pdo-staging-review.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+
 def verify_sync_modes(cli, destination):
     esi = ROOT / "samples/sync-modes.esi.xml"
     modes = cli_call(cli, "esi-list", esi)[0]["source"]["dc_modes"]
@@ -1713,6 +1792,9 @@ def main():
     sync_destination = destination / "sync-modes"
     sync_destination.mkdir()
     verify_sync_modes(cli, sync_destination)
+    mode_destination = destination / "mode-pdo-staging"
+    mode_destination.mkdir()
+    verify_mode_pdo_staging(cli, mode_destination)
     pdo_destination = destination / "pdo-choices"
     pdo_destination.mkdir()
     verify_pdo_choices(cli, pdo_destination)

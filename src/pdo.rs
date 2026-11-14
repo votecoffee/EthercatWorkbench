@@ -23,7 +23,7 @@ impl MappingSource {
 }
 
 /// Device PDOs in ascending SyncManager order, with entries in device order.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layout {
     #[serde(default)]
@@ -31,7 +31,7 @@ pub struct Layout {
     pub sync_managers: Vec<SyncManager>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SyncManager {
     pub index: u8,
@@ -40,7 +40,7 @@ pub struct SyncManager {
     pub pdos: Vec<Pdo>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pdo {
     pub index: u16,

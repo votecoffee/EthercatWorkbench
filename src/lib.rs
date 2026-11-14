@@ -7,6 +7,7 @@ pub mod esi;
 pub mod health;
 pub mod http_feed;
 mod input_feed;
+pub mod mode_pdo_stage;
 pub mod model;
 pub mod mqtt_feed;
 pub mod output_stage;

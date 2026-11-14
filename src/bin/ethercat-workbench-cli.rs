@@ -114,6 +114,15 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Preview PDO choices from the selected ESI mode; optionally save a new offline profile.
+    StageModePdos {
+        profile: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Explicitly discard staged RxPDO bytes when their layout changes.
+        #[arg(long)]
+        clear_staged_rx: bool,
+    },
     /// Show the full expected offline assignment, including padding and SyncManagers.
     ReviewPdos { profile: PathBuf },
     /// Review a staged ESI DC mode, optionally comparing a saved run report. Performs no bus operations.
@@ -431,6 +440,19 @@ fn main() -> Result<()> {
             ethercat_workbench::pdo_catalog::apply(&mut profile, selection)?;
             profile.save(&out)?;
             output(&profile)
+        }
+        Command::StageModePdos {
+            profile,
+            out,
+            clear_staged_rx,
+        } => {
+            let mut profile = Profile::load(&profile)?;
+            let plan = ethercat_workbench::mode_pdo_stage::prepare(&profile)?;
+            if let Some(path) = out {
+                plan.apply(&mut profile, clear_staged_rx)?;
+                profile.save(&path)?;
+            }
+            output(plan.review())
         }
         Command::ReviewPdos { profile } => {
             let profile = Profile::load(&profile)?;

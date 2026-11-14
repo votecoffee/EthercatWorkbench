@@ -64,6 +64,7 @@ try {
         'docs/pdo-selection.md' = 'docs/pdo-selection.md'
         'samples/sync-modes.esi.xml' = 'samples/sync-modes.esi.xml'
         'samples/mode-sync-managers.esi.xml' = 'samples/mode-sync-managers.esi.xml'
+        'samples/mode-pdo-staging.esi.xml' = 'samples/mode-pdo-staging.esi.xml'
         'samples/sync-review.json' = 'samples/sync-review.json'
         'docs/esi-sync-review.md' = 'docs/esi-sync-review.md'
         'samples/synthetic.json' = 'samples/synthetic.json'
