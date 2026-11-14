@@ -11,7 +11,7 @@ curl.exe 'http://127.0.0.1:8766/v1/samples?after=0&limit=16'
 curl.exe http://127.0.0.1:8766/v1/metadata
 ```
 
-In the desktop, enable **read-only local HTTP input feed** in section **2 Bus and capture** and configure port, freshness, feed queue and history. The live snapshot shows the actual URL and independent interface counters. CLI `run --http-port PORT` enables or overrides the port. Port `0` requests an automatic port; the CLI prints the bound URL to stderr before setup, while stdout remains the final JSON report. A bound listener is not yet a ready backend: retry reads after setup, or use the GUI cycling state. A bind/configuration failure occurs before device setup. Other worker/client failures do not stop acquisition or CSV; inspect `report.http` even when `report.error` is null.
+In the desktop, enable **read-only local HTTP input feed** in **Integration** and configure port, freshness, feed queue and history. The live snapshot shows the actual URL and independent interface counters. CLI `run --http-port PORT` enables or overrides the port. Port `0` requests an automatic port; the CLI prints the bound URL to stderr before setup, while stdout remains the final JSON report. A bound listener is not yet a ready backend: retry reads after setup, or use the GUI cycling state. A bind/configuration failure occurs before device setup. Other worker/client failures do not stop acquisition or CSV; inspect `report.http` even when `report.error` is null.
 
 ## Configuration and ownership
 

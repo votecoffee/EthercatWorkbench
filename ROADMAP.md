@@ -1,5 +1,7 @@
 # EtherCAT Workbench roadmap
 
+The desktop now uses the EthernetIP Workbench workflow tabs with persistent stop/status controls, focused connection/profile/decoder dialogs and separate saved-review pages. [Navigation](docs/desktop-workspace.md) and headless workflow checks are implemented; native visual/usability acceptance remains pending.
+
 ## Software interfaces, documentation and skills
 
 - The opt-in [read-only HTTP input feed](docs/http-input-feed.md) now has bounded queue/history, explicit invalid/stale state, independent feed loss counters and headless slow-client coverage. Its physical timing impact remains unqualified. The opt-in [MQTT publisher](docs/mqtt-input-feed.md) now has independent queue/coalescing/write counters, bounded local-broker reconnects, explicit invalid/stale state and headless broker-fault coverage. The opt-in [Windows shared-memory input](docs/shared-input-feed.md) now has a fixed C-readable layout, independent bounded worker, explicit age/process checks, zero-wait contention counters and Windows reader/crash coverage; the portable [native reader/inspector](docs/shared-input-review.md) now provides exact-profile typed decoding, coherent raw export and explicit live versus historical evidence; the [desktop saved-snapshot panel](docs/desktop-review.md#inspect-a-saved-shared-input-snapshot) now shares that decoder with frozen mapping choices, cancellation, historical quality labels and new-file export; see the [interface roadmap](docs/interfaces-roadmap.md).

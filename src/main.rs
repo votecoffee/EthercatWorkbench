@@ -3,6 +3,9 @@
 mod gui_mode_pdo;
 mod gui_review;
 mod gui_stage;
+mod gui_workspace;
+
+use gui_workspace::{ConnectPage, MappingPage, Tab};
 
 use clap::Parser;
 use eframe::egui;
@@ -86,6 +89,12 @@ struct App {
     review: gui_review::Panel,
     stage: gui_stage::Panel,
     mode_pdos: gui_mode_pdo::Panel,
+    tab: Tab,
+    mapping_page: MappingPage,
+    connect_page: ConnectPage,
+    profiles_open: bool,
+    connect_open: bool,
+    decoder_open: bool,
 }
 
 impl App {
@@ -122,6 +131,12 @@ impl App {
             review: gui_review::Panel::default(),
             stage: gui_stage::Panel::default(),
             mode_pdos: gui_mode_pdo::Panel::default(),
+            tab: Tab::default(),
+            mapping_page: MappingPage::default(),
+            connect_page: ConnectPage::default(),
+            profiles_open: false,
+            connect_open: false,
+            decoder_open: false,
         };
         if let Some(path) = args.profile {
             app.profile_path = path.to_string_lossy().into_owned();
@@ -146,9 +161,9 @@ impl App {
     }
 
     fn start(&mut self, mode: Mode) {
-        if self.review.is_running() {
+        if self.busy() {
             self.message =
-                "Wait for or cancel the saved-file review before starting the bus".into();
+                "Wait for or stop the active session, discovery or saved-file review before starting".into();
             return;
         }
         self.approved = false;
@@ -168,6 +183,8 @@ impl App {
                 self.last = None;
                 self.message.clear();
                 self.session = Some(Session { stop, view, worker });
+                self.tab = Tab::Inputs;
+                self.connect_open = false;
             }
             Err(error) => self.message = format!("{error:#}"),
         }
@@ -221,8 +238,8 @@ impl App {
         }
     }
 
-    fn profile_controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+    fn profile_file_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Profile JSON");
             ui.add(egui::TextEdit::singleline(&mut self.profile_path).desired_width(410.0));
             if ui.button("Load").clicked() {
@@ -235,11 +252,14 @@ impl App {
                 };
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Name");
             ui.text_edit_singleline(&mut self.profile.name);
         });
-        ui.horizontal(|ui| {
+    }
+
+    fn device_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
             ui.label("ESI XML");
             ui.add(egui::TextEdit::singleline(&mut self.esi_path).desired_width(430.0));
             if ui.button("Read devices").clicked() {
@@ -260,8 +280,10 @@ impl App {
         if let Some(selected) = self.esi.get(self.esi_selected) {
             let selected_label =
                 format!("{} · {}", selected.source.device, selected.source.identity);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 egui::ComboBox::from_id_salt("esi_device")
+                    .width(560.0)
+                    .truncate()
                     .selected_text(selected_label)
                     .show_ui(ui, |ui| {
                         for (i, device) in self.esi.iter().enumerate() {
@@ -328,6 +350,9 @@ impl App {
                 ));
             }
         }
+    }
+
+    fn catalog_controls(&mut self, ui: &mut egui::Ui) {
         if self
             .profile
             .esi
@@ -378,6 +403,9 @@ impl App {
                 });
             });
         }
+    }
+
+    fn sync_controls(&mut self, ui: &mut egui::Ui) {
         if let Some(esi) = &self.profile.esi
             && !esi.dc_modes.is_empty()
         {
@@ -409,7 +437,7 @@ impl App {
                     }
                 });
             if self.profile.staged_esi_dc_mode.is_some() {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Manual sync-unit assumption ns (0 = unspecified)");
                     let mut value = self.profile.sync_unit_cycle_ns.unwrap_or(0);
                     if ui.add(egui::DragValue::new(&mut value)).changed() {
@@ -438,7 +466,10 @@ impl App {
             self.message =
                 "Mode PDO candidate applied offline. Save new to retain the profile.".into();
         }
-        ui.horizontal(|ui| {
+    }
+
+    fn identity_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
             if let Some(identity) = &mut self.profile.expected_identity {
                 ui.label("Expected identity (vendor / product / revision)");
                 for value in [
@@ -467,7 +498,7 @@ impl App {
         });
     }
 
-    fn bench_controls(&mut self, ui: &mut egui::Ui) {
+    fn integration_controls(&mut self, ui: &mut egui::Ui) {
         let mut memory_enabled = self.profile.shared_memory.is_some();
         if ui
             .checkbox(&mut memory_enabled, "Enable Windows shared-memory input")
@@ -476,7 +507,7 @@ impl App {
             self.profile.shared_memory = memory_enabled.then(Default::default);
         }
         if let Some(config) = &mut self.profile.shared_memory {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Local snapshot name");
                 ui.text_edit_singleline(&mut config.name);
                 ui.label("Publish ms");
@@ -496,13 +527,13 @@ impl App {
             self.profile.mqtt = mqtt_enabled.then(Default::default);
         }
         if let Some(config) = &mut self.profile.mqtt {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Local broker 127.0.0.1 port");
                 ui.add(egui::DragValue::new(&mut config.port).range(1..=65535));
                 ui.label("Topic");
                 ui.text_edit_singleline(&mut config.topic);
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Publish ms");
                 ui.add(egui::DragValue::new(&mut config.period_ms).range(1..=60000));
                 ui.label("Freshness ms");
@@ -520,13 +551,13 @@ impl App {
             self.profile.http = enabled.then(Default::default);
         }
         if let Some(config) = &mut self.profile.http {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("127.0.0.1 port (0 = automatic)");
                 ui.add(egui::DragValue::new(&mut config.port).range(0..=65535));
                 ui.label("Freshness ms");
                 ui.add(egui::DragValue::new(&mut config.freshness_ms).range(1..=60000));
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Feed queue");
                 ui.add(egui::DragValue::new(&mut config.queue_capacity).range(1..=8192));
                 ui.label("HTTP history");
@@ -534,7 +565,10 @@ impl App {
             });
             ui.small("Read-only input/status; any local process can connect. Network/JSON work is outside cyclic I/O.");
         }
-        ui.horizontal(|ui| {
+    }
+
+    fn nic_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Refresh NICs").clicked() {
                 match live::nics() {
                     Ok(nics) => {
@@ -548,6 +582,8 @@ impl App {
                 }
             }
             egui::ComboBox::from_id_salt("nic")
+                .width(420.0)
+                .truncate()
                 .selected_text(if self.profile.nic.is_empty() {
                     "Select isolated NIC"
                 } else {
@@ -580,15 +616,16 @@ impl App {
         for device in &self.discovery {
             device_info(ui, device);
         }
-        ui.horizontal(|ui| {
+    }
+
+    fn timing_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Cycle µs");
             ui.add(
                 egui::DragValue::new(&mut self.profile.requested_cycle_us).range(250..=1_000_000),
             );
             ui.label("Input loss timeout ms (0 = monitor only)");
             ui.add(egui::DragValue::new(&mut self.profile.input_loss_timeout_ms).range(0..=60_000));
-            ui.label("Duration s");
-            ui.add(egui::DragValue::new(&mut self.seconds).range(1..=86_400));
             ui.selectable_value(&mut self.profile.scheduler, Scheduler::Deadline, "Deadline");
             ui.selectable_value(
                 &mut self.profile.scheduler,
@@ -596,7 +633,14 @@ impl App {
                 "Stock relative",
             );
         });
-        ui.horizontal(|ui| {
+    }
+
+    fn logging_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Duration s");
+            ui.add(egui::DragValue::new(&mut self.seconds).range(1..=86_400));
+        });
+        ui.horizontal_wrapped(|ui| {
             ui.label("New CSV path");
             ui.add(
                 egui::TextEdit::singleline(&mut self.csv)
@@ -610,12 +654,17 @@ impl App {
             );
             ui.selectable_value(&mut self.profile.mode, LogMode::Change, "On change");
         });
-        ui.horizontal(|ui| {
-            ui.label("Queue samples");
-            ui.add(egui::DragValue::new(&mut self.profile.queue_capacity).range(1..=65_536));
-            ui.label("Rotate rows (0 = one file)");
-            ui.add(egui::DragValue::new(&mut self.profile.rotate_rows));
+        ui.collapsing("Buffer sizing and rotation", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Queue samples");
+                ui.add(egui::DragValue::new(&mut self.profile.queue_capacity).range(1..=65_536));
+                ui.label("Rotate rows (0 = one file)");
+                ui.add(egui::DragValue::new(&mut self.profile.rotate_rows));
+            });
         });
+    }
+
+    fn offline_connection_controls(&mut self, ui: &mut egui::Ui) {
         if ui.button("Start synthetic fixture").clicked() {
             self.start(Mode::Simulate { faults: false });
         }
@@ -672,7 +721,7 @@ impl App {
                 fault: ethercat_workbench::virtual_esc::VirtualFault::None,
             });
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Offline frame fixture");
             ui.add(
                 egui::TextEdit::singleline(&mut self.replay_path)
@@ -691,6 +740,9 @@ impl App {
                 });
             }
         });
+    }
+
+    fn live_connection_controls(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(
             &mut self.approved,
             "Approved: isolated one-device bench, ESC setup writes, SAFEOP and INIT on stop",
@@ -727,115 +779,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         self.refresh(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("EtherCAT Workbench");
-            if !self.message.is_empty() {
-                ui.label(&self.message);
-            }
-            if let Some(session) = &self.session
-                && ui.button("Stop and flush").clicked()
-            {
-                session.stop.store(true, Relaxed);
-            }
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if let Some(snapshot) = &self.last {
-                    ui.group(|ui| {
-                        show_snapshot(ui, snapshot, &self.profile.tx);
-                        if self.session.is_none() {
-                            ui.horizontal(|ui| {
-                                ui.label("New report JSON");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.report_save)
-                                        .hint_text(".local/bench-report.json")
-                                        .desired_width(360.0),
-                                );
-                                if ui
-                                    .add_enabled(
-                                        !self.report_save.trim().is_empty(),
-                                        egui::Button::new("Save report"),
-                                    )
-                                    .clicked()
-                                {
-                                    self.message = match write_report(
-                                        Path::new(self.report_save.trim()),
-                                        &snapshot.report,
-                                    ) {
-                                        Ok(()) => "Run report saved".into(),
-                                        Err(error) => format!("Write run report: {error:#}"),
-                                    };
-                                }
-                            });
-                        }
-                    });
-                }
-                ui.add_enabled_ui(self.session.is_none() && !self.review.is_running(), |ui| {
-                    egui::CollapsingHeader::new("1  Profile and ESI")
-                        .default_open(true)
-                        .show(ui, |ui| self.profile_controls(ui));
-                    egui::CollapsingHeader::new("2  Bus and capture")
-                        .default_open(true)
-                        .show(ui, |ui| self.bench_controls(ui));
-                    egui::CollapsingHeader::new("3  PDO maps and offline payloads")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            fields(
-                                ui,
-                                "TxPDO inputs",
-                                &mut self.profile.tx_bytes,
-                                &mut self.profile.tx,
-                            );
-                            ui.horizontal(|ui| {
-                                ui.label("Offline TxPDO hex");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.offline_hex)
-                                        .desired_width(360.0),
-                                );
-                            });
-                            decode(
-                                ui,
-                                &self.offline_hex,
-                                self.profile.tx_bytes,
-                                &self.profile.tx,
-                            );
-                            ui.separator();
-                            fields(
-                                ui,
-                                "RxPDO outputs",
-                                &mut self.profile.rx_bytes,
-                                &mut self.profile.rx,
-                            );
-                            ui.horizontal(|ui| {
-                                ui.label("Stage RxPDO hex offline");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.profile.staged_rx_hex)
-                                        .desired_width(360.0),
-                                );
-                            });
-                            decode(
-                                ui,
-                                &self.profile.staged_rx_hex,
-                                self.profile.rx_bytes,
-                                &self.profile.rx,
-                            );
-                            self.stage.draw(ui, &mut self.profile);
-                            if let Err(error) = self.profile.validate() {
-                                ui.colored_label(egui::Color32::LIGHT_RED, format!("{error:#}"));
-                            }
-                        });
-                });
-                egui::CollapsingHeader::new("4  Saved run review").show(ui, |ui| {
-                    self.review.draw(
-                        ui,
-                        self.session.is_some() || self.scan.is_some(),
-                        &self.profile,
-                    )
-                });
-            });
-        });
-        // Work may start while Profile and ESI is collapsed, so invalidate outside its draw.
-        if self.session.is_some() || self.scan.is_some() || self.review.is_running() {
-            self.mode_pdos.block();
-        }
+        self.show_workspace(ctx);
     }
 }
 

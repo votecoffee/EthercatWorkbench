@@ -11,7 +11,7 @@ python -B examples/read_shared_memory.py --name bench --seconds 10
 .\ethercat-workbench-cli.exe run samples/synthetic.json --shared-memory another_bench --seconds 20
 ```
 
-The desktop's **2 Bus and capture** section configures the name, period, freshness threshold and queue; its snapshot displays independent publication/loss/contention counters. Profiles retain schema 1. Omitted/null `shared_memory` disables it and is omitted from canonical serialization, preserving older profile hashes. Enabled settings enter the scheduler-comparison fingerprint.
+The desktop's **Integration** tab configures the name, period, freshness threshold and queue; **Diagnostics** displays independent publication/loss/contention counters. Profiles retain schema 1. Omitted/null `shared_memory` disables it and is omitted from canonical serialization, preserving older profile hashes. Enabled settings enter the scheduler-comparison fingerprint.
 
 ```json
 "shared_memory": { "name": "bench", "queue_capacity": 4096, "period_ms": 10, "freshness_ms": 100 }

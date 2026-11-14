@@ -23,7 +23,16 @@ impl Row {
     }
 }
 
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    #[default]
+    Trials,
+    Pcap,
+    Shared,
+}
+
 pub struct Panel {
+    page: Page,
     rows: Vec<Row>,
     audit_csv: bool,
     controller: Controller,
@@ -47,6 +56,7 @@ enum SharedMapping {
 impl Default for Panel {
     fn default() -> Self {
         Self {
+            page: Page::default(),
             rows: vec![Row::default(), Row::default()],
             audit_csv: true,
             controller: Controller::default(),
@@ -132,7 +142,15 @@ impl Panel {
         {
             self.cancel();
         }
-        ui.collapsing("Inspect a saved Ethernet PCAP", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut self.page, Page::Trials, "Run reports and CSV");
+            ui.selectable_value(&mut self.page, Page::Pcap, "Ethernet PCAP");
+            ui.selectable_value(&mut self.page, Page::Shared, "Saved input snapshot");
+        });
+        ui.separator();
+        if self.page == Page::Pcap {
+            ui.strong("Inspect a saved Ethernet PCAP");
+            ui.scope(|ui| {
             ui.label("Uses a frozen copy of the current commissioning profile. Identity, station and field meanings are offline expectations.");
             ui.label(format!("Current profile · {} · {} input bytes · {} fields", profile.name, profile.tx_bytes, profile.tx.len()));
             ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
@@ -165,7 +183,10 @@ impl Panel {
             });
             ui.label("Up to 64 MiB. PCAPNG supports one section, up to 32 interfaces and microsecond/nanosecond timestamps. Select an Ethernet interface. VLAN decoding is unsupported. Capture timestamps remain separate from application cycle timing.");
         });
-        ui.collapsing("Inspect a saved shared-input snapshot",|ui|{
+        }
+        if self.page == Page::Shared {
+            ui.strong("Inspect a saved shared-input snapshot");
+            ui.scope(|ui|{
             ui.label("Historical file only. No IPC, process-liveness query, NIC or current-input check.");
             ui.add_enabled_ui(!self.is_running() && !bus_busy,|ui|{
                 ui.horizontal(|ui|{ui.label("Snapshot (.bin)");ui.add(egui::TextEdit::singleline(&mut self.shared_path).hint_text(".local/input.bin").desired_width(410.0));});
@@ -181,12 +202,13 @@ impl Panel {
             });
             ui.label("Exactly 2560 bytes, binary schema 1. Saved active/fresh flags never establish current usable input.");
         });
-        ui.separator();
-        let mut audit = None;
-        let mut move_row = None;
-        let mut remove = None;
-        let len = self.rows.len();
-        ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
+        }
+        if self.page == Page::Trials {
+            let mut audit = None;
+            let mut move_row = None;
+            let mut remove = None;
+            let len = self.rows.len();
+            ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
             for (index,row) in self.rows.iter_mut().enumerate() {
                 ui.push_id(index, |ui| {
                     ui.group(|ui| {
@@ -214,17 +236,24 @@ impl Panel {
                 self.start(Task::Compare { inputs:self.rows.iter().map(Row::input).collect(),audit_csv:self.audit_csv });
             }
         });
-        if let Some((a, b)) = move_row {
-            self.rows.swap(a, b);
+            if let Some((a, b)) = move_row {
+                self.rows.swap(a, b);
+            }
+            if let Some(index) = remove {
+                self.rows.remove(index);
+            }
+            if let Some(input) = audit {
+                self.start(Task::Audit(input));
+            }
         }
-        if let Some(index) = remove {
-            self.rows.remove(index);
-        }
-        if let Some(input) = audit {
-            self.start(Task::Audit(input));
-        }
-
-        if let Some(completed) = self.controller.completed() {
+        if let Some(completed) = self.controller.completed().filter(|job| {
+            matches!(
+                (self.page, &job.task),
+                (Page::Trials, Task::Audit(_) | Task::Compare { .. })
+                    | (Page::Pcap, Task::InspectPcap { .. })
+                    | (Page::Shared, Task::InspectShared { .. })
+            )
+        }) {
             ui.separator();
             ui.strong("Result from the completed job");
             ui.label("Editing the path fields above does not change this result's saved inputs.");
@@ -937,6 +966,31 @@ fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn saved_review_pages_keep_unrelated_editors_hidden_and_drafts_intact() {
+        let mut panel = Panel {
+            pcap_path: "retained.pcap".into(),
+            shared_path: "retained.bin".into(),
+            ..Default::default()
+        };
+        for page in [Page::Trials, Page::Pcap, Page::Shared] {
+            panel.page = page;
+            let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+            assert_eq!(text.contains("Audit this capture"), page == Page::Trials);
+            assert_eq!(
+                text.contains("Inspect PCAP with current profile"),
+                page == Page::Pcap
+            );
+            assert_eq!(
+                text.contains("Inspect saved snapshot"),
+                page == Page::Shared
+            );
+            assert_eq!(panel.pcap_path, "retained.pcap");
+            assert_eq!(panel.shared_path, "retained.bin");
+            assert!(!panel.is_running());
+        }
+    }
+
     // Pure egui layout: no native window, desktop input, screenshot or GPU.
     fn text_from_layout(mut draw: impl FnMut(&mut egui::Ui)) -> String {
         let ctx = egui::Context::default();
@@ -1089,6 +1143,7 @@ mod tests {
     #[test]
     fn pcap_editor_layout_retains_bus_exclusion_and_invalid_station_guidance() {
         let mut panel = Panel {
+            page: Page::Pcap,
             station: "0x10000".into(),
             ..Default::default()
         };
@@ -1113,6 +1168,7 @@ mod tests {
     fn pcap_interface_editor_requires_a_bounded_explicit_choice_and_retains_bus_exclusion() {
         let mut panel = Panel::default();
         assert_eq!(panel.selected_interface().unwrap(), None);
+        panel.page = Page::Pcap;
         panel.pcap_interface = "0x1f".into();
         assert_eq!(panel.selected_interface().unwrap(), Some(31));
         for invalid in ["32", "-1", "bad"] {
@@ -1205,6 +1261,7 @@ mod tests {
             ..Default::default()
         };
         let mut panel = Panel {
+            page: Page::Shared,
             shared_path: ".local/input.bin".into(),
             shared_mapping: SharedMapping::CurrentProfile,
             ..Default::default()

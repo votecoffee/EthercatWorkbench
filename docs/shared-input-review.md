@@ -17,7 +17,7 @@ Create `.local/` beforehand and use fresh output paths. `--out` writes UTF-8 JSO
 
 ## Desktop saved-file review
 
-Version 0.22 adds the same saved-file decoder to **4 Saved run review → Inspect a saved shared-input snapshot**. Choose raw/status, a frozen copy of the current profile, or a saved run's effective profile. The existing cancellable worker preserves the original request and exports the same inspection JSON without overwriting files. It never performs live IPC or process/clock queries, and shows historical/current-invalid versus last-good data separately. [Desktop instructions](desktop-review.md#inspect-a-saved-shared-input-snapshot) explain mapping failures, display limits and cancellation boundaries. Native GUI interaction remains unqualified by the headless tests.
+Version 0.22 adds the same saved-file decoder to **Review → Saved input snapshot**. Choose raw/status, a frozen copy of the current profile, or a saved run's effective profile. The existing cancellable worker preserves the original request and exports the same inspection JSON without overwriting files. It never performs live IPC or process/clock queries, and shows historical/current-invalid versus last-good data separately. [Desktop instructions](desktop-review.md#inspect-a-saved-shared-input-snapshot) explain mapping failures, display limits and cancellation boundaries. Native GUI interaction remains unqualified by the headless tests.
 
 ## One-shot live read
 

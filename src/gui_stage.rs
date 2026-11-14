@@ -66,7 +66,7 @@ impl Panel {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui, profile: &mut Profile) {
-        ui.collapsing("Stage typed RxPDO values offline", |ui| {
+        egui::CollapsingHeader::new("Stage typed RxPDO values offline").default_open(true).show(ui, |ui| {
             ui.label("Prepare and review bytes, then apply them to this profile's offline image. These controls cannot publish outputs or enter OP.");
             if profile.rx.is_empty() { ui.label("Add an RxPDO mapping before staging typed values."); }
             let mut changed = false;

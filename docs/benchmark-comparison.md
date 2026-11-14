@@ -37,7 +37,7 @@ Version 0.20 also retains independent [shared-memory counters](shared-input-feed
 
 ## Desktop review
 
-The **4 Saved run review** panel can compare the same reports without the CLI, with optional CSV audits, per-trial timing/loss tables and new-file JSON export. See [desktop review](desktop-review.md) for worker and cancellation behavior.
+The **Review** panel can compare the same reports without the CLI, with optional CSV audits, per-trial timing/loss tables and new-file JSON export. See [desktop review](desktop-review.md) for worker and cancellation behavior.
 
 ## Valid-input spacing
 

@@ -4,11 +4,11 @@ Version 0.17 adds typed editing of a profile's offline RxPDO image. It uses the 
 
 ## Desktop
 
-In **3 PDO maps and offline payloads**, configure the RxPDO length and fields, then expand **Stage typed RxPDO values offline**. Add assignments, choose each zero-based field and enter its typed value. Existing raw staging and decoding remain available.
+Configure the RxPDO length and fields in **Mappings → Output fields**, then use **Outputs → Stage typed RxPDO values offline**. Add assignments, choose each zero-based field and enter its typed value. Existing raw staging and decoding remain available.
 
 Choose **Preview typed staging** to prepare a frozen result without changing the current profile. Review before/after bytes, requested values, changed-bit count and decoded impacts. The impact table includes changed overlapping views that were not selected. Mapping source describes the field definition (manual, ESI or override); all values entered here are manual offline values. An expected identity is copied from the profile and is not bus discovery evidence.
 
-Choose **Apply preview to offline image** to update only the staged hex string in memory. Save the profile through section **1** to a new path to retain it. Apply rechecks a hash of the entire effective profile, including identity, mapping and existing staged text. Changing any setting after preview requires another preview. Editing the typed assignments invalidates the pending preview. Loading a profile resets the typed editor. Profile controls remain disabled during a bus session or saved-file review.
+Choose **Apply preview to offline image** to update only the staged hex string in memory. Save the profile through **Profiles…** to a new path to retain it. Apply rechecks a hash of the entire effective profile, including identity, mapping and existing staged text. Changing any setting after preview requires another preview. Editing the typed assignments invalidates the pending preview. Loading a profile resets the typed editor. Profile controls remain disabled during a bus session or saved-file review.
 
 An empty staged image requires **Initialize from zero only when the staged image is empty**. Its before bytes are an explicit zero-filled assumption, not values read from a device. Unassigned bits then start at zero. This option rejects an existing image instead of clearing its bytes. Clear raw staging deliberately before choosing zero initialization if that is the intended offline operation.
 

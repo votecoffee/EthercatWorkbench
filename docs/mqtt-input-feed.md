@@ -10,7 +10,7 @@ Version 0.19 adds an opt-in publish-only MQTT input/status worker for the CLI an
 .\ethercat-workbench-cli.exe run samples/mqtt-input.json --mqtt-port 1883 --http-port 0 --seconds 20
 ```
 
-The desktop's **2 Bus and capture** section enables/configures the publisher and displays its connection, coalescing, queue loss, write/error counters and last error. CLI `run --mqtt-port PORT` enables the default configuration or overrides its port. Set a distinct topic for each app/device. A topic collision merges streams at the consumer; generated client IDs distinguish sessions but do not isolate topics.
+The desktop's **Integration** tab enables/configures the publisher. **Diagnostics** displays its connection, coalescing, queue loss, write/error counters and last error. CLI `run --mqtt-port PORT` enables the default configuration or overrides its port. Set a distinct topic for each app/device. A topic collision merges streams at the consumer; generated client IDs distinguish sessions but do not isolate topics.
 
 ## Profile and ownership
 

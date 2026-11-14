@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Snapshot: 2026-11-14. The retained executable build is **0.32.0**, source commit `d73e88b9a9199219f93992c923858e18023aecc8`. Its baseline passed 146 Rust tests, the headless workflow and portable checks. This cleanup changes documentation and local artifact retention, not runtime code. Native GUI acceptance and physical bench qualification remain open.
+Snapshot: 2026-11-14. Version **0.33.0** replaces the long numbered desktop page with the EthernetIP Workbench workflow tabs, focused dialogs and separate saved-review pages. The previous retained 0.32.0 build (`d73e88b9a9199219f93992c923858e18023aecc8`) remains a rollback baseline. See the current [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source/binary identity. Native GUI acceptance and physical bench qualification remain open.
 
 ## Decisions to retain
 
@@ -10,6 +10,7 @@ Snapshot: 2026-11-14. The retained executable build is **0.32.0**, source commit
 | Device scope | One SubDevice, identity/PDO/AL/WKC checks and input-only SAFEOP cycles; GUI and CSV work stay outside acquisition | [Operations](operations.md), [ownership](development.md) |
 | Profiles | ESI identity/revision selection, retained catalogs, manual/overridden fields, offline mode/PDO and typed Rx staging; expectations remain separate from discovered evidence | [PDO choices](pdo-selection.md), [synchronization review](esi-sync-review.md), [typed staging](output-staging.md) |
 | Timing/logging | A requested 1 ms period is a measurement target. Keep device/DC settings, host send/all-reply/valid-input spacing, capture clocks and independent losses separate. Every-valid logging includes unchanged data; on-change selection does not define valid-input timing | [Timing comparisons](benchmark-comparison.md), [CSV audits](capture-audit.md) |
+| Desktop workflow | Device, Inputs, Outputs, Logging, Mappings, Integration, Diagnostics and saved Review; persistent stop/status, locked active settings and explicit SAFEOP review | [Desktop workflows](desktop-workspace.md) |
 | Host readiness | `check-runtime` reads Npcap file/service/policy metadata; capture access stays unprobed | [Host checks](runtime-check.md) |
 
 The portable package retains dependency notices and excludes Npcap runtime/driver files. Use the existing installation/licensing references in the [README](../README.md#install) and source review. EthernetIPWorkbench remains a read-only UX/pipeline reference, not an EtherCAT protocol specification.
@@ -22,7 +23,7 @@ The user deferred the physical device/revision, ESI, isolated NIC and signal to 
 
 ## Local retention after cleanup
 
-- Keep the verified 0.32.0 portable ZIP and a 0.31.0 rollback ZIP, plus the current GUI/CLI executables at the source release path.
+- Retain each verified delivery ZIP with its matching receipt, plus the 0.32.0/0.31.0 pre-redesign baselines. Keep current GUI/CLI executables at the source release path; generated rebuild caches are disposable when no build is active.
 - Keep the Rust toolchain/tool binaries, cached locked dependencies, current Cargo EtherCrab checkout, canonical SDK extraction/original ZIP, installed skill and current 0.32.0 verification data.
 - Older private evidence/helpers are compressed under ignored `.local/research-archive/`. The development archive retains per-file hashes and original paths, including raw captures and prior failure receipts; generated executable copies were omitted. A second archive retains the clean pinned EtherCrab research checkout's file bytes, while its duplicate Git history was removed.
 - Stale build caches, 31 older distribution ZIPs, duplicate extractions and superseded helper files were removed. The next Cargo build will recreate its build cache; no rebuild was performed merely to validate this cleanup.

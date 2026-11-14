@@ -2,6 +2,10 @@
 
 Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supported user workflows; this guide identifies ownership and change routes. [VERIFICATION.md](../VERIFICATION.md) separates actual offline/native/physical evidence. Keep those boundaries explicit when adding features.
 
+## Desktop shell
+
+`gui_workspace.rs` owns workflow tabs, persistent state/stop/cancel controls, profile/decoder windows and the connection-review modal. `main.rs` owns shared editors, session lifecycle and detailed diagnostic rendering. `gui_review.rs` keeps reports/CSV, PCAP and saved snapshots on separate pages around one existing worker. Refer to [desktop workflows](desktop-workspace.md); use the read-only EthernetIPWorkbench shell as the layout reference while preserving EtherCAT state/write semantics. Pure egui tests cover page isolation at 820×560 and 1100×840, synthetic navigation, review text, discovery exclusion, invalid retained data and an actual synthetic capture drained after cross-tab stop. Native visual review remains separate.
+
 ## Data and ownership
 
 | Area | Owner and change route |

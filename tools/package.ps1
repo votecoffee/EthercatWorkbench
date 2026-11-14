@@ -32,6 +32,7 @@ try {
         'README.md' = 'README.md'
         'AGENTS.md' = 'AGENTS.md'
         'docs/operations.md' = 'docs/operations.md'
+        'docs/desktop-workspace.md' = 'docs/desktop-workspace.md'
         'docs/runtime-check.md' = 'docs/runtime-check.md'
         'docs/research-brief.md' = 'docs/research-brief.md'
         'docs/development.md' = 'docs/development.md'
