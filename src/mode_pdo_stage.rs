@@ -67,10 +67,15 @@ impl Plan {
         &self.review
     }
 
+    /// Whether the entire current profile still matches this frozen preview.
+    pub fn matches_profile(&self, profile: &Profile) -> Result<bool> {
+        Ok(profile_hash(profile)? == self.review.profile_sha256)
+    }
+
     /// Changes only the reviewed offline profile, after checking the complete baseline.
     pub fn apply(&self, profile: &mut Profile, clear_staged_rx: bool) -> Result<()> {
         ensure!(
-            profile_hash(profile)? == self.review.profile_sha256,
+            self.matches_profile(profile)?,
             "profile changed since preview; build a new mode PDO preview"
         );
         ensure!(

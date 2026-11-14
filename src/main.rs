@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod gui_mode_pdo;
 mod gui_review;
 mod gui_stage;
 
@@ -84,6 +85,7 @@ struct App {
     deferred_close: bool,
     review: gui_review::Panel,
     stage: gui_stage::Panel,
+    mode_pdos: gui_mode_pdo::Panel,
 }
 
 impl App {
@@ -119,6 +121,7 @@ impl App {
             deferred_close: false,
             review: gui_review::Panel::default(),
             stage: gui_stage::Panel::default(),
+            mode_pdos: gui_mode_pdo::Panel::default(),
         };
         if let Some(path) = args.profile {
             app.profile_path = path.to_string_lossy().into_owned();
@@ -133,6 +136,7 @@ impl App {
                 self.profile = profile;
                 self.profile_pdo_draft = None;
                 self.stage = gui_stage::Panel::default();
+                self.mode_pdos = gui_mode_pdo::Panel::default();
                 self.approved = false;
                 self.last = None;
                 self.message = "Profile loaded".into();
@@ -424,6 +428,15 @@ impl App {
                     _ => {}
                 }
             }
+        }
+        let blocked = self.session.is_some() || self.scan.is_some() || self.review.is_running();
+        if self.mode_pdos.draw(ui, &mut self.profile, blocked) {
+            self.profile_pdo_draft = None;
+            self.stage = gui_stage::Panel::default();
+            self.approved = false;
+            self.last = None;
+            self.message =
+                "Mode PDO candidate applied offline. Save new to retain the profile.".into();
         }
         ui.horizontal(|ui| {
             if let Some(identity) = &mut self.profile.expected_identity {
@@ -819,6 +832,10 @@ impl eframe::App for App {
                 });
             });
         });
+        // Work may start while Profile and ESI is collapsed, so invalidate outside its draw.
+        if self.session.is_some() || self.scan.is_some() || self.review.is_running() {
+            self.mode_pdos.block();
+        }
     }
 }
 
