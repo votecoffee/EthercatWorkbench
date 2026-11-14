@@ -39,6 +39,23 @@ Version 0.20 also retains independent [shared-memory counters](shared-input-feed
 
 The **4 Saved run review** panel can compare the same reports without the CLI, with optional CSV audits, per-trial timing/loss tables and new-file JSON export. See [desktop review](desktop-review.md) for worker and cancellation behavior.
 
+## Valid-input spacing
+
+Version 0.31 adds `valid_receive_spacing` to runtime reports and comparison trials. It uses the same near-receive monotonic timestamp as the all-reply histogram, recording only inputs that pass the existing expected-WKC and SAFEOP/clear-AL checks. Bad WKC/AL replies and timeouts do not add samples; intervals between valid samples span these interruptions. An unchanged valid input still contributes even with on-change CSV logging or no CSV logger. An outage after the last valid input does not create a completed interval until another valid input arrives; inspect input-health age and invalid-duration counters while that outage continues.
+
+| Measurement | Interval count | Meaning |
+| --- | --- | --- |
+| `receive_spacing` | `max(replies - 1, 0)` | All matched received replies, including invalid input quality |
+| `valid_receive_spacing` | `max(valid - 1, 0)` | Only input samples accepted as valid |
+| Valid spacing object with count 0 | 0, percentiles/longest all null | Cyclic measurement ran, but fewer than two valid inputs exist |
+| Null or absent valid spacing | Unavailable | Cyclic measurement was not reached, or saved metadata did not record it |
+
+A third bounded histogram is allocated before cycling. Recording adds no CSV, GUI, mailbox or dynamically growing sample history to cyclic I/O. Counts and p50/p95/p99/longest values use microseconds. Every-valid CSV with no logger loss provides an independent longest-gap cross-check: subtract adjacent receive-based elapsed timestamps, allowing one microsecond for separate truncation. On-change rows are a selected subset and cannot reconstruct all valid intervals.
+
+The desktop shows separate all-received and valid-input timing, including interval counts. `compare-runs` validates optional valid-spacing counts, percentile order and duration bounds, and requires equality with all-reply spacing when every reply was valid. Older reports remain loadable with a warning and unavailable valid-input values; they are never inferred from other counters. Each scheduler's `valid_receive_trials` counts trials with an available valid-input p99. `valid_receive_p99_us` reports min/median/max of those per-run p99 values only when every trial in that scheduler group has one. A mixed or incomplete group retains null instead of summarizing a subset. Percentiles are not pooled and no passing threshold or winner is inferred.
+
+These are host observations, distinct from requested cycle period, device synchronization/DC settings, independent capture clocks and wire timing. The extra histogram's physical timing impact and GUI/logger behavior still require the selected bench run.
+
 ## Physical bench procedure
 
 Once the device and NIC are selected, retain the model, revision, serial, ESI hash, NIC/driver, Windows configuration, wiring and the independent method of varying or observing the chosen input in ignored `.local/`. Review the existing approval scope for ESC setup, SAFEOP and INIT before starting a physical run. OP, PDO downloads and live outputs require their separate approval and remain unimplemented.

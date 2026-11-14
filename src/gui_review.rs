@@ -831,6 +831,17 @@ fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
             group.receive_p99_us.max
         ));
     }
+    for group in &result.schedules {
+        if let Some(range) = &group.valid_receive_p99_us {
+            ui.label(format!("{:?} · valid-input p99 min {} / median {:.1} / max {} µs · {}/{} trials with intervals",
+                group.scheduler, range.min, range.median, range.max, group.valid_receive_trials, group.trials));
+        } else {
+            ui.label(format!(
+                "{:?} · complete-group valid-input p99 unavailable · {}/{} trials with intervals",
+                group.scheduler, group.valid_receive_trials, group.trials
+            ));
+        }
+    }
     ui.label("Per-trial host spacing in microseconds; percentile summaries are not pooled.");
     egui::ScrollArea::horizontal()
         .id_salt("review-timing")
@@ -838,22 +849,32 @@ fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
             egui::Grid::new("review-timing-grid")
                 .striped(true)
                 .show(ui, |ui| {
-                    for text in ["Trial", "Direction", "p50", "p95", "p99", "Longest gap"] {
+                    for text in [
+                        "Trial",
+                        "Direction",
+                        "Intervals",
+                        "p50",
+                        "p95",
+                        "p99",
+                        "Longest gap",
+                    ] {
                         ui.strong(text);
                     }
                     ui.end_row();
                     for (index, trial) in result.trials.iter().enumerate() {
                         for (direction, spacing) in [
-                            ("Send", &trial.send_spacing),
-                            ("Receive", &trial.receive_spacing),
+                            ("Send", Some(&trial.send_spacing)),
+                            ("All received", Some(&trial.receive_spacing)),
+                            ("Valid input", trial.valid_receive_spacing.as_ref()),
                         ] {
                             ui.label(format!("{} {:?}", index + 1, trial.scheduler));
                             ui.label(direction);
+                            ui.label(spacing.map_or("unavailable".into(), |s| s.count.to_string()));
                             for value in [
-                                spacing.p50_us,
-                                spacing.p95_us,
-                                spacing.p99_us,
-                                spacing.longest_gap_us,
+                                spacing.and_then(|s| s.p50_us),
+                                spacing.and_then(|s| s.p95_us),
+                                spacing.and_then(|s| s.p99_us),
+                                spacing.and_then(|s| s.longest_gap_us),
                             ] {
                                 ui.label(value.map_or("unavailable".into(), |v| v.to_string()));
                             }

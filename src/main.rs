@@ -1253,14 +1253,29 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
         ui.label(format!("Replay origin · {origin}"));
         ui.label("Spacing measures host playback. Cycle and receive timestamps are generated during playback.");
     }
-    for (label, gap) in [("Send", &r.send_spacing), ("Receive", &r.receive_spacing)] {
+    for (label, gap) in [
+        ("Send", &r.send_spacing),
+        ("All received", &r.receive_spacing),
+    ]
+    .into_iter()
+    .chain(r.valid_receive_spacing.as_ref().map(|s| ("Valid input", s)))
+    {
         if let (Some(p50), Some(p95), Some(p99), Some(longest)) =
             (gap.p50_us, gap.p95_us, gap.p99_us, gap.longest_gap_us)
         {
             ui.label(format!(
-                "{label} spacing µs · p50 {p50} · p95 {p95} · p99 {p99} · longest {longest}"
+                "{label} spacing µs · {} intervals · p50 {p50} · p95 {p95} · p99 {p99} · longest {longest}", gap.count
             ));
         }
+    }
+    match &r.valid_receive_spacing {
+        None => {
+            ui.label("Valid input spacing · unavailable (not recorded)");
+        }
+        Some(s) if s.count == 0 => {
+            ui.label("Valid input spacing µs · 0 intervals (fewer than two valid inputs)");
+        }
+        _ => {}
     }
     if let Some(esc) = &r.virtual_esc {
         ui.label(format!("Virtual ESC · SII reads {} · CoE uploads {} · SM writes {} · FMMU writes {} · state requests {:?}",
@@ -1316,6 +1331,68 @@ fn show_snapshot(ui: &mut egui::Ui, snapshot: &Snapshot, fields: &[Field]) {
         ui.monospace(bytes);
         if snapshot.valid {
             show_values(ui, data, fields);
+        }
+    }
+}
+
+#[cfg(test)]
+mod timing_layout_tests {
+    use super::*;
+
+    #[test]
+    fn headless_snapshot_keeps_unrecorded_empty_and_measured_valid_spacing_distinct() {
+        for (spacing, expected) in [
+            (None, "Valid input spacing · unavailable (not recorded)"),
+            (
+                Some(run::Spacing::default()),
+                "0 intervals (fewer than two valid inputs)",
+            ),
+            (
+                Some(run::Spacing {
+                    count: 2,
+                    p50_us: Some(1000),
+                    p95_us: Some(4000),
+                    p99_us: Some(4000),
+                    longest_gap_us: Some(4000),
+                }),
+                "2 intervals · p50 1000",
+            ),
+        ] {
+            let mut snapshot = Snapshot::default();
+            snapshot.report.valid_receive_spacing = spacing;
+            let ctx = egui::Context::default();
+            ctx.memory_mut(|m| m.set_everything_is_visible(true));
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 10000.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| show_snapshot(ui, &snapshot, &[]));
+                },
+            );
+            fn collect(shape: &egui::epaint::Shape, text: &mut String) {
+                match shape {
+                    egui::epaint::Shape::Text(s) => {
+                        text.push_str(&s.galley.job.text);
+                        text.push('\n');
+                    }
+                    egui::epaint::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut text = String::new();
+            for shape in output.shapes {
+                collect(&shape.shape, &mut text);
+            }
+            assert!(text.contains(expected), "missing {expected:?}: {text}");
         }
     }
 }

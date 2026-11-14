@@ -34,7 +34,7 @@ pub struct DeviceInfo {
     pub al_code: u16,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spacing {
     pub count: u64,
     pub p50_us: Option<u64>,
@@ -111,6 +111,8 @@ pub struct Report {
     pub actual_wkc: Option<u16>,
     pub send_spacing: Spacing,
     pub receive_spacing: Spacing,
+    /// Host spacing between valid PDO inputs; None means cyclic measurement was not reached.
+    pub valid_receive_spacing: Option<Spacing>,
     pub capture: Option<CaptureStats>,
     pub devices: Vec<DeviceInfo>,
     pub pdo_verification: Option<Arc<crate::pdo::Verification>>,
@@ -474,6 +476,7 @@ fn cycle(
         .with_spin_strategy(spin_sleep::SpinStrategy::SpinLoopHint);
     let mut sends = Gaps::new();
     let mut receives = Gaps::new();
+    let mut valid_receives = Gaps::new();
     let start = Instant::now();
     let end = start + options.duration;
     let mut deadline = start;
@@ -561,6 +564,7 @@ fn cycle(
                 report.wkc_mismatches += u64::from(!wkc_ok);
                 report.state_mismatches += u64::from(!status_ok);
                 if wkc_ok && status_ok {
+                    valid_receives.tick(received);
                     report.valid += 1;
                     if let Some(capture) = capture.as_mut() {
                         capture.submit(
@@ -623,7 +627,7 @@ fn cycle(
             }
             if observed >= publish || previous_issue != report.input_health.current_issue {
                 if let Ok(mut snapshot) = view.try_lock() {
-                    update(report, &sends, &receives, capture.as_ref());
+                    update(report, &sends, &receives, &valid_receives, capture.as_ref());
                     report.http = http.as_ref().map(crate::http_feed::Hub::stats);
                     report.mqtt = mqtt.as_ref().map(crate::mqtt_feed::Hub::stats);
                     report.shared_memory =
@@ -646,7 +650,7 @@ fn cycle(
     if result.is_ok() && !stop.load(Relaxed) {
         result = check_input_loss(&report.input_health, profile.input_loss_timeout_ms);
     }
-    update(report, &sends, &receives, capture.as_ref());
+    update(report, &sends, &receives, &valid_receives, capture.as_ref());
     if let Some(http) = &http {
         http.deactivate();
         report.http = Some(http.stats());
@@ -666,7 +670,7 @@ fn cycle(
         snapshot.valid = false;
     }
     result = combine(result, bus.stop().map(|al| report.stopped_al = al));
-    update(report, &sends, &receives, capture.as_ref());
+    update(report, &sends, &receives, &valid_receives, capture.as_ref());
     if let Some(capture) = capture {
         let (stats, write_result) = capture.finish();
         report.capture = Some(stats);
@@ -740,9 +744,16 @@ fn feed_counts(report: &Report, capture: Option<&Capture>) -> crate::http_feed::
     }
 }
 
-fn update(report: &mut Report, sends: &Gaps, receives: &Gaps, capture: Option<&Capture>) {
+fn update(
+    report: &mut Report,
+    sends: &Gaps,
+    receives: &Gaps,
+    valid_receives: &Gaps,
+    capture: Option<&Capture>,
+) {
     report.send_spacing = sends.report();
     report.receive_spacing = receives.report();
+    report.valid_receive_spacing = Some(valid_receives.report());
     report.capture = capture.map(Capture::stats);
 }
 
@@ -787,6 +798,80 @@ pub fn spawn(
 #[cfg(test)]
 mod cycle_tests {
     use super::*;
+
+    #[test]
+    fn valid_input_spacing_excludes_bad_wkc_al_and_timeout_without_csv() {
+        struct TimedBus {
+            calls: u32,
+            base: Option<Instant>,
+        }
+        impl Bus for TimedBus {
+            fn exchange(&mut self, _cycle: u64) -> Result<Option<Exchange>> {
+                self.calls += 1;
+                if self.calls > 6 {
+                    return Ok(None);
+                }
+                let base = *self.base.get_or_insert_with(Instant::now);
+                let at = base + Duration::from_millis(u64::from(self.calls - 1));
+                Ok(Some(Exchange {
+                    sent: at,
+                    received: (self.calls != 4).then_some(at),
+                    wkc: u16::from(self.calls != 2),
+                    status: Some((if self.calls == 3 { 8 } else { 4 }, 0)),
+                    data: [7; MAX_PAYLOAD],
+                    ignored_frames: 0,
+                }))
+            }
+            fn stop(&mut self) -> Result<Option<(u16, u16)>> {
+                Ok(Some((1, 0)))
+            }
+        }
+        let profile = Profile::default();
+        let options = RunOptions {
+            frontend: crate::benchmark::Frontend::Cli,
+            mode: Mode::Simulate { faults: false },
+            duration: Duration::from_secs(1),
+            csv: None,
+            generation: 1,
+        };
+        let mut report = Report {
+            expected_wkc: 1,
+            ..Report::default()
+        };
+        assert!(report.valid_receive_spacing.is_none());
+        cycle(
+            TimedBus {
+                calls: 0,
+                base: None,
+            },
+            &profile,
+            &options,
+            &AtomicBool::new(false),
+            &Mutex::new(Snapshot::default()),
+            &mut report,
+            &mut Bindings {
+                http: None,
+                shared_memory: None,
+            },
+        )
+        .unwrap();
+        assert_eq!((report.cycles, report.replies, report.valid), (6, 5, 3));
+        assert_eq!(
+            (
+                report.wkc_mismatches,
+                report.state_mismatches,
+                report.timeouts
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(report.receive_spacing.longest_gap_us, Some(2000));
+        let valid = report.valid_receive_spacing.unwrap();
+        assert_eq!(valid.count, 2);
+        assert_eq!(valid.p50_us, Some(1000));
+        assert_eq!(valid.p99_us, Some(4000));
+        assert_eq!(valid.longest_gap_us, Some(4000));
+        assert!(report.capture.is_none());
+    }
 
     #[cfg(windows)]
     #[test]

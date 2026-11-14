@@ -16,6 +16,21 @@ else:
     from mqtt_fixture import Broker
 
 
+def historical_active_fixture(original):
+    """Author a coherent zero-age historical publication; never alter the raw receipt."""
+    active = bytearray(original)
+    flags = struct.unpack_from("<I", active, 268)[0]
+    publication, offered, latest_event, _, latest_elapsed = struct.unpack_from("<QQQQQ", active, 48)
+    qpc, frequency = struct.unpack_from("<QQ", active, 248)
+    assert flags & 4 and latest_event == offered and publication >= latest_elapsed
+    age_ticks = (publication - latest_elapsed) * frequency // 1_000_000
+    assert qpc >= age_ticks
+    struct.pack_into("<Q", active, 48, latest_elapsed)
+    struct.pack_into("<Q", active, 248, qpc - age_ticks)
+    struct.pack_into("<I", active, 268, flags | 0x101)
+    return active
+
+
 def verify_shared_memory(cli, root, destination, cli_call):
     spec = importlib.util.spec_from_file_location("shared_reader", root / "examples/read_shared_memory.py")
     module = importlib.util.module_from_spec(spec)
@@ -260,15 +275,25 @@ def verify_shared_memory(cli, root, destination, cli_call):
         original_hash = hashlib.sha256(original).hexdigest()
         raw = cli_call(cli, "inspect-shared", destination / "deadline.native.bin")
         assert raw["raw_sha256"] == original_hash and raw["decoding"] is None and raw["snapshot"]["latest"]["data"]["values"] is None
-        active = bytearray(original)
-        flags = struct.unpack_from("<I", active, 268)[0]
-        struct.pack_into("<I", active, 268, flags | 0x101)
+        flags = struct.unpack_from("<I", original, 268)[0]
+        active = historical_active_fixture(original)
         active_file = destination / "historical-active.bin"
         active_file.write_bytes(active)
         historical = cli_call(cli, "inspect-shared", active_file, "--run-report", run_file)
         assert historical["snapshot"]["active"] and historical["snapshot"]["fresh_at_publication"] and not historical["current_usable"]
+        assert historical["snapshot"]["latest"]["age_us_at_publication"] == 0
         assert historical["publication_age_us"] is None and historical["observation"] is None
         assert historical["snapshot"]["latest"]["observed_age_us"] is None
+        stale = bytearray(active)
+        elapsed = struct.unpack_from("<Q", stale, 48)[0]
+        qpc, frequency = struct.unpack_from("<QQ", stale, 248)
+        age_us = struct.unpack_from("<I", stale, 324)[0] * 1000 + 1
+        struct.pack_into("<Q", stale, 48, elapsed + age_us)
+        struct.pack_into("<Q", stale, 248, qpc + age_us * frequency // 1_000_000)
+        stale_file = destination / "historical-invalid-fresh.bin"
+        stale_file.write_bytes(stale)
+        assert "inconsistent fresh-at-publication flag" in cli_call(cli, "inspect-shared", stale_file, success=False)
+        assert (destination / "deadline.native.bin").read_bytes() == original
         wrong = json.loads(run_file.read_bytes())["context"]["profile"]
         wrong["tx"][0]["name"] = "Changed mapping"
         wrong_file = destination / "wrong-profile.json"

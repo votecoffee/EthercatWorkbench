@@ -136,6 +136,8 @@ struct SavedRun {
     expected_wkc: u16,
     send_spacing: Spacing,
     receive_spacing: Spacing,
+    #[serde(default)]
+    valid_receive_spacing: Option<Spacing>,
     capture: Option<CaptureStats>,
     devices: Vec<ObservedDevice>,
     synchronization: Option<crate::sync::Synchronization>,
@@ -258,6 +260,18 @@ impl SavedRun {
         );
         check_spacing(&self.send_spacing, self.cycles - 1)?;
         check_spacing(&self.receive_spacing, self.replies - 1)?;
+        if let Some(spacing) = &self.valid_receive_spacing {
+            check_spacing(spacing, self.valid.saturating_sub(1))
+                .context("invalid valid-input spacing")?;
+            ensure!(
+                self.valid != self.replies || spacing == &self.receive_spacing,
+                "valid-input spacing differs from all replies despite every reply being valid"
+            );
+            ensure!(
+                spacing.longest_gap_us <= Some(self.cyclic_elapsed_us),
+                "valid-input spacing exceeds the measured cyclic interval"
+            );
+        }
         ensure!(
             self.send_spacing.longest_gap_us <= Some(self.cyclic_elapsed_us)
                 && self.receive_spacing.longest_gap_us <= Some(self.cyclic_elapsed_us),
@@ -343,6 +357,13 @@ fn check_spacing(spacing: &Spacing, expected: u64) -> Result<()> {
         spacing.p99_us,
         spacing.longest_gap_us,
     ];
+    if expected == 0 {
+        ensure!(
+            spacing.count == 0 && values.iter().all(Option::is_none),
+            "zero intervals must have no spacing percentiles"
+        );
+        return Ok(());
+    }
     ensure!(
         spacing.count == expected && values.iter().all(Option::is_some),
         "missing or inconsistent spacing measurements"
@@ -386,6 +407,7 @@ pub struct Trial {
     pub ignored_frames: u64,
     pub send_spacing: Spacing,
     pub receive_spacing: Spacing,
+    pub valid_receive_spacing: Option<Spacing>,
     pub capture: CaptureStats,
     pub http: Option<crate::http_feed::Stats>,
     pub mqtt: Option<crate::mqtt_feed::Stats>,
@@ -420,6 +442,8 @@ pub struct ScheduleSummary {
     pub trials: usize,
     pub send_p99_us: Range,
     pub receive_p99_us: Range,
+    pub valid_receive_trials: usize,
+    pub valid_receive_p99_us: Option<Range>,
 }
 
 #[derive(Debug, Serialize)]
@@ -644,6 +668,9 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
         {
             result.warnings.push(format!("Trial {} has shared memory loss, contention, abandoned mutex recovery, incomplete inactive publication or worker failure; inspect independent counters. A copy does not prove reader delivery.",file.display()));
         }
+        if r.valid_receive_spacing.is_none() {
+            result.warnings.push(format!("Trial {} has no valid-input spacing metadata; it remains unavailable rather than inferred from all replies.", file.display()));
+        }
         result.trials.push(Trial {
             file: file.clone(),
             sha256: sha256.clone(),
@@ -661,6 +688,7 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
             ignored_frames: r.ignored_frames,
             send_spacing: r.send_spacing.clone(),
             receive_spacing: r.receive_spacing.clone(),
+            valid_receive_spacing: r.valid_receive_spacing.clone(),
             capture: cap.clone(),
             http: r.http.clone(),
             mqtt: r.mqtt.clone(),
@@ -682,9 +710,17 @@ fn compare(inputs: Vec<(PathBuf, String, SavedRun)>) -> Result<Comparison> {
                 "{scheduler:?} has fewer than three trials; collect repeated runs."
             ));
         }
+        let valid_p99 = trials
+            .iter()
+            .filter_map(|trial| trial.valid_receive_spacing.as_ref().and_then(|s| s.p99_us))
+            .collect::<Vec<_>>();
+        let valid_receive_trials = valid_p99.len();
+        let valid_receive_p99_us = (valid_receive_trials == trials.len()).then(|| range(valid_p99));
         result.schedules.push(ScheduleSummary {
             scheduler,
             trials: trials.len(),
+            valid_receive_trials,
+            valid_receive_p99_us,
             send_p99_us: range(
                 trials
                     .iter()
@@ -778,6 +814,72 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|w| w.contains("GUI-plus-logger"))
+        );
+    }
+
+    #[test]
+    fn valid_input_comparison_keeps_legacy_missing_values_and_complete_group_ranges() {
+        let mut runs = vec![
+            fixture(Scheduler::Deadline, 0, 100),
+            fixture(Scheduler::Relative, 1, 200),
+            fixture(Scheduler::Deadline, 2, 300),
+            fixture(Scheduler::Relative, 3, 400),
+        ];
+        for (index, run) in runs.iter_mut().enumerate().skip(1) {
+            run.valid = 500;
+            run.wkc_mismatches = 500;
+            run.capture.as_mut().unwrap().selected = 500;
+            run.capture.as_mut().unwrap().written = 500;
+            run.valid_receive_spacing = Some(Spacing {
+                count: 499,
+                p50_us: Some(1),
+                p95_us: Some(2),
+                p99_us: Some(1000 + index as u64),
+                longest_gap_us: Some(2000),
+            });
+        }
+        let comparison = compare(inputs(runs)).unwrap();
+        assert!(comparison.trials[0].valid_receive_spacing.is_none());
+        assert_eq!(comparison.schedules[0].valid_receive_trials, 1);
+        assert!(comparison.schedules[0].valid_receive_p99_us.is_none());
+        assert_eq!(comparison.schedules[1].valid_receive_trials, 2);
+        let range = comparison.schedules[1]
+            .valid_receive_p99_us
+            .as_ref()
+            .unwrap();
+        assert_eq!((range.min, range.median, range.max), (1001, 1002.0, 1003));
+        assert!(
+            comparison
+                .warnings
+                .iter()
+                .any(|s| s.contains("no valid-input spacing metadata"))
+        );
+    }
+
+    #[test]
+    fn optional_valid_spacing_is_checked_and_zero_intervals_are_not_zero_percentiles() {
+        let mut run = fixture(Scheduler::Deadline, 0, 100);
+        run.valid_receive_spacing = Some(run.receive_spacing.clone());
+        assert!(run.checked().is_ok());
+        run.valid_receive_spacing.as_mut().unwrap().count -= 1;
+        assert!(run.checked().is_err());
+        run.valid_receive_spacing.as_mut().unwrap().count += 1;
+        run.valid_receive_spacing.as_mut().unwrap().p99_us = Some(0);
+        assert!(run.checked().is_err());
+        run.valid_receive_spacing = Some(run.receive_spacing.clone());
+        run.valid_receive_spacing.as_mut().unwrap().longest_gap_us =
+            Some(run.cyclic_elapsed_us + 1);
+        assert!(run.checked().is_err());
+        assert!(check_spacing(&Spacing::default(), 0).is_ok());
+        assert!(
+            check_spacing(
+                &Spacing {
+                    p50_us: Some(0),
+                    ..Spacing::default()
+                },
+                0
+            )
+            .is_err()
         );
     }
 

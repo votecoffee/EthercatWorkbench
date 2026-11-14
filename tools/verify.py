@@ -45,6 +45,16 @@ def verify_csv(report, base, generation=1, change=False, faults=False, virtual=F
     assert report["valid"] > 0 and report["expected_wkc"] == 1
     assert report["send_spacing"]["count"] == report["cycles"] - 1
     assert report["receive_spacing"]["count"] == report["replies"] - 1
+    valid_spacing = report["valid_receive_spacing"]
+    assert valid_spacing["count"] == report["valid"] - 1
+    values = [valid_spacing[k] for k in ("p50_us", "p95_us", "p99_us", "longest_gap_us")]
+    if valid_spacing["count"]:
+        assert all(v is not None for v in values) and values == sorted(values)
+        assert values[-1] <= report["cyclic_elapsed_us"]
+    else:
+        assert values == [None] * 4
+    if report["valid"] == report["replies"]:
+        assert valid_spacing == report["receive_spacing"]
     assert report["requested_cycle_us"] == 1000
     parts, entries = rows(base)
     cap = report["capture"]
@@ -53,6 +63,11 @@ def verify_csv(report, base, generation=1, change=False, faults=False, virtual=F
     assert len(entries) == cap["written"] == cap["selected"] > 0
     times = [int(r["elapsed_us"]) for r in entries]
     assert all(a <= b for a, b in zip(times, times[1:]))
+    if not change:
+        assert len(entries) == report["valid"]
+        if len(times) > 1:
+            # Difference of two truncated elapsed timestamps differs from a truncated interval by at most 1 us.
+            assert abs(max(b - a for a, b in zip(times, times[1:])) - valid_spacing["longest_gap_us"]) <= 1
     cycles = [int(r["cycle_index"]) for r in entries]
     assert all(a < b for a, b in zip(cycles, cycles[1:]))
     assert datetime.datetime.fromisoformat(cap["utc_start"]).utcoffset() == datetime.timedelta()
@@ -850,6 +865,23 @@ def verify_pdo_choices(cli, destination):
     assert cli_call(cli, "validate", legacy_path)["esi_pdo_selection"] is None
 
 
+def verify_valid_spacing_boundaries(cli, destination):
+    fixture = json.loads((ROOT / "samples/synthetic-replay.json").read_bytes())
+    for name, exchange_index in [("one-valid", 0), ("zero-valid", 2)]:
+        sample = dict(fixture)
+        sample["exchanges"] = [fixture["exchanges"][exchange_index]]
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(sample), encoding="utf-8")
+        report = cli_call(cli, "run", ROOT / "samples/synthetic.json", "--backend", "replay",
+            "--replay", path, "--seconds", 1, success=name == "one-valid")
+        spacing = report["valid_receive_spacing"]
+        assert report["valid"] == int(name == "one-valid") and spacing["count"] == 0
+        assert all(spacing[k] is None for k in ("p50_us", "p95_us", "p99_us", "longest_gap_us"))
+    setup_failure = cli_call(cli, "run", ROOT / "samples/virtual.json", "--backend", "virtual",
+        "--virtual-fault", "init-normal-upload", "--seconds", 1, success=False)
+    assert setup_failure["cycles"] == 0 and setup_failure["valid_receive_spacing"] is None
+
+
 def verify_comparison(cli, destination):
     profile = ROOT / "samples/synthetic.json"
     paths, trials = [], []
@@ -881,14 +913,36 @@ def verify_comparison(cli, destination):
         assert row["sha256"] == hashlib.sha256(paths[index].read_bytes()).hexdigest()
         assert row["send_spacing"] == original["send_spacing"]
         assert row["receive_spacing"] == original["receive_spacing"]
+        assert row["valid_receive_spacing"] == original["valid_receive_spacing"]
         assert row["capture"] == original["capture"] and row["cyclic_elapsed_us"] == original["cyclic_elapsed_us"]
     for group in result["schedules"]:
         p99 = sorted(r["receive_spacing"]["p99_us"] for r in trials if r["scheduler"] == group["scheduler"])
         assert group["receive_p99_us"] == {"min": p99[0], "median": p99[1], "max": p99[2]}
+        assert group["valid_receive_trials"] == 3
+        assert group["valid_receive_p99_us"] == group["receive_p99_us"]  # These trials have no invalid replies.
     assert any("Offline fixture" in w for w in result["warnings"])
     assert any("CSV bytes" in w for w in result["warnings"])
     assert not any("fewer than three" in w for w in result["warnings"])
     (destination / "comparison.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    legacy = json.loads(paths[0].read_bytes())
+    legacy.pop("valid_receive_spacing")
+    legacy_path = destination / "legacy-valid-spacing.json"
+    legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+    historical = cli_call(cli, "compare-runs", legacy_path, paths[1], paths[2])
+    assert historical["trials"][0]["valid_receive_spacing"] is None
+    assert historical["schedules"][0]["valid_receive_trials"] == 1
+    assert historical["schedules"][0]["valid_receive_p99_us"] is None
+    assert any("no valid-input spacing metadata" in w for w in historical["warnings"])
+    for name in ["count", "percentiles", "duration", "all-replies"]:
+        changed = json.loads(paths[0].read_bytes())
+        spacing = changed["valid_receive_spacing"]
+        if name == "count": spacing["count"] -= 1
+        elif name == "percentiles": spacing["p99_us"] = 0
+        elif name == "duration": spacing["longest_gap_us"] = changed["cyclic_elapsed_us"] + 1
+        else: spacing["longest_gap_us"] += 1
+        invalid = destination / f"bad-valid-spacing-{name}.json"
+        invalid.write_text(json.dumps(changed), encoding="utf-8")
+        assert "valid-input spacing" in cli_call(cli, "compare-runs", invalid, paths[1], success=False)
     for index, path in enumerate(paths):
         audit_capture(cli, path, destination / f"trial-{index}.csv", trials[index])
     audited = cli_call(cli, "compare-runs", paths[0], paths[1],
@@ -1896,6 +1950,7 @@ def main():
 
     comparison_destination = destination / "comparison"
     comparison_destination.mkdir()
+    verify_valid_spacing_boundaries(cli, comparison_destination)
     verify_comparison(cli, comparison_destination)
     audit_destination = destination / "capture-audit"
     audit_destination.mkdir()
