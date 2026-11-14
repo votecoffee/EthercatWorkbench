@@ -24,6 +24,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect Windows Npcap host files, service and policy without opening a NIC.
+    CheckRuntime {
+        /// Export the host observations to a new .json file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// List Windows Npcap interface identifiers without transmitting.
     Nics,
     /// Read bus position, station address, port links and AL registers without configuration.
@@ -238,7 +244,7 @@ fn output(value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
-fn shared_export(value: &impl Serialize, path: Option<&std::path::Path>) -> Result<()> {
+fn inspection_export(value: &impl Serialize, path: Option<&std::path::Path>) -> Result<()> {
     if let Some(path) = path {
         use std::io::Write;
         ensure!(
@@ -250,7 +256,7 @@ fn shared_export(value: &impl Serialize, path: Option<&std::path::Path>) -> Resu
             .context("create new inspection output; existing paths are preserved")?;
         serde_json::to_writer_pretty(&mut file, value)?;
         writeln!(file)?;
-        file.sync_all().context("flush shared input inspection")?;
+        file.sync_all().context("flush inspection output")?;
     }
     output(value)
 }
@@ -310,6 +316,11 @@ struct SavedSyncDevice {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::CheckRuntime { out } => {
+            shared_outputs(out.as_deref(), None)?;
+            let report = ethercat_workbench::runtime_check::collect();
+            inspection_export(&report, out.as_deref())
+        }
         Command::Nics => output(&ethercat_workbench::live::nics()?),
         Command::Scan { nic } => output(&ethercat_workbench::live::scan(&nic)?),
         Command::ScanVirtual { model, case } => {
@@ -338,7 +349,7 @@ fn main() -> Result<()> {
             if let Some(path) = save_raw {
                 capture.save_raw(&path)?;
             }
-            shared_export(&capture.inspection, out.as_deref())
+            inspection_export(&capture.inspection, out.as_deref())
         }
         Command::InspectShared {
             file,
@@ -353,7 +364,7 @@ fn main() -> Result<()> {
             )?;
             let capture =
                 ethercat_workbench::shared_memory::reader::inspect_file(&file, profile.as_ref())?;
-            shared_export(&capture.inspection, out.as_deref())
+            inspection_export(&capture.inspection, out.as_deref())
         }
         Command::InspectPcap {
             profile,

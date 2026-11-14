@@ -26,3 +26,5 @@ mod wire;
 
 #[cfg(windows)]
 pub mod live;
+#[cfg(windows)]
+pub mod runtime_check;

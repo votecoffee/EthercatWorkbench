@@ -2,6 +2,10 @@
 
 This guide is the starting point for the portable Windows app and headless CLI. Extract a verified ZIP beside its `samples` and `docs` folders. The GUI is `ethercat-workbench.exe`; commands below use `ethercat-workbench-cli.exe` from that folder. Offline workflows need no Npcap runtime. Native raw Ethernet uses a separately installed x64 Npcap driver/runtime and its access policy. See [installation/build prerequisites](../README.md#install) and the [source/backend review](ethercrab-review.md).
 
+## Check host prerequisites
+
+Use `check-runtime`, optionally with `--out NEW.json`, to inspect Npcap host files, service state and recorded access policy. It reads Windows metadata without opening an adapter or invoking Npcap exports. A successful collection or `present_unprobed` status is not a capture-permission or device test. The [host-check guide](runtime-check.md) explains missing/unavailable values, literal file versions, export behavior and the remaining commissioning steps.
+
 ## Choose the evidence and target
 
 Use `samples/synthetic.json` for generated inputs, the matching `samples/virtual*.json` for the selected in-memory ESC model, and `samples/synthetic-replay.json` for authored raw-frame replay. They provide no physical device evidence. Put vendor ESI files, selected-NIC profiles, raw captures and receipts in ignored `.local/`.

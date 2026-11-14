@@ -41,6 +41,8 @@ New-Item -ItemType Directory -Force .local | Out-Null
 .\ethercat-workbench-cli.exe run samples/synthetic.json --backend replay --replay samples/synthetic-replay.json --seconds 2 --csv .local/replayed.csv
 ```
 
+Run `check-runtime --out .local/host-prerequisites.json` for a [read-only host check](docs/runtime-check.md) of installed Npcap DLL headers/file versions, driver-service state and the recorded AdminOnly option. Capture access stays unprobed; this command performs no NIC enumeration or bus exchange. Missing/unknown observations remain visible and exports preserve existing files.
+
 The ESI reader accepts UTF-8/UTF-16 and lists devices by vendor, product and revision. Headless import now accepts a unique exact `--identity VENDOR/PRODUCT/REVISION` or a zero-based `--device` index; combine them to reject an index whose identity differs. Ambiguous identity matches require an explicit index. See [exact selection](docs/pdo-selection.md#select-an-exact-esi-device) for examples and bounds. It retains a PDO catalog, including candidates without a default `Sm` assignment. Default choices follow the ESI assignments. It sorts the built image by SyncManager and preserves chosen PDO order, padding and byte alignment between SyncManagers. It records the ESI basename, hash, identity and field sources. The editable bit offsets and lengths are Workbench decoding settings. Use a new profile path to save edits. Select TxPDO fields for CSV and stage RxPDO hex with the expected image length. For aligned numeric fields, transforms apply in the order swap bytes in each 16-bit word, reverse the 16-bit words, then interpret endian order. Bit fields number bit 0 as the least-significant bit of the first byte.
 
 PDO catalog choices can be edited in the GUI before building an imported profile and after reloading a saved profile. Choose candidates, set their SyncManagers and adjust order within a SyncManager, then rebuild the offline fields. Rebuilding clears staged RxPDO bytes. Mandatory selections, exclusions, duplicate choices and mixed Tx/Rx assignments on one SyncManager are checked. Virtual and module-dependent PDOs require further implementation. Choice changes mark their direction's fields as overrides. The separate decoder editor remains available; detach the ESI selection to change image lengths independently.
@@ -116,7 +118,7 @@ An opt-in [read-only loopback HTTP input feed](docs/http-input-feed.md) now expo
 
 ## Contributing
 
-Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.31.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets` on Windows x64. To reproduce the ZIP, install `cargo-about` 0.9.3 with its `cli` feature and run `./tools/package.ps1 -Zip .local/EtherCAT-Workbench-0.32.0-win-x64.zip` from a clean checkout. Use sanitized fixtures in commits and keep vendor files, private settings and raw captures in `.local/`.
 
 ## License
 

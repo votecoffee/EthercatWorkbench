@@ -467,6 +467,51 @@ def verify_input_loss(cli, profile, destination, model="coe"):
     (destination / "input-health.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
 
 
+def verify_runtime_check(cli, destination):
+    """Collect host prerequisites without calling the capture API or probing a NIC."""
+    path = destination / "host-prerequisites.json"
+    report = cli_call(cli, "check-runtime", "--out", path)
+    assert json.loads(path.read_bytes()) == report and not path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert report["schema"] == 1 and report["scope"] == "host_prerequisites_only"
+    assert report["application_architecture"] == "x86_64" and report["pointer_bits"] == 64
+    assert report["capture_access"] == "not_probed" and report["service_name"] == "npcap"
+    assert datetime.datetime.fromisoformat(report["captured_at_utc"]).utcoffset() == datetime.timedelta()
+    assert report["npcap_modules_before"] == report["npcap_modules_after"] == {"wpcap": False, "packet": False}
+    assert len(report["dlls"]) == 2 and [d["name"] for d in report["dlls"]] == ["wpcap.dll", "Packet.dll"]
+    observations = [report["system_directory"], report["service"], report["admin_only"]]
+    for dll in report["dlls"]:
+        observations += [dll["image"], dll["file_version"]]
+        if report["system_directory"]["value"]:
+            assert Path(dll["path"]) == Path(report["system_directory"]["value"]) / "Npcap" / dll["name"]
+        if dll["image"]["state"] == "available":
+            # Independent raw-byte check of the reported installed header, without loading it.
+            with Path(dll["path"]).open("rb") as stream:
+                assert Path(dll["path"]).stat().st_size == dll["image"]["value"]["bytes"]
+                dos = stream.read(64); assert dos[:2] == b"MZ"
+                stream.seek(struct.unpack_from("<I", dos, 60)[0]); pe = stream.read(26)
+                assert pe[:4] == b"PE\0\0"
+                assert struct.unpack_from("<H", pe, 4)[0] == dll["image"]["value"]["machine"]
+                assert (struct.unpack_from("<H", pe, 24)[0] == 0x20b) == dll["image"]["value"]["pe32_plus"]
+                assert bool(struct.unpack_from("<H", pe, 22)[0] & 0x2000) == dll["image"]["value"]["dll"]
+        if dll["file_version"]["state"] == "available":
+            parts = dll["file_version"]["value"].split(".")
+            assert len(parts) == 4 and all(p.isdecimal() and 0 <= int(p) <= 65535 for p in parts)
+    for observation in observations:
+        assert observation["state"] in ["available", "missing", "unavailable", "invalid", "not_queried"]
+        if observation["state"] == "available":
+            assert observation["value"] is not None and observation["detail"] is None and observation["os_error"] is None
+        else:
+            assert observation["value"] is None and observation["detail"]
+    if report["admin_only"]["value"] is not None:
+        assert type(report["admin_only"]["value"]) is bool
+    original = path.read_bytes()
+    cli_call(cli, "check-runtime", "--out", path, success=False)
+    assert path.read_bytes() == original
+    invalid = destination / "wrong-extension.txt"
+    cli_call(cli, "check-runtime", "--out", invalid, success=False)
+    assert not invalid.exists()
+
+
 def verify_esi_identity(cli, destination):
     """Independent multi-product/revision XML checks for exact import selection."""
     from copy import deepcopy
@@ -1941,6 +1986,9 @@ def main():
     identity_destination = destination / "esi-identity"
     identity_destination.mkdir()
     verify_esi_identity(cli, identity_destination)
+    runtime_destination = destination / "runtime-check"
+    runtime_destination.mkdir()
+    verify_runtime_check(cli, runtime_destination)
     mode_destination = destination / "mode-pdo-staging"
     mode_destination.mkdir()
     verify_mode_pdo_staging(cli, mode_destination)

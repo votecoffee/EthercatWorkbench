@@ -8,6 +8,7 @@
 
 ## One-device bench acceptance
 
+- The CLI host check now observes installed Npcap x64 headers/file versions, local service state and recorded AdminOnly policy without probing an adapter. Missing/denied/invalid states have fixture coverage and host/export checks; actual DLL/export compatibility, effective NIC access and driver/device qualification remain pending.
 - Record device model and revision, ESI hash, NIC and driver version, bench wiring, selected input and an independent way to vary or observe it.
 - Use read-only discovery to confirm a single SubDevice. Review and approve the ESC setup and INIT teardown scope before starting the GUI SAFEOP run.
 - Confirm exact identity, AL state and status code, device-reported image lengths and sync settings. Optional CoE cycle/minimum snapshots now have expedited/normal/segmented and optional-abort/malformed-size coverage, separate from host/DC timing; physical support, dynamic-value meaning and any device measurement procedure still need qualification. Read-only ESC controller/port/counter snapshots and common AL decoding now have authored-fixture coverage; physical counter support and interpretation remain unqualified. Verify PDO offsets and values against the device documentation and an independently observed input change.
