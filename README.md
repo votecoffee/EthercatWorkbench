@@ -2,6 +2,8 @@
 
 Windows x64 Rust desktop application and headless CLI for EtherCAT MainDevice bench commissioning, SAFEOP input inspection, PDO decoding and CSV capture.
 
+For the current decisions, evidence limits and retained artifacts, start with the [research brief](docs/research-brief.md).
+
 ## Table of Contents
 
 - [Install](#install)
