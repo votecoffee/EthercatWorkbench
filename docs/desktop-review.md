@@ -16,6 +16,10 @@ The result shows audited rows and parts, reported valid/invalid exchanges, reply
 
 ## Compare schedulers
 
+After saving a desktop run with CSV, choose **Add saved capture to comparison** in **Logging** or **Diagnostics**. From a completed CSV audit, choose **Add audited capture to comparison**. Workbench copies the report and original CSV base into the first empty trial row or appends a row. Partially entered rows are preserved, and adding the same report path again shows which row already contains it.
+
+Arrange the trials by capture start and choose **Compare saved trials** when both schedulers are represented. Adding a pair records its paths. Comparison rereads the saved evidence and checks whether the trials are compatible. A capture can pass its CSV audit and still be ineligible for comparison, for example if the run was stopped early.
+
 Add or remove trial rows and use **Up** / **Down** to put reports in capture-start order. Both Deadline and Stock relative must be present. Three trials per scheduler are recommended. Enter a CSV base for every report when **Audit CSV files during comparison** is selected, then choose **Compare saved trials**. Clear that checkbox for report-counter-only comparison; the CSV fields are then unused.
 
 The comparison checks the same configuration, device/PDO/synchronization and evidence rules as `compare-runs`. It shows each trial's host send/receive p50, p95, p99 and longest gap separately, along with valid samples, timeouts, WKC/AL mismatches, missed deadlines, written rows and logger overruns. Scheduler summaries describe ranges of individual run p99 values. Percentiles are not pooled and the application does not declare a scheduler qualified or choose a winner.

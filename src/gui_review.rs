@@ -9,12 +9,18 @@ use ethercat_workbench::{
 };
 use std::path::{Path, PathBuf};
 
+const MAX_TRIALS: usize = 32;
+
 #[derive(Default)]
 struct Row {
     report: String,
     csv: String,
 }
 impl Row {
+    fn is_empty(&self) -> bool {
+        self.report.trim().is_empty() && self.csv.trim().is_empty()
+    }
+
     fn input(&self) -> Input {
         Input {
             report: PathBuf::from(self.report.trim()),
@@ -74,6 +80,55 @@ impl Default for Panel {
 }
 
 impl Panel {
+    pub(super) fn add_capture_trial(&mut self, input: Input) {
+        self.page = Page::Trials;
+        self.message = match self.insert_trial(&input) {
+            Ok(row) => format!(
+                "Added saved capture to trial {row}. Arrange trials by capture start before comparing."
+            ),
+            Err(error) => error.to_string(),
+        };
+    }
+
+    fn insert_trial(&mut self, input: &Input) -> anyhow::Result<usize> {
+        use anyhow::{Context, ensure};
+        ensure!(
+            !self.is_running(),
+            "Wait for the active file review to finish."
+        );
+        let report = input
+            .report
+            .to_str()
+            .context("The report path cannot be displayed in the trial editor.")?;
+        let csv = input
+            .csv
+            .as_deref()
+            .and_then(Path::to_str)
+            .context("The CSV base path cannot be displayed in the trial editor.")?;
+        if let Some(index) = self
+            .rows
+            .iter()
+            .position(|row| Path::new(row.report.trim()) == input.report)
+        {
+            anyhow::bail!("This report is already in trial {}.", index + 1);
+        }
+        let row = Row {
+            report: report.to_owned(),
+            csv: csv.to_owned(),
+        };
+        if let Some(index) = self.rows.iter().position(Row::is_empty) {
+            self.rows[index] = row;
+            Ok(index + 1)
+        } else {
+            ensure!(
+                self.rows.len() < MAX_TRIALS,
+                "Remove a trial before adding another. The list holds up to {MAX_TRIALS} trials."
+            );
+            self.rows.push(row);
+            Ok(self.rows.len())
+        }
+    }
+
     pub(super) fn start_capture_audit(&mut self, input: Input) {
         self.page = Page::Trials;
         self.start(Task::Audit(input));
@@ -233,7 +288,7 @@ impl Panel {
                     });
                 });
             }
-            if ui.add_enabled(len<32,egui::Button::new("Add trial")).clicked() { self.rows.push(Row::default()); }
+            if ui.add_enabled(len<MAX_TRIALS,egui::Button::new("Add trial")).clicked() { self.rows.push(Row::default()); }
             ui.checkbox(&mut self.audit_csv,"Audit CSV files during comparison");
             ui.label("Put trials in capture-start order. Both Deadline and Stock relative are required; three runs each are recommended.");
             if ui.add_enabled(self.rows.len()>=2 && self.rows.iter().all(|row| !row.report.trim().is_empty()
@@ -251,6 +306,7 @@ impl Panel {
                 self.start(Task::Audit(input));
             }
         }
+        let mut add_trial = None;
         if let Some(completed) = self.controller.completed().filter(|job| {
             matches!(
                 (self.page, &job.task),
@@ -310,6 +366,11 @@ impl Panel {
                 Outcome::Shared(result) => show_shared(ui, result),
             }
             ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
+                if let Task::Audit(input) = &completed.task
+                    && ui.button("Add audited capture to comparison").clicked()
+                {
+                    add_trial = Some(input.clone());
+                }
                 ui.horizontal(|ui| {
                     ui.label("New review JSON");
                     ui.add(
@@ -332,6 +393,9 @@ impl Panel {
                     }
                 });
             });
+        }
+        if let Some(input) = add_trial {
+            self.add_capture_trial(input);
         }
     }
 }
@@ -969,6 +1033,52 @@ fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn adding_capture_trials_preserves_partial_rows_and_limits_the_list() {
+        let mut panel = Panel::default();
+        panel.rows[0].csv = "draft.csv".into();
+        let input = Input {
+            report: "saved.json".into(),
+            csv: Some("capture.csv".into()),
+        };
+        assert_eq!(panel.insert_trial(&input).unwrap(), 2);
+        assert_eq!(panel.rows[0].csv, "draft.csv");
+        assert!(panel.rows[0].report.is_empty());
+        assert_eq!(panel.rows[1].input(), input);
+        let duplicate = Input {
+            csv: Some("different.csv".into()),
+            ..input.clone()
+        };
+        assert!(
+            panel
+                .insert_trial(&duplicate)
+                .unwrap_err()
+                .to_string()
+                .contains("already in trial 2")
+        );
+        assert_eq!(panel.rows[1].input(), input);
+        for index in 3..=MAX_TRIALS {
+            let next = Input {
+                report: format!("saved-{index}.json").into(),
+                csv: Some(format!("capture-{index}.csv").into()),
+            };
+            assert_eq!(panel.insert_trial(&next).unwrap(), index);
+        }
+        let overflow = Input {
+            report: "extra.json".into(),
+            csv: Some("extra.csv".into()),
+        };
+        assert!(
+            panel
+                .insert_trial(&overflow)
+                .unwrap_err()
+                .to_string()
+                .contains("up to 32")
+        );
+        assert_eq!(panel.rows.len(), MAX_TRIALS);
+        assert_eq!(panel.rows[0].csv, "draft.csv");
+    }
+
     use super::*;
 
     #[test]

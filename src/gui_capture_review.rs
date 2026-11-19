@@ -50,6 +50,7 @@ impl App {
             return;
         };
         let mut audit = None;
+        let mut trial = None;
         ui.group(|ui| {
             ui.strong(format!(
                 "Completed run · generation {} · {}",
@@ -107,15 +108,23 @@ impl App {
                         }
                     }
                 });
-                if let Some(input) = run.audit_input()
-                    && ui.button("Audit saved capture").clicked()
-                {
-                    audit = Some(input);
+                if let Some(input) = run.audit_input() {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Audit saved capture").clicked() {
+                            audit = Some(input.clone());
+                        }
+                        if ui.button("Add saved capture to comparison").clicked() {
+                            trial = Some(input);
+                        }
+                    });
                 }
             });
         });
         if let Some(input) = audit {
             self.review.start_capture_audit(input);
+            self.tab = Tab::Review;
+        } else if let Some(input) = trial {
+            self.review.add_capture_trial(input);
             self.tab = Tab::Review;
         }
     }

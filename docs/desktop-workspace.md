@@ -23,6 +23,8 @@ The desktop follows the same workflow tabs as EthernetIP Workbench. EtherCAT add
 
 CSV is configured before connection and runs with that session. **Record CSV…** navigates to its setup/status page; it does not start recording on an existing session. Stopping CSV independently while keeping acquisition active is not implemented. The selected-field summary links to Mappings instead of embedding its editor. Rotation uses a base path even when numbered files are produced.
 
+To collect timing comparisons, let each run reach its configured duration. Add the saved or audited capture to the trial list, then compare the saved trials in capture-start order. See [Compare schedulers](desktop-review.md#compare-schedulers).
+
 ## Save and replace profiles
 
 Open **Profiles…** to see the last loaded or saved path. Enter a source under **Existing profile JSON** to load it. Enter a separate destination under **New profile JSON** and choose **Save new** to keep your draft. Workbench creates a new file and preserves existing files. Changes to profile settings, mappings, or applied RxPDO staging show **Unsaved profile changes** in the header. Reverting those settings to the last loaded or saved values clears the indicator.

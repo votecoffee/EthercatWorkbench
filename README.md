@@ -27,6 +27,8 @@ cargo build --locked --release --target x86_64-pc-windows-msvc
 
 ## Usage
 
+Use **Add saved capture to comparison** or **Add audited capture to comparison** to carry a report and its CSV base into the scheduler trial list. See the [desktop scheduler comparison workflow](docs/desktop-review.md#compare-schedulers).
+
 After a desktop capture, open **Logging** or **Diagnostics** and choose **Save report and audit**. Review uses the completed run’s report and CSV base, including rotated captures. The report path is editable and saves create new files. See the [desktop capture review guide](docs/desktop-review.md#audit-the-latest-desktop-capture).
 
 Use **Profiles…** to load an existing JSON file or save the current draft to a new path. The header marks unsaved profile edits. Loading a different profile, opening the offline demo, or closing the app offers a choice to save, discard, or keep editing. See the [desktop workflow guide](docs/desktop-workspace.md#save-and-replace-profiles).

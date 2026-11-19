@@ -434,3 +434,11 @@ Logging and Diagnostics retain the final worker report with the original CSV bas
 Formatting, Clippy, 171 locked offline Rust tests (132 library, 39 GUI), and the Windows x64 MSVC release build passed. The new headless test captures multiple numbered parts, stops and flushes through the workspace, edits the next profile and path, verifies that an existing report is preserved, and audits the final captured rows and parts through Logging and Review. The full release CLI offline verification also passed. Logs and binary identities are kept under ignored .local/ with the 0.37.0 prefix. Package and extracted CLI checks are recorded in the local delivery receipts.
 
 The GUI test used a synthetic acquisition and headless egui events. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.38.0 add captures to scheduler comparison (2026-11-19)
+
+A saved desktop run or a completed CSV audit can add its report and original CSV base to the comparison list. Adding a pair fills an empty row or appends one within the 32-trial limit. Existing partial rows remain in place, and a report path already in the list points to its existing row. The operator controls trial order. Comparison uses the existing checks and rereads the selected saved files.
+
+Formatting, Clippy, 173 locked offline Rust tests (132 library, 41 GUI), and the Windows x64 MSVC release build passed. One new test covers partial rows, duplicate paths and the list limit. Another runs synthetic Deadline and Stock relative captures through the desktop, adds one saved pair and one audited pair, and completes a comparison with CSV audits enabled. The full release CLI offline verification passed. Logs and binary identities are kept under ignored .local/ with the 0.38.0 prefix. Package and extracted CLI checks are recorded in the local delivery receipts.
+
+The desktop test used headless egui events and synthetic acquisition. Native GUI review and the physical bench run remain pending.

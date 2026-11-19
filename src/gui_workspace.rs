@@ -738,6 +738,95 @@ mod tests {
     }
 
     #[test]
+    fn saved_and_audited_captures_feed_the_scheduler_comparison() {
+        let mut app = app();
+        app.profile = serde_json::from_str(include_str!("../samples/synthetic.json")).unwrap();
+        app.profile.rotate_rows = 125;
+        app.profile.requested_cycle_us = 2_000;
+        app.seconds = 1;
+        let dir = PathBuf::from(".local").join(format!(
+            "gui-trials-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = egui::Context::default();
+        for (slug, scheduler) in [
+            ("deadline", Scheduler::Deadline),
+            ("relative", Scheduler::Relative),
+        ] {
+            app.profile.scheduler = scheduler;
+            app.csv = dir
+                .join(format!("{slug}.csv"))
+                .to_string_lossy()
+                .into_owned();
+            app.start(Mode::Simulate { faults: false });
+            assert!(app.session.is_some());
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while app.session.is_some() {
+                app.refresh(&ctx);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "synthetic trial did not finish"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            click(&mut app, &ctx, "Logging");
+            if scheduler == Scheduler::Deadline {
+                click(&mut app, &ctx, "Save report");
+                click(&mut app, &ctx, "Add saved capture to comparison");
+            } else {
+                click(&mut app, &ctx, "Save report and audit");
+                assert!(app.review.is_running());
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while app.review.is_running() {
+                    app.refresh(&ctx);
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "capture audit did not finish"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                click(&mut app, &ctx, "Add audited capture to comparison");
+            }
+            assert_eq!(app.tab, Tab::Review);
+        }
+        click(&mut app, &ctx, "Compare saved trials");
+        assert!(app.review.is_running());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while app.review.is_running() {
+            app.refresh(&ctx);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "trial comparison did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let labels = draw(&mut app, &ctx, egui::vec2(1100.0, 840.0), vec![]);
+        assert!(
+            labels
+                .iter()
+                .any(|(s, _)| s.starts_with("2 compatible saved trials")),
+            "{labels:?}"
+        );
+        for slug in ["deadline", "relative"] {
+            let path = dir.join(format!("{slug}.run.json"));
+            let report: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let parts = report["capture"]["parts"].as_u64().unwrap();
+            assert!(parts >= 2);
+            for index in 1..=parts {
+                std::fs::remove_file(dir.join(format!("{slug}.{index:04}.csv"))).unwrap();
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
     fn completed_rotated_capture_hands_off_its_report_and_original_csv_base() {
         let mut app = app();
         app.profile = serde_json::from_str(include_str!("../samples/synthetic.json")).unwrap();

@@ -25,6 +25,8 @@ Use headless files/CLI by default. Desktop input, screenshots or recording need 
 
 ## Desktop navigation
 
+Add a saved desktop or audited capture pair to the scheduler comparison from **Logging**, **Diagnostics**, or its completed **Review** result. Existing partial rows stay in place. Arrange trials in capture-start order, leave CSV audits enabled when comparing saved bytes, and let the comparison worker check compatibility. CSV structure passing alone does not qualify a timing trial.
+
 After an acquisition with CSV finishes, **Logging** or **Diagnostics → Save report and audit** uses the completed report and its original CSV base. Once the report is saved, **Audit saved capture** opens the saved pair on the existing review worker. Review inputs and file hashes identify the evidence checked. Manual trial rows remain available for older captures and comparisons.
 
 **Profiles…** shows the loaded/saved source and separate load and create-new save paths. Unsaved settings are marked in the header. Resolve the save, discard, or cancel prompt when loading a profile, opening the offline demo, or closing. Apply offline edits to the working profile before saving. CSV destination and duration are session settings.
