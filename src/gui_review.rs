@@ -123,7 +123,7 @@ impl Panel {
             "Review saved run reports, CSV, Ethernet PCAP or shared-input snapshots. These actions do not access the bus.",
         );
         if bus_busy {
-            ui.label("Stop the active bus or discovery job before starting a file review.");
+            ui.label("Stop the active bus or discovery job, or wait for host metadata work, before starting a file review.");
         }
         ui.label(self.controller.state().label());
         if let Some(error) = self.controller.error() {

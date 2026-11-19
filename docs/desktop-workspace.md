@@ -4,7 +4,7 @@ The desktop follows the same workflow tabs as EthernetIP Workbench. EtherCAT add
 
 | Tab | Main task | Secondary detail |
 | --- | --- | --- |
-| Device | Import an ESI and select an exact device/revision, or start an offline demo | Expected identity/manual override and last discovery results expand separately |
+| Device | Import an ESI and select an exact device/revision, or start an offline demo | Host prerequisites use a separate window; expected identity/manual override and last discovery results expand separately |
 | Inputs | Read typed input values and last-valid age | Raw TxPDO bytes expand; **Offline decoder…** opens a separate paste-and-decode window |
 | Outputs | Preview and apply typed values to the offline staged RxPDO image | Raw RxPDO staging expands; mapping edits link to Mappings |
 | Logging | Choose a new CSV path, every-valid/on-change mode and selected fields | Buffer/rotation and cycle settings expand separately |
@@ -23,6 +23,10 @@ The desktop follows the same workflow tabs as EthernetIP Workbench. EtherCAT add
 
 CSV is configured before connection and runs with that session. **Record CSV…** navigates to its setup/status page; it does not start recording on an existing session. Stopping CSV independently while keeping acquisition active is not implemented. The selected-field summary links to Mappings instead of embedding its editor. Rotation uses a base path even when numbered files are produced.
 
+## Host prerequisites
+
+Choose **Device → Host prerequisites… → Check host metadata** for a read-only Npcap host snapshot. Opening the window performs no check. The same link is available from the isolated bench review. DLL, service and policy observations remain separate from capture access, which stays unprobed. Inspect full paths/errors under the raw-details disclosure or export the completed snapshot to a fresh JSON path. Collection and export use an exclusive background job, retained across window/tab navigation. Closing the application waits for it to finish. [Host check details](runtime-check.md#desktop-prerequisites-window) cover states, exports and evidence limits.
+
 ## Isolated bench review
 
 After the target and hardware scope have been agreed, import/reload its exact profile and configure logging first. **Connect… → Isolated bench / SAFEOP** holds NIC selection, explicit NIC refresh/read-only discovery, the setup-effect review and the approval checkbox. Merely opening the dialog performs no discovery. Starting native SAFEOP requires reviewed approval for ESC setup, SM/FMMU configuration from the existing mapping, SAFEOP entry and INIT cleanup. Closing/reopening the review, changing its source page or editing profile settings clears its acknowledgement.
@@ -31,7 +35,7 @@ The acknowledgement records the user's existing authorization; it does not creat
 
 ## State and review rules
 
-Setup, output staging, mapping, logging and integration edits are locked during acquisition, discovery or saved-file work. The page explains the lock. Navigation, monitoring and applicable stop/cancel controls remain usable. Duplicate starts are rejected by the application as well as disabled controls. Offline drafts, page selection and completed file results survive navigation; one cancellable file worker retains frozen request inputs.
+Setup, output staging, mapping, logging and integration edits are locked during acquisition, discovery, saved-file or host-metadata work. The page explains the lock. Navigation, monitoring and applicable stop/cancel controls remain usable. Duplicate starts are rejected by the application as well as disabled controls. Offline drafts, page selection and completed file results survive navigation; one cancellable file worker retains frozen request inputs.
 
 Invalid or stopped input is labeled historical and its typed live readbacks are hidden. Raw bytes require an explicit expansion. Input quality and CSV overruns remain visible in the header; detailed timing and consumer counters belong in Diagnostics. Saved snapshots remain historical regardless of recorded freshness flags.
 

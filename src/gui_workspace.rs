@@ -58,7 +58,10 @@ pub(super) enum ConnectPage {
 
 impl App {
     pub(super) fn busy(&self) -> bool {
-        self.session.is_some() || self.scan.is_some() || self.review.is_running()
+        self.session.is_some()
+            || self.scan.is_some()
+            || self.review.is_running()
+            || self.host_check.is_running()
     }
 
     fn open_connection(&mut self) {
@@ -110,6 +113,8 @@ impl App {
                     "Discovering devices"
                 } else if self.review.is_running() {
                     "Reviewing saved files"
+                } else if self.host_check.is_running() {
+                    "Checking or saving host metadata"
                 } else {
                     "Idle"
                 });
@@ -165,12 +170,13 @@ impl App {
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().id_salt(self.tab).show(ui, |ui| {
                 if self.busy() && matches!(self.tab, Tab::Device | Tab::Outputs | Tab::Logging | Tab::Mappings | Tab::Integration) {
-                    ui.label("Settings are locked until the active session, discovery or file review finishes. Navigation and Stop and flush remain available.");
+                    ui.label("Settings are locked until the active session, discovery, file review or host check finishes. Navigation and Stop and flush remain available.");
                 }
                 match self.tab {
                     Tab::Device => {
                         ui.heading("Device setup");
                         ui.label("Load a profile or import an ESI, review mappings, then connect. Use the offline demo to explore without a NIC.");
+                        if ui.button("Host prerequisites…").clicked() { self.host_check.open = true; }
                         ui.add_enabled_ui(!self.busy(), |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 if ui.button("Open profiles…").clicked() { self.profiles_open = true; }
@@ -242,7 +248,7 @@ impl App {
                     }
                     Tab::Review => {
                         ui.heading("Saved capture review");
-                        self.review.draw(ui, self.session.is_some() || self.scan.is_some(), &self.profile);
+                        self.review.draw(ui, self.session.is_some() || self.scan.is_some() || self.host_check.is_running(), &self.profile);
                     }
                 }
                 if matches!(self.tab, Tab::Device | Tab::Mappings | Tab::Outputs | Tab::Logging | Tab::Integration)
@@ -464,6 +470,11 @@ impl App {
                             self.offline_connection_controls(ui);
                         }
                         ConnectPage::Bench => {
+                            if ui.button("Host prerequisites…").clicked() {
+                                self.connect_open = false;
+                                self.approved = false;
+                                self.host_check.open = true;
+                            }
                             ui.label("Select the identified isolated NIC. Discovery does not initialize SAFEOP. Starting live inputs performs ESC setup, SM/FMMU configuration from the current mapping, SAFEOP entry and INIT cleanup.");
                             ui.label("OP, PDO mapping downloads, enabled DC and live outputs are unavailable. Staged RxPDO bytes are not sent.");
                             self.nic_controls(ui);
@@ -477,6 +488,10 @@ impl App {
                 self.approved = false;
             }
         }
+        self.host_check.show(
+            ctx,
+            self.session.is_some() || self.scan.is_some() || self.review.is_running(),
+        );
     }
 }
 

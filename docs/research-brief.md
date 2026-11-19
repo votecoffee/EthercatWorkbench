@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Snapshot: 2026-11-14. Version **0.33.0** replaces the long numbered desktop page with the EthernetIP Workbench workflow tabs, focused dialogs and separate saved-review pages. The previous retained 0.32.0 build (`d73e88b9a9199219f93992c923858e18023aecc8`) remains a rollback baseline. See the current [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source/binary identity. Native GUI acceptance and physical bench qualification remain open.
+Snapshot: 2026-11-19. Version **0.34.0** adds the explicit desktop host-prerequisites window and background metadata/export jobs to the focused 0.33.0 workflow tabs. Its observations remain independent from capture permission and device acceptance. The previous retained 0.32.0 build (`d73e88b9a9199219f93992c923858e18023aecc8`) remains a rollback baseline. See the current [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source/binary identity. Native GUI acceptance and physical bench qualification remain open.
 
 ## Decisions to retain
 
@@ -11,7 +11,7 @@ Snapshot: 2026-11-14. Version **0.33.0** replaces the long numbered desktop page
 | Profiles | ESI identity/revision selection, retained catalogs, manual/overridden fields, offline mode/PDO and typed Rx staging; expectations remain separate from discovered evidence | [PDO choices](pdo-selection.md), [synchronization review](esi-sync-review.md), [typed staging](output-staging.md) |
 | Timing/logging | A requested 1 ms period is a measurement target. Keep device/DC settings, host send/all-reply/valid-input spacing, capture clocks and independent losses separate. Every-valid logging includes unchanged data; on-change selection does not define valid-input timing | [Timing comparisons](benchmark-comparison.md), [CSV audits](capture-audit.md) |
 | Desktop workflow | Device, Inputs, Outputs, Logging, Mappings, Integration, Diagnostics and saved Review; persistent stop/status, locked active settings and explicit SAFEOP review | [Desktop workflows](desktop-workspace.md) |
-| Host readiness | `check-runtime` reads Npcap file/service/policy metadata; capture access stays unprobed | [Host checks](runtime-check.md) |
+| Host readiness | `check-runtime` and the desktop prerequisites window read Npcap file/service/policy metadata; exclusive background GUI jobs and protected export; capture access stays unprobed | [Host checks](runtime-check.md) |
 
 The portable package retains dependency notices and excludes Npcap runtime/driver files. Use the existing installation/licensing references in the [README](../README.md#install) and source review. EthernetIPWorkbench remains a read-only UX/pipeline reference, not an EtherCAT protocol specification.
 

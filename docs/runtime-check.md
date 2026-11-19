@@ -15,6 +15,16 @@ The checker resolves the Windows system directory with the same API/path convent
 
 Service observation requests only local SCM connect and service query-status rights; handles are closed afterward. It records the current state/code without starting or stopping the driver. The policy observation uses a query-only, DWORD-filtered registry call. [Microsoft service-query API](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-queryservicestatusex)
 
+## Desktop prerequisites window
+
+Open **Device → Host prerequisites…** or the same link in **Connect… → Isolated bench / SAFEOP**. The latter closes the connection review and clears its setup acknowledgement; return through Connect when ready. Opening the window performs no queries. Choose **Check host metadata** explicitly.
+
+The background job uses the same collector as `check-runtime`. The window shows DLL header/version observations, service state, recorded AdminOnly and any OS error codes. Missing/unavailable policy is unknown; an observed false value remains false. **Paths, errors and raw host JSON** holds full paths, detailed errors, module observations and the complete CLI-compatible report. Every result carries its collection UTC and remains a historical host snapshot. No green readiness or capture-permission claim is derived from `present_unprobed`.
+
+Enter a fresh `.json` path and choose **Save new host JSON**. Export freezes the completed observations and destination at the click, uses a separate background job and synchronizes the saved file before reporting success. Changing editor text afterward cannot relabel the exported snapshot. Existing paths and invalid extensions are rejected without overwriting; a failed write is reported and does not discard the observations. Parent folders must already exist.
+
+Host checks/exports are exclusive with acquisition, discovery and saved-file review. Configuration and session starts are locked while host work runs; navigation and inspection of already collected observations remain available. Closing the prerequisites window hides it while work finishes; reopen it from Device to view progress/results. A normal app close waits for the host job to finish. These jobs cannot start or configure a driver, obtain adapter ownership, authorize hardware setup or change a profile. Offline fixture sessions do not require a host check.
+
 ## Read the result
 
 Each observation has a state, optional value/detail and an OS error code when its API provides one:

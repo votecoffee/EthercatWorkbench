@@ -8,6 +8,8 @@ Use **Profiles…** to load/save settings, **Device** for ESI selection, **Mappi
 
 ## Check host prerequisites
 
+In **Device**, choose **Host prerequisites…**, then explicitly **Check host metadata**. The isolated bench connection review links to the same window and clears its setup acknowledgement when leaving that review. Opening the window performs no query. Host reads and JSON export run in a background worker and are exclusive with acquisition, discovery and saved-file work. Closing the window retains its job/results; normal application close waits for host work to finish. The JSON export uses a fresh `.json` path and preserves existing files.
+
 Use `check-runtime`, optionally with `--out NEW.json`, to inspect Npcap host files, service state and recorded access policy. It reads Windows metadata without opening an adapter or invoking Npcap exports. A successful collection or `present_unprobed` status is not a capture-permission or device test. The [host-check guide](runtime-check.md) explains missing/unavailable values, literal file versions, export behavior and the remaining commissioning steps.
 
 ## Choose the evidence and target

@@ -2,6 +2,7 @@
 
 mod gui_mode_pdo;
 mod gui_review;
+mod gui_runtime_check;
 mod gui_stage;
 mod gui_workspace;
 
@@ -87,6 +88,7 @@ struct App {
     report_save: String,
     deferred_close: bool,
     review: gui_review::Panel,
+    host_check: gui_runtime_check::Panel,
     stage: gui_stage::Panel,
     mode_pdos: gui_mode_pdo::Panel,
     tab: Tab,
@@ -129,6 +131,7 @@ impl App {
             report_save: String::new(),
             deferred_close: false,
             review: gui_review::Panel::default(),
+            host_check: gui_runtime_check::Panel::default(),
             stage: gui_stage::Panel::default(),
             mode_pdos: gui_mode_pdo::Panel::default(),
             tab: Tab::default(),
@@ -163,7 +166,7 @@ impl App {
     fn start(&mut self, mode: Mode) {
         if self.busy() {
             self.message =
-                "Wait for or stop the active session, discovery or saved-file review before starting".into();
+                "Wait for or stop the active session, discovery, saved-file review or host check before starting".into();
             return;
         }
         self.approved = false;
@@ -192,6 +195,7 @@ impl App {
 
     fn refresh(&mut self, ctx: &egui::Context) {
         self.review.refresh(ctx);
+        self.host_check.refresh(ctx);
         if self
             .scan
             .as_ref()
@@ -229,12 +233,29 @@ impl App {
                 }
                 Err(_) => self.message = "Cycle worker failed".into(),
             }
-            if self.auto_exit || self.deferred_close {
+            if self.auto_exit {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
         if self.session.is_some() || self.scan.is_some() {
             ctx.request_repaint_after(Duration::from_millis(80));
+        }
+        if self.deferred_close && self.session.is_none() && !self.host_check.is_running() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn prepare_close(&mut self, ctx: &egui::Context) {
+        self.review.cancel();
+        if self.session.is_some() || self.host_check.is_running() {
+            if self.host_check.is_running() {
+                self.message = "Finishing host metadata work before closing…".into();
+            }
+            if let Some(session) = &self.session {
+                session.stop.store(true, Relaxed);
+            }
+            self.deferred_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
     }
 
@@ -769,14 +790,7 @@ impl eframe::App for App {
             self.start(Mode::Simulate { faults: false });
         }
         if ctx.input(|input| input.viewport().close_requested()) {
-            self.review.cancel();
-        }
-        if ctx.input(|input| input.viewport().close_requested())
-            && let Some(session) = &self.session
-        {
-            session.stop.store(true, Relaxed);
-            self.deferred_close = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.prepare_close(ctx);
         }
         self.refresh(ctx);
         self.show_workspace(ctx);

@@ -4,7 +4,7 @@ This repository is a Windows x64 Rust EtherCAT MainDevice workbench. Start with 
 
 - [Desktop workflows](docs/desktop-workspace.md): focused tabs, persistent actions, connection review, offline staging and headless usability boundaries.
 - [Research brief](docs/research-brief.md): compact current decisions, known initializer gap, pending bench work and local retention.
-- [Windows host check](docs/runtime-check.md): read-only Npcap file/service/policy observations, explicit unprobed capture access and protected JSON export.
+- [Windows host check](docs/runtime-check.md): read-only Npcap file/service/policy observations from the CLI or focused desktop prerequisites window, explicit unprobed capture access and protected background JSON export.
 - [Operations](docs/operations.md): ESI import, manual profiles, NIC/discovery, headless workflows, typed mappings/staging, timing/loss interpretation and hardware authorization.
 - [Offline PDO selection](docs/pdo-selection.md): exact ESI identity/guarded-index import, catalog choices, explicit CLI/desktop mode-hint candidate staging, stale-preview and active-work guards, unchanged decoder/output preservation and actual-mapping verification.
 - [ESI synchronization review](docs/esi-sync-review.md): staged DC/SM/PDO hints, CoE cycle/minimum setup snapshots, offline choices versus optional CoE readback, unsupported annotations and no-write boundaries.
