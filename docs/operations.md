@@ -6,6 +6,8 @@ This guide is the starting point for the portable Windows app and headless CLI. 
 
 Use **Profiles…** to load/save settings, **Device** for ESI selection, **Mappings** for input/output definitions and ESI mode choices, **Logging** to arm CSV, then **Connect…** to review an offline or approved SAFEOP session. Successful starts select **Inputs**. **Outputs** stages bytes offline. **Integration**, **Diagnostics** and **Review** hold optional feeds, detailed evidence and saved-file tools. Stop/cancel controls stay above the tabs. Settings are locked during session/discovery/file work. The [desktop workflow guide](desktop-workspace.md) covers each page, popup and state boundary.
 
+**Profiles…** uses separate load and create-new save paths. Resolve any unsaved draft before changing profiles, loading the demo, or closing. The save, discard, and cancel choices are described in [Save and replace profiles](desktop-workspace.md#save-and-replace-profiles).
+
 ## Check host prerequisites
 
 In **Device**, choose **Host prerequisites…**, then explicitly **Check host metadata**. The isolated bench connection review links to the same window and clears its setup acknowledgement when leaving that review. Opening the window performs no query. Host reads and JSON export run in a background worker and are exclusive with acquisition, discovery and saved-file work. Closing the window retains its job/results; normal application close waits for host work to finish. The JSON export uses a fresh `.json` path and preserves existing files.

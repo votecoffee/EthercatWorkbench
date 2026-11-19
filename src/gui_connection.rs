@@ -302,7 +302,7 @@ mod tests {
     fn unrelated_editor_paths_and_decoder_text_do_not_change_effective_plan() {
         let mut app = app();
         acknowledge(&mut app);
-        app.profile_path = "different-save-path.json".into();
+        app.profile_editor.load_path = "different-load-path.json".into();
         app.offline_hex = "AA BB".into();
         app.reconcile_bench_review();
         assert!(app.bench_ready());

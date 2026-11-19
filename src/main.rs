@@ -2,13 +2,14 @@
 
 mod gui_connection;
 mod gui_mode_pdo;
-
-use gui_connection::{DiscoveryJob, DiscoveryOrigin};
+mod gui_profiles;
 mod gui_review;
 mod gui_runtime_check;
 mod gui_stage;
 mod gui_workspace;
 
+use gui_connection::{DiscoveryJob, DiscoveryOrigin};
+use gui_profiles::{ProfileAction, ProfileEditor};
 use gui_workspace::{ConnectPage, MappingPage, Tab};
 
 use clap::Parser;
@@ -66,7 +67,7 @@ struct Session {
 
 struct App {
     profile: Profile,
-    profile_path: String,
+    profile_editor: ProfileEditor,
     esi_path: String,
     esi: Vec<Device>,
     esi_selected: usize,
@@ -108,7 +109,7 @@ impl App {
     fn new(args: Args) -> Self {
         let mut app = Self {
             profile: Profile::default(),
-            profile_path: String::new(),
+            profile_editor: ProfileEditor::default(),
             esi_path: String::new(),
             esi: Vec::new(),
             esi_selected: 0,
@@ -149,25 +150,10 @@ impl App {
             decoder_open: false,
         };
         if let Some(path) = args.profile {
-            app.profile_path = path.to_string_lossy().into_owned();
-            app.load();
+            app.profile_editor.load_path = path.to_string_lossy().into_owned();
+            app.load_profile(path);
         }
         app
-    }
-
-    fn load(&mut self) {
-        match Profile::load(Path::new(&self.profile_path)) {
-            Ok(profile) => {
-                self.profile = profile;
-                self.profile_pdo_draft = None;
-                self.stage = gui_stage::Panel::default();
-                self.mode_pdos = gui_mode_pdo::Panel::default();
-                self.invalidate_bench_review();
-                self.last = None;
-                self.message = "Profile loaded".into();
-            }
-            Err(error) => self.message = format!("{error:#}"),
-        }
     }
 
     fn start(&mut self, mode: Mode) {
@@ -254,12 +240,16 @@ impl App {
             ctx.request_repaint_after(Duration::from_millis(80));
         }
         if self.deferred_close && self.session.is_none() && !self.host_check.is_running() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.deferred_close = false;
+            self.request_profile_action(ctx, ProfileAction::Close);
         }
     }
 
     fn prepare_close(&mut self, ctx: &egui::Context) {
         self.review.cancel();
+        if self.profile_editor.close_confirmed {
+            return;
+        }
         if self.session.is_some() || self.host_check.is_running() {
             if self.host_check.is_running() {
                 self.message = "Finishing host metadata work before closing…".into();
@@ -269,27 +259,9 @@ impl App {
             }
             self.deferred_close = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else if self.profile_is_dirty() {
+            self.request_profile_action(ctx, ProfileAction::Close);
         }
-    }
-
-    fn profile_file_controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Profile JSON");
-            ui.add(egui::TextEdit::singleline(&mut self.profile_path).desired_width(410.0));
-            if ui.button("Load").clicked() {
-                self.load();
-            }
-            if ui.button("Save new").clicked() {
-                self.message = match self.profile.save(Path::new(&self.profile_path)) {
-                    Ok(()) => "Profile saved".into(),
-                    Err(error) => format!("{error:#}"),
-                };
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Name");
-            ui.text_edit_singleline(&mut self.profile.name);
-        });
     }
 
     fn device_controls(&mut self, ui: &mut egui::Ui) {

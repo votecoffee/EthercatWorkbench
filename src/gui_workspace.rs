@@ -108,6 +108,9 @@ impl App {
             });
             ui.horizontal_wrapped(|ui| {
                 ui.strong(&self.profile.name);
+                if self.profile_is_dirty() {
+                    ui.weak("Unsaved profile changes");
+                }
                 ui.label(if self.session.is_some() {
                     "Session active"
                 } else if self.scan.is_some() {
@@ -178,13 +181,7 @@ impl App {
                             ui.horizontal_wrapped(|ui| {
                                 if ui.button("Open profiles…").clicked() { self.profiles_open = true; }
                                 if ui.button("Use offline demo").clicked() {
-                                    self.profile = serde_json::from_str(include_str!("../samples/synthetic.json")).expect("authored demo profile");
-                                    self.profile_path.clear();
-                                    self.profile_pdo_draft = None;
-                                    self.stage = gui_stage::Panel::default();
-                                    self.mode_pdos = gui_mode_pdo::Panel::default();
-                                    self.last = None;
-                                    self.message = "Offline demo loaded. Connect… offers synthetic and virtual sessions.".into();
+                                    self.request_profile_action(ui.ctx(), ProfileAction::Demo);
                                 }
                                 if ui.button("Review mappings").clicked() { self.tab = Tab::Mappings; }
                             });
@@ -407,7 +404,7 @@ impl App {
                 .default_width(640.0)
                 .show(ctx, |ui| {
                     ui.label("Load settings or save to a new path. Existing files are preserved.");
-                    ui.add_enabled_ui(!self.busy(), |ui| self.profile_file_controls(ui));
+                    self.profile_file_controls(ui);
                 });
             self.profiles_open = open;
         }
@@ -489,6 +486,7 @@ impl App {
             ctx,
             self.session.is_some() || self.scan.is_some() || self.review.is_running(),
         );
+        self.show_profile_confirmation(ctx);
     }
 }
 
@@ -571,6 +569,28 @@ mod tests {
                 modifiers: Default::default(),
             }],
         );
+    }
+
+    #[test]
+    fn offline_demo_prompts_for_unsaved_edits_and_cancel_preserves_them() {
+        let mut app = app();
+        app.profile.name = "Edited manual profile".into();
+        let draft = app.profile.clone();
+        let ctx = egui::Context::default();
+        click(&mut app, &ctx, "Use offline demo");
+        let text = draw(&mut app, &ctx, egui::vec2(1100.0, 840.0), vec![]);
+        assert!(
+            text.iter()
+                .any(|(s, _)| s == "Replace this profile with the offline demo?")
+        );
+        assert_eq!(app.profile, draft);
+        click(&mut app, &ctx, "Cancel");
+        assert_eq!(app.profile, draft);
+        assert!(app.profile_is_dirty());
+        click(&mut app, &ctx, "Use offline demo");
+        click(&mut app, &ctx, "Discard edits and load demo");
+        assert_ne!(app.profile, draft);
+        assert!(!app.profile_is_dirty() && !app.busy());
     }
 
     #[test]

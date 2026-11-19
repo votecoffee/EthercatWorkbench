@@ -23,6 +23,14 @@ The desktop follows the same workflow tabs as EthernetIP Workbench. EtherCAT add
 
 CSV is configured before connection and runs with that session. **Record CSV…** navigates to its setup/status page; it does not start recording on an existing session. Stopping CSV independently while keeping acquisition active is not implemented. The selected-field summary links to Mappings instead of embedding its editor. Rotation uses a base path even when numbered files are produced.
 
+## Save and replace profiles
+
+Open **Profiles…** to see the last loaded or saved path. Enter a source under **Existing profile JSON** to load it. Enter a separate destination under **New profile JSON** and choose **Save new** to keep your draft. Workbench creates a new file and preserves existing files. Changes to profile settings, mappings, or applied RxPDO staging show **Unsaved profile changes** in the header. Reverting those settings to the last loaded or saved values clears the indicator.
+
+Loading a profile, choosing **Use offline demo**, or closing the app prompts when the draft has edits. Choose **Save new and continue** to save the draft first, **Discard edits** to proceed with the requested action, or **Cancel** to keep editing. A failed save leaves the prompt open. A failed load preserves the draft. Closing during an acquisition first stops it and flushes CSV, then asks about unsaved profile edits. Cancel at that point keeps the app open with the acquisition stopped.
+
+The CSV destination and duration belong to the session. The profile contains mapping definitions, staged bytes, cycle settings and logger options. Apply any pending offline preview to the draft before saving its settings.
+
 ## Host prerequisites
 
 Choose **Device → Host prerequisites… → Check host metadata** for a read-only Npcap host snapshot. Opening the window performs no check. The same link is available from the isolated bench review. DLL, service and policy observations remain separate from capture access, which stays unprobed. Inspect full paths/errors under the raw-details disclosure or export the completed snapshot to a fresh JSON path. Collection and export use an exclusive background job, retained across window/tab navigation. Closing the application waits for it to finish. [Host check details](runtime-check.md#desktop-prerequisites-window) cover states, exports and evidence limits.
