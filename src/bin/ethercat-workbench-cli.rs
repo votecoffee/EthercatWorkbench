@@ -163,6 +163,16 @@ enum Command {
     },
     /// Audit the CSV parts declared by a saved run report, without bus operations.
     VerifyCapture { report: PathBuf, csv: PathBuf },
+    /// Check the report and CSV-part hashes recorded in a saved comparison.
+    CheckComparison {
+        file: PathBuf,
+        /// Resolve relative references against this original working folder.
+        #[arg(long, value_name = "DIRECTORY")]
+        base: Option<PathBuf>,
+        /// Save the file check to a new JSON file.
+        #[arg(long, value_name = "JSON")]
+        out: Option<PathBuf>,
+    },
     /// Prepare typed RxPDO values offline; print a preview or save a new staged profile. No bus access.
     StageRx {
         profile: PathBuf,
@@ -427,6 +437,16 @@ fn main() -> Result<()> {
         }
         Command::VerifyCapture { report, csv } => {
             output(&ethercat_workbench::capture_audit::verify(&report, &csv)?)
+        }
+        Command::CheckComparison { file, base, out } => {
+            shared_outputs(out.as_deref(), None)?;
+            let checked = ethercat_workbench::comparison_files::check(
+                &file,
+                base.as_deref(),
+                None,
+                &AtomicBool::new(false),
+            )?;
+            inspection_export(&checked.report, out.as_deref())
         }
         Command::EsiList { file } => {
             let entries = esi::load(&file)?;

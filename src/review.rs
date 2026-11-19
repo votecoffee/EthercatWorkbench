@@ -47,6 +47,11 @@ pub enum Task {
     InspectComparison {
         file: PathBuf,
     },
+    CheckComparisonFiles {
+        file: PathBuf,
+        base: Option<PathBuf>,
+        expected_sha256: String,
+    },
     InspectPcap {
         file: PathBuf,
         profile: Box<Profile>,
@@ -89,7 +94,7 @@ impl Task {
                 return pcap_inspect::validate_settings(profile, *station, *preview_limit);
             }
             Self::Audit(input) => (std::slice::from_ref(input), true),
-            Self::InspectComparison { file } => {
+            Self::InspectComparison { file } | Self::CheckComparisonFiles { file, .. } => {
                 ensure!(
                     !file.as_os_str().is_empty(),
                     "enter a saved comparison JSON path"
@@ -178,6 +183,16 @@ impl Task {
             Self::InspectComparison { file } => {
                 Outcome::SavedComparison(Box::new(benchmark::inspect_saved_comparison(file, stop)?))
             }
+            Self::CheckComparisonFiles {
+                file,
+                base,
+                expected_sha256,
+            } => Outcome::ComparisonFiles(Box::new(crate::comparison_files::check(
+                file,
+                base.as_deref(),
+                Some(expected_sha256),
+                stop,
+            )?)),
         };
         check_cancel(Some(stop))?;
         Ok(outcome)
@@ -191,6 +206,7 @@ pub enum Outcome {
     Audit(Box<capture_audit::Audit>),
     Comparison(Box<benchmark::Comparison>),
     SavedComparison(Box<benchmark::SavedComparison>),
+    ComparisonFiles(Box<crate::comparison_files::CheckedComparison>),
     Pcap(Box<pcap_inspect::Report>),
 }
 
@@ -1060,6 +1076,44 @@ mod tests {
         assert_eq!(result.sha256, benchmark::hash(&bytes));
         assert_eq!(serde_json::to_value(&result.comparison).unwrap(), expected);
         assert!(controller.save_new(&fixture.0.join("copy.json")).is_err());
+
+        controller
+            .start(Task::CheckComparisonFiles {
+                file: export.clone(),
+                base: None,
+                expected_sha256: benchmark::hash(&bytes),
+            })
+            .unwrap();
+        finish(&mut controller);
+        let Outcome::ComparisonFiles(checked) = &controller.completed().unwrap().outcome else {
+            panic!("expected source hash check")
+        };
+        assert_eq!(checked.report.files.len(), 4);
+        assert!(!checked.report.all_match && checked.report.csv_hashes_recorded);
+        assert!(
+            checked
+                .report
+                .files
+                .iter()
+                .all(|entry| entry.status == crate::comparison_files::Status::Missing)
+        );
+        assert_eq!(checked.saved.sha256, benchmark::hash(&bytes));
+
+        controller
+            .start(Task::CheckComparisonFiles {
+                file: export,
+                base: None,
+                expected_sha256: "0".repeat(64),
+            })
+            .unwrap();
+        finish(&mut controller);
+        assert_eq!(controller.state(), State::Failed);
+        assert!(
+            controller
+                .error()
+                .unwrap()
+                .contains("comparison JSON changed")
+        );
 
         let mut unsupported = expected;
         unsupported["schema"] = 99.into();

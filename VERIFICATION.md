@@ -466,3 +466,11 @@ Both `compare-runs` input modes accept `--out NEW.json`. Existing destinations a
 Formatting, Clippy, 176 offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. Tests reopened a comparison after its temporary source reports and CSV files were removed, then checked the recorded result and byte hash. They also rejected an unsupported schema and checked that the viewer has a separate page. CLI checks on retained 0.40.0 captures and fresh synthetic captures covered both modes, export equals stdout, preservation of existing output and input paths, invalid extensions and no export on a failed comparison. The full offline release regression passed. Logs and binary identities use the 0.41.0 prefix under ignored .local/. Package and extracted CLI checks are recorded in local delivery receipts.
 
 The viewer was checked headlessly. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.42.0 check recorded comparison sources (2026-11-19)
+
+Saved comparison Review and `check-comparison` check recorded report and CSV-part hashes. The desktop check uses the hash of the result it opened. Relative paths use a supplied original working folder. The file check records match, changed, missing, unreadable and unresolved states. Counter-only comparison results identify report-only coverage. The CLI can save the complete receipt to a new JSON file.
+
+Formatting, Clippy, 176 locked offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. Worker tests cover missing sources and a changed comparison hash. CLI checks on retained 0.41.0 captures and fresh synthetic captures cover equal bytes, a same-size mutation, a length change, missing and unreadable paths, explicit relative path resolution, inconsistent audit references, report-only evidence and protected output. The first full release run stopped at an EEPROM setup timeout in the existing virtual I/O timeout case. That case passed in isolation, and the full retry passed. Both logs, the isolated case receipt and binary identities use the 0.42.0 prefix in ignored .local/. Package and extracted CLI checks are recorded in local delivery receipts.
+
+Desktop checks used headless egui and the review worker. Native GUI review and physical bench qualification remain pending.

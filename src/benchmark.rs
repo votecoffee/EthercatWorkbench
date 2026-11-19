@@ -16,7 +16,7 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
-const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

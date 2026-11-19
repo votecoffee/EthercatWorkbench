@@ -2,6 +2,7 @@ use eframe::egui;
 use ethercat_workbench::{
     benchmark::Comparison,
     capture_audit::Audit,
+    comparison_files::{Report as SourceCheck, Status as FileStatus},
     model::Profile,
     pcap_inspect,
     review::{Controller, Input, Outcome, SharedDecoding, State, Task},
@@ -27,6 +28,7 @@ pub struct Panel {
     trial_set_save: String,
     pending_trial_set: Option<PathBuf>,
     comparison_path: String,
+    comparison_base: String,
     controller: Controller,
     export: String,
     message: String,
@@ -55,6 +57,7 @@ impl Default for Panel {
             trial_set_save: String::new(),
             pending_trial_set: None,
             comparison_path: String::new(),
+            comparison_base: String::new(),
             controller: Controller::default(),
             export: String::new(),
             message: String::new(),
@@ -392,7 +395,8 @@ impl Panel {
                 Task::Compare { inputs, .. } => inputs.as_slice(),
                 Task::InspectPcap { .. }
                 | Task::InspectShared { .. }
-                | Task::InspectComparison { .. } => &[],
+                | Task::InspectComparison { .. }
+                | Task::CheckComparisonFiles { .. } => &[],
             };
             ui.collapsing("Inputs used", |ui| {
                 let used_csv = matches!(
@@ -435,7 +439,9 @@ impl Panel {
                 Outcome::Comparison(result) => show_comparison(ui, result, false),
                 Outcome::Pcap(result) => show_pcap(ui, result),
                 Outcome::Shared(result) => show_shared(ui, result),
-                Outcome::SavedComparison(_) => unreachable!("saved comparison has its own page"),
+                Outcome::SavedComparison(_) | Outcome::ComparisonFiles(_) => {
+                    unreachable!("saved comparison has its own page")
+                }
             }
             ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
                 if let Task::Audit(input) = &completed.task
@@ -495,16 +501,105 @@ impl Panel {
                 }
             });
         });
-        if let Some(job) = self.controller.completed()
-            && let Outcome::SavedComparison(saved) = &job.outcome
-        {
-            ui.separator();
-            ui.strong("Saved scheduler comparison");
-            ui.label(saved.file.display().to_string());
-            ui.label(format!("SHA-256 · {}", saved.sha256));
-            show_comparison(ui, &saved.comparison, true);
+        let (saved, check) = match self.controller.completed().map(|job| &job.outcome) {
+            Some(Outcome::SavedComparison(saved)) => (saved.as_ref(), None),
+            Some(Outcome::ComparisonFiles(result)) => (&result.saved, Some(&result.report)),
+            _ => return,
+        };
+        ui.separator();
+        ui.strong("Saved scheduler comparison");
+        ui.label(saved.file.display().to_string());
+        ui.label(format!("SHA-256 · {}", saved.sha256));
+        let mut check_task = None;
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Original working folder for relative paths");
+                ui.add(egui::TextEdit::singleline(&mut self.comparison_base).desired_width(360.0));
+                if ui.button("Check source hashes").clicked() {
+                    let base = self.comparison_base.trim();
+                    check_task = Some(Task::CheckComparisonFiles {
+                        file: saved.file.clone(),
+                        base: (!base.is_empty()).then(|| PathBuf::from(base)),
+                        expected_sha256: saved.sha256.clone(),
+                    });
+                }
+            });
+        });
+        if let Some(check) = check {
+            show_source_check(ui, check);
+        }
+        show_comparison(ui, &saved.comparison, true);
+        if let Some(task) = check_task {
+            self.start(task);
         }
     }
+}
+
+fn show_source_check(ui: &mut egui::Ui, report: &SourceCheck) {
+    ui.separator();
+    ui.strong("Source hash check");
+    let matched = report
+        .files
+        .iter()
+        .filter(|entry| entry.status == FileStatus::Match)
+        .count();
+    ui.label(format!(
+        "{matched}/{} recorded files match",
+        report.files.len()
+    ));
+    if !report.csv_hashes_recorded {
+        ui.label("This comparison records report hashes only. Run a comparison with CSV auditing to record part hashes.");
+    }
+    if let Some(base) = &report.base {
+        ui.label(format!(
+            "Relative references checked from {}",
+            base.display()
+        ));
+    }
+    ui.collapsing("Checked paths and hashes", |ui| {
+        for entry in report
+            .files
+            .iter()
+            .filter(|entry| entry.status != FileStatus::Match)
+            .chain(
+                report
+                    .files
+                    .iter()
+                    .filter(|entry| entry.status == FileStatus::Match),
+            )
+            .take(64)
+        {
+            let label = entry
+                .csv_part
+                .map_or("report".into(), |part| format!("CSV part {part}"));
+            let path = entry.resolved_path.as_ref().unwrap_or(&entry.recorded_path);
+            ui.label(format!(
+                "{} · trial {} {label} · {}",
+                entry.status.label(),
+                entry.trial,
+                shared_preview(&path.to_string_lossy())
+            ));
+            if let Some(detail) = &entry.detail {
+                ui.label(shared_preview(detail));
+            }
+            if let (Some(expected), Some(observed)) = (entry.expected_bytes, entry.observed_bytes)
+                && expected != observed
+            {
+                ui.label(format!(
+                    "Expected {expected} bytes · observed {observed} bytes"
+                ));
+            }
+            if entry.status == FileStatus::Changed
+                && let Some(observed) = &entry.observed_sha256
+            {
+                ui.monospace(format!("Recorded {}", entry.expected_sha256));
+                ui.monospace(format!("Observed {observed}"));
+            }
+        }
+        if report.files.len() > 64 {
+            ui.label("64 paths shown. The CLI can export every file check as JSON.");
+        }
+    });
 }
 
 fn warnings(ui: &mut egui::Ui, warnings: &[String]) {

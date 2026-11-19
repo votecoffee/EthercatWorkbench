@@ -25,6 +25,8 @@ Use headless files/CLI by default. Desktop input, screenshots or recording need 
 
 ## Desktop navigation
 
+Use **Saved comparison → Check source hashes** or `check-comparison FILE [--base DIRECTORY] [--out NEW.json]` to match source bytes to saved hashes. Use the original working folder for relative paths. CLI success means the check completed. Read `all_match`, each file status and `csv_hashes_recorded` for the outcome and coverage. A new comparison performs a fresh audit.
+
 Add `--out NEW.json` to `compare-runs` to save its JSON result. **Review → Saved comparison** opens desktop or CLI exports and identifies the saved bytes by SHA-256. Treat its values and audit status as recorded evidence. Run a fresh comparison to check the original files again.
 
 Run a completed desktop trial set headlessly with `compare-runs --trial-set FILE`. This mode uses the saved report order, CSV path references and `audit_csv` choice. Resolve incomplete rows before comparing. Use explicit report paths and optional `--csv` bases for the alternate CLI mode.

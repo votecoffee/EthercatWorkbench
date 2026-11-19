@@ -927,6 +927,60 @@ def verify_valid_spacing_boundaries(cli, destination):
     assert setup_failure["cycles"] == 0 and setup_failure["valid_receive_spacing"] is None
 
 
+def verify_comparison_file_hashes(cli, destination, comparison_path):
+    receipt_path = destination / "comparison-source-hashes.json"
+    check = cli_call(cli, "check-comparison", comparison_path, "--out", receipt_path)
+    assert check == json.loads(receipt_path.read_bytes())
+    assert check["all_match"] and check["csv_hashes_recorded"]
+    assert check["comparison_sha256"] == hashlib.sha256(comparison_path.read_bytes()).hexdigest()
+    assert all(entry["observed_sha256"] == entry["expected_sha256"] ==
+               hashlib.sha256(Path(entry["resolved_path"]).read_bytes()).hexdigest()
+               for entry in check["files"])
+    assert "already exists" in cli_call(cli, "check-comparison", comparison_path,
+                                        "--out", receipt_path, success=False)
+
+    data = json.loads(comparison_path.read_bytes())
+    base = destination / "comparison-relative-fixture"
+    base.mkdir()
+    for index, (trial, audit) in enumerate(zip(data["trials"], data["csv_audits"])):
+        path = Path(trial["file"])
+        trial["file"] = audit["report"] = path.name
+        report_bytes = path.read_bytes()
+        if index == 0:
+            # Same length, different SHA-256. The check reads bytes rather than parsing this report.
+            report_bytes = b"!" + report_bytes[1:]
+        (base / path.name).write_bytes(report_bytes)
+        for part_index, part in enumerate(audit["parts"]):
+            source = Path(part["file"])
+            part["file"] = source.name
+            if part_index == 0:
+                if index == 0:
+                    (base / source.name).mkdir()  # Unreadable as a file.
+            else:
+                (base / source.name).write_bytes(source.read_bytes())
+    relative = destination / "relative-comparison.json"
+    relative.write_text(json.dumps(data), encoding="utf-8")
+    unresolved = cli_call(cli, "check-comparison", relative)
+    assert not unresolved["all_match"] and all(e["status"] == "unresolved" for e in unresolved["files"])
+    changed = cli_call(cli, "check-comparison", relative, "--base", base)
+    assert not changed["all_match"]
+    assert {e["status"] for e in changed["files"]} == {"match", "changed", "missing", "unreadable"}
+    first = changed["files"][0]
+    assert first["status"] == "changed" and first["observed_sha256"] != first["expected_sha256"]
+    short_part = base / data["csv_audits"][1]["parts"][0]["file"]
+    short_part.write_bytes(b"")
+    resized = cli_call(cli, "check-comparison", relative, "--base", base)
+    entry = next(e for e in resized["files"] if e["trial"] == 2 and e["csv_part"] == 1)
+    assert entry["status"] == "changed" and entry["observed_sha256"] is None
+    assert entry["observed_bytes"] == 0 < entry["expected_bytes"]
+
+    inconsistent = destination / "inconsistent-audit-comparison.json"
+    data["csv_audits"][0]["report_sha256"] = "0" * 64
+    inconsistent.write_text(json.dumps(data), encoding="utf-8")
+    assert "CSV audit does not match" in cli_call(cli, "check-comparison", inconsistent,
+                                                  "--base", base, success=False)
+
+
 def verify_trial_set_comparison(cli, destination, reports, bases):
     reports = [path.resolve() for path in reports]
     bases = [path.resolve() for path in bases]
@@ -956,6 +1010,7 @@ def verify_trial_set_comparison(cli, destination, reports, bases):
     direct_path = destination / "exported-direct-comparison.json"
     assert cli_call(cli, "compare-runs", *reports, "--csv", bases[0], "--csv", bases[1],
                     "--out", direct_path) == json.loads(direct_path.read_bytes()) == from_set
+    verify_comparison_file_hashes(cli, destination, result_path)
     assert "cannot be used with" in cli_call(cli, "compare-runs", *reports, "--trial-set", set_path, success=False)
     assert "cannot be used with" in cli_call(cli, "compare-runs", "--trial-set", set_path, "--csv", bases[0], success=False)
 
@@ -969,7 +1024,11 @@ def verify_trial_set_comparison(cli, destination, reports, bases):
     manifest["audit_csv"] = False
     counters = destination / "cli-counter-trial-set.json"
     counters.write_text(json.dumps(manifest), encoding="utf-8-sig")
-    assert cli_call(cli, "compare-runs", "--trial-set", counters) == cli_call(cli, "compare-runs", *reports)
+    counter_result = destination / "counter-comparison.json"
+    assert cli_call(cli, "compare-runs", "--trial-set", counters, "--out", counter_result) == cli_call(cli, "compare-runs", *reports)
+    counter_check = cli_call(cli, "check-comparison", counter_result)
+    assert counter_check["all_match"] and not counter_check["csv_hashes_recorded"]
+    assert len(counter_check["files"]) == 2 and all(e["csv_part"] is None for e in counter_check["files"])
     manifest["trials"][0]["report"] = ""
     draft.write_text(json.dumps(manifest), encoding="utf-8")
     assert "report path for row 1" in cli_call(cli, "compare-runs", "--trial-set", draft, success=False)
