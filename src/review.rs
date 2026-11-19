@@ -94,10 +94,11 @@ impl Task {
                 (inputs.as_slice(), *audit_csv)
             }
         };
-        for input in inputs {
+        for (index, input) in inputs.iter().enumerate() {
             ensure!(
                 !input.report.as_os_str().is_empty(),
-                "enter a saved report path"
+                "enter a saved report path for row {}",
+                index + 1
             );
             if csv {
                 ensure!(
@@ -105,7 +106,8 @@ impl Task {
                         .csv
                         .as_ref()
                         .is_some_and(|path| !path.as_os_str().is_empty()),
-                    "enter a CSV base for every audited report"
+                    "enter a CSV base for every audited report (missing at row {})",
+                    index + 1
                 );
             }
         }

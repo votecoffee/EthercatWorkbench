@@ -21,6 +21,7 @@ pub mod shared_memory;
 mod sii;
 pub mod sync;
 pub mod sync_review;
+pub mod trial_set;
 pub mod virtual_esc;
 mod wire;
 

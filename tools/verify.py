@@ -927,6 +927,36 @@ def verify_valid_spacing_boundaries(cli, destination):
     assert setup_failure["cycles"] == 0 and setup_failure["valid_receive_spacing"] is None
 
 
+def verify_trial_set_comparison(cli, destination, reports, bases):
+    reports = [path.resolve() for path in reports]
+    bases = [path.resolve() for path in bases]
+    direct = cli_call(cli, "compare-runs", *reports, "--csv", bases[0], "--csv", bases[1])
+    set_path = destination / "cli-trial-set.json"
+    rows = [{"report": path.name, "csv": base.name} for path, base in zip(reports, bases)]
+    rows[1]["report"] = str(reports[1])
+    manifest = {"schema": 1, "audit_csv": True, "trials": rows}
+    set_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    before = set_path.read_bytes()
+    from_set = cli_call(cli, "compare-runs", "--trial-set", set_path)
+    assert from_set == direct
+    assert len(from_set["csv_audits"]) == 2
+    assert set_path.read_bytes() == before
+    assert "cannot be used with" in cli_call(cli, "compare-runs", *reports, "--trial-set", set_path, success=False)
+    assert "cannot be used with" in cli_call(cli, "compare-runs", "--trial-set", set_path, "--csv", bases[0], success=False)
+
+    draft = destination / "cli-incomplete-trial-set.json"
+    manifest["trials"][1]["csv"] = ""
+    draft.write_text(json.dumps(manifest), encoding="utf-8")
+    assert "missing at row 2" in cli_call(cli, "compare-runs", "--trial-set", draft, success=False)
+    manifest["audit_csv"] = False
+    counters = destination / "cli-counter-trial-set.json"
+    counters.write_text(json.dumps(manifest), encoding="utf-8-sig")
+    assert cli_call(cli, "compare-runs", "--trial-set", counters) == cli_call(cli, "compare-runs", *reports)
+    manifest["trials"][0]["report"] = ""
+    draft.write_text(json.dumps(manifest), encoding="utf-8")
+    assert "report path for row 1" in cli_call(cli, "compare-runs", "--trial-set", draft, success=False)
+
+
 def verify_comparison(cli, destination):
     profile = ROOT / "samples/synthetic.json"
     paths, trials = [], []
@@ -997,6 +1027,8 @@ def verify_comparison(cli, destination):
     assert "one --csv base per report" in cli_call(cli, "compare-runs", paths[0], paths[1],
         "--csv", destination / "trial-0.csv", success=False)
     (destination / "audited-comparison.json").write_text(json.dumps(audited, indent=2), encoding="utf-8")
+    verify_trial_set_comparison(cli, destination, paths[:2],
+                                [destination / f"trial-{index}.csv" for index in range(2)])
     assert "duplicate report" in cli_call(cli, "compare-runs", paths[0], paths[0], success=False)
     assert "capture-start order" in cli_call(cli, "compare-runs", paths[1], paths[0], success=False)
     assert "both deadline and relative" in cli_call(cli, "compare-runs", paths[0], paths[2], success=False)

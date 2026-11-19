@@ -27,6 +27,8 @@ cargo build --locked --release --target x86_64-pc-windows-msvc
 
 ## Usage
 
+Run a desktop trial set headlessly with `ethercat-workbench-cli.exe compare-runs --trial-set .local/trials.json`. The CLI uses the saved report order and CSV audit option. See the [timing comparison guide](docs/benchmark-comparison.md#comparison-rules).
+
 In **Review → Run reports and CSV → Trial set files**, save the current comparison list to a new JSON file and reopen it later. The set retains row order and the CSV-audit setting. See the [desktop trial set guide](docs/desktop-review.md#save-and-reopen-a-trial-set).
 
 Use **Add saved capture to comparison** or **Add audited capture to comparison** to carry a report and its CSV base into the scheduler trial list. See the [desktop scheduler comparison workflow](docs/desktop-review.md#compare-schedulers).

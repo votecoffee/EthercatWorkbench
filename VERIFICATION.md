@@ -450,3 +450,11 @@ Review can save the ordered trial rows and CSV-audit choice to a new schema 1 JS
 Formatting, Clippy, 176 locked offline Rust tests (132 library and 44 GUI), and the Windows x64 MSVC release build passed. New checks cover path relocation, partial rows, create-new saves, schema and size bounds, and a malformed load preserving the current editor. The relocation assertion compares resolved Windows paths so slash spelling does not affect the result. The full release CLI offline verification passed. Logs and binary identities use the 0.39.0 prefix under ignored .local/. Package and extracted CLI checks are recorded in the local delivery receipts.
 
 GUI checks used headless egui. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.40.0 headless comparison from saved trial sets (2026-11-19)
+
+`compare-runs --trial-set FILE` uses the same schema, path resolution and comparison task as desktop Review. It preserves the saved row order and audit choice. Comparison errors identify incomplete report and CSV rows. Positional report paths and `--csv` are available in the explicit-path mode.
+
+Formatting, Clippy, 176 offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. A targeted CLI check on retained 0.39.0 captures and the full release regression on new captures both verified identical comparison JSON across explicit and set inputs. The checks cover relative and absolute references, auditor results, disabled audits, optional BOM, incomplete rows, argument conflicts and preserved set bytes. Logs and binary identities use the 0.40.0 prefix under ignored .local/. Package and extracted CLI checks are recorded in local delivery receipts.
+
+The comparison checks used captured synthetic evidence. Native GUI review and physical bench qualification remain pending.

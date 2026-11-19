@@ -19,6 +19,8 @@ New-Item -ItemType Directory -Force .local | Out-Null
 
 ## Comparison rules
 
+Use `ethercat-workbench-cli.exe compare-runs --trial-set .local/trials.json` to compare a set saved from the desktop. The set supplies the ordered reports and CSV audit option. Paths can be relative to the set file. Remove blank draft rows and fill in every report path. When audits are enabled, fill in each CSV base as well. Use either a trial set or explicit report arguments with optional `--csv` bases. The result is printed as JSON in both modes.
+
 Supply 2–32 reports, each no larger than 16 MiB, in capture-start order. Both schedulers must be present. UTF-8 with or without a BOM is accepted. Reports without the new context must be recollected; the command does not infer their settings.
 
 Comparison checks matching application version, frontend, source and fault options, duration and effective profile apart from scheduler. It also checks observed device identity, serial, topology and image lengths, PDO assignment/verification results and synchronization settings. Initial DC offset and propagation-delay measurements may vary between startups; these two measurements are excluded from settings equality and remain in the original reports. CSV filenames, UTC anchors and connection generations can differ between trials.

@@ -1,4 +1,3 @@
-use crate::gui_trial_set::{MAX_TRIALS, Row, TrialSet};
 use eframe::egui;
 use ethercat_workbench::{
     benchmark::Comparison,
@@ -7,6 +6,7 @@ use ethercat_workbench::{
     pcap_inspect,
     review::{Controller, Input, Outcome, SharedDecoding, State, Task},
     shared_memory::reader,
+    trial_set::{MAX_TRIALS, Row, TrialSet, comparison_task},
 };
 use std::path::{Path, PathBuf};
 
@@ -354,7 +354,7 @@ impl Panel {
             ui.label("Put trials in capture-start order. Both Deadline and Stock relative are required; three runs each are recommended.");
             if ui.add_enabled(self.rows.len()>=2 && self.rows.iter().all(|row| !row.report.trim().is_empty()
                 && (!self.audit_csv || !row.csv.trim().is_empty())),egui::Button::new("Compare saved trials")).clicked() {
-                self.start(Task::Compare { inputs:self.rows.iter().map(Row::input).collect(),audit_csv:self.audit_csv });
+                self.start(comparison_task(&self.rows, self.audit_csv));
             }
         });
             if let Some((a, b)) = move_row {

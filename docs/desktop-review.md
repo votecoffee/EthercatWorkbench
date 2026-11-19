@@ -34,7 +34,9 @@ Enter the saved path under **Existing trial set JSON**, then choose **Load trial
 
 References under the set's directory are saved as relative paths. Move or copy that directory as a unit to retain the links. Paths elsewhere are saved as absolute references and may require editing after a move. Trial sets contain file references, so retain the original reports and CSV parts alongside them.
 
-The desktop reads schema 1 UTF-8 JSON up to 2 MiB, with an optional BOM. The `trials` array holds 1–32 rows in display order. Each row has a `report` and `csv` string. Use an empty string for a missing path. Relative paths are resolved from the directory containing the trial set. The `audit_csv` boolean selects CSV audits when starting the comparison.
+Both the desktop and CLI read schema 1 UTF-8 JSON up to 2 MiB, with an optional BOM. The `trials` array holds 1–32 rows in display order. Each row has a `report` and `csv` string. Use an empty string for a missing path in a draft. Relative paths are resolved from the directory containing the trial set. The `audit_csv` boolean selects CSV audits when starting the comparison.
+
+To run the saved comparison headlessly, use `ethercat-workbench-cli.exe compare-runs --trial-set .local/trials.json`. A comparison requires 2–32 complete report rows in capture-start order. The CLI identifies an incomplete report or CSV field by row number.
 
 ## Inspect Ethernet PCAP
 

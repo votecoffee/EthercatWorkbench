@@ -1,6 +1,6 @@
-//! A saved desktop trial list stores ordered file references and the audit option.
+//! A saved trial list stores ordered file references and the audit option.
+use crate::review::{Input, Task};
 use anyhow::{Context, Result, ensure};
-use ethercat_workbench::review::Input;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
@@ -8,12 +8,12 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub(super) const MAX_TRIALS: usize = 32;
+pub const MAX_TRIALS: usize = 32;
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Row {
+pub struct Row {
     pub report: String,
     pub csv: String,
 }
@@ -40,7 +40,7 @@ impl Row {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TrialSet {
+pub struct TrialSet {
     schema: u32,
     pub audit_csv: bool,
     pub trials: Vec<Row>,
@@ -145,6 +145,13 @@ impl TrialSet {
             File::create_new(&path).with_context(|| format!("create new {}", path.display()))?;
         file.write_all(&bytes).context("write trial set")?;
         file.sync_all().context("flush trial set")
+    }
+}
+
+pub fn comparison_task(rows: &[Row], audit_csv: bool) -> Task {
+    Task::Compare {
+        inputs: rows.iter().map(Row::input).collect(),
+        audit_csv,
     }
 }
 

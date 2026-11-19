@@ -4,6 +4,7 @@ use ethercat_workbench::{
     esi,
     model::{LogMode, Profile, Scheduler, payload_hex},
     run::{self, BenchApproval, Mode, RunOptions, Snapshot},
+    trial_set::{TrialSet, comparison_task},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -148,11 +149,14 @@ enum Command {
     VerifyPdo { profile: PathBuf, readback: PathBuf },
     /// Compare saved timing trials with matching settings except for their scheduler. No bus operations.
     CompareRuns {
-        #[arg(required = true, num_args = 2..=32)]
+        #[arg(required_unless_present = "trial_set", num_args = 2..=32)]
         reports: Vec<PathBuf>,
         /// Audit one CSV base per report, repeated in report order.
         #[arg(long)]
         csv: Vec<PathBuf>,
+        /// Use the ordered report paths and audit setting from a saved trial set.
+        #[arg(long, value_name = "JSON", conflicts_with_all = ["reports", "csv"])]
+        trial_set: Option<PathBuf>,
     },
     /// Audit the CSV parts declared by a saved run report, without bus operations.
     VerifyCapture { report: PathBuf, csv: PathBuf },
@@ -396,7 +400,19 @@ fn main() -> Result<()> {
             }
             output(&report)
         }
-        Command::CompareRuns { reports, csv } => {
+        Command::CompareRuns {
+            reports,
+            csv,
+            trial_set,
+        } => {
+            if let Some(path) = trial_set {
+                let set = TrialSet::load(&path)
+                    .with_context(|| format!("load trial set {}", path.display()))?;
+                let result = comparison_task(&set.trials, set.audit_csv)
+                    .execute(&AtomicBool::new(false))
+                    .with_context(|| format!("compare trial set {}", path.display()))?;
+                return output(&result);
+            }
             let result = if csv.is_empty() {
                 ethercat_workbench::benchmark::compare_files(&reports)?
             } else {
