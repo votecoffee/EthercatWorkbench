@@ -210,6 +210,7 @@ impl App {
                     }
                     Tab::Logging => {
                         ui.heading("CSV logging");
+                        self.completed_run_controls(ui);
                         ui.label("Choose a new file and the fields in Mappings before connecting. A session records automatically when a CSV path is set; Stop and flush ends the session and drains its writer.");
                         ui.add_enabled_ui(!self.busy(), |ui| {
                             let selected = self.profile.tx.iter().filter(|f| f.log).map(|f| f.name.as_str()).collect::<Vec<_>>();
@@ -231,10 +232,10 @@ impl App {
                     }
                     Tab::Diagnostics => {
                         ui.heading("Connection diagnostics");
+                        self.completed_run_controls(ui);
                         if let Some(snapshot) = &self.last {
                             show_snapshot(ui, snapshot, &self.profile.tx);
                         } else { ui.label("Connect to an offline fixture or approved bench to collect timing and device diagnostics."); }
-                        self.report_controls(ui);
                     }
                     Tab::Review => {
                         ui.heading("Saved capture review");
@@ -365,35 +366,6 @@ impl App {
                 self.sync_controls(ui);
             }
         });
-    }
-
-    fn report_controls(&mut self, ui: &mut egui::Ui) {
-        if self.session.is_none() && self.last.is_some() {
-            ui.separator();
-            ui.horizontal_wrapped(|ui| {
-                ui.label("New report JSON");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.report_save)
-                        .hint_text(".local/bench-report.json")
-                        .desired_width(360.0),
-                );
-                if ui
-                    .add_enabled(
-                        !self.report_save.trim().is_empty(),
-                        egui::Button::new("Save report"),
-                    )
-                    .clicked()
-                {
-                    self.message = match write_report(
-                        Path::new(self.report_save.trim()),
-                        &self.last.as_ref().expect("report present").report,
-                    ) {
-                        Ok(()) => "Run report saved".into(),
-                        Err(error) => format!("Write run report: {error:#}"),
-                    };
-                }
-            });
-        }
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
@@ -763,6 +735,89 @@ mod tests {
         );
         assert!(!text.iter().any(|(s, _)| s == "Valid at last receive"));
         assert!(!text.iter().any(|(s, _)| s.contains("spacing µs")));
+    }
+
+    #[test]
+    fn completed_rotated_capture_hands_off_its_report_and_original_csv_base() {
+        let mut app = app();
+        app.profile = serde_json::from_str(include_str!("../samples/synthetic.json")).unwrap();
+        app.profile.rotate_rows = 2;
+        let dir = PathBuf::from(".local").join(format!(
+            "gui-capture-review-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("capture.csv");
+        let report_path = dir.join("capture.run.json");
+        app.csv = base.to_string_lossy().into_owned();
+        app.start(Mode::Simulate { faults: false });
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while app
+            .last
+            .as_ref()
+            .and_then(|s| s.report.capture.as_ref())
+            .is_none_or(|c| c.selected < 5)
+        {
+            app.refresh(&ctx);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture did not publish capture progress"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        click(&mut app, &ctx, "Stop and flush");
+        while app.session.is_some() {
+            app.refresh(&ctx);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stop/flush did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!base.exists()); // The capture is stored in numbered parts.
+        app.csv = dir.join("next.csv").to_string_lossy().into_owned();
+        app.profile.tx[0].name = "Edited after capturing".into();
+        app.last = None;
+
+        std::fs::write(&report_path, b"existing file").unwrap();
+        click(&mut app, &ctx, "Logging");
+        click(&mut app, &ctx, "Save report and audit");
+        assert_eq!(app.tab, Tab::Logging);
+        assert!(!app.review.is_running());
+        assert_eq!(std::fs::read(&report_path).unwrap(), b"existing file");
+        std::fs::remove_file(&report_path).unwrap();
+
+        click(&mut app, &ctx, "Save report and audit");
+        assert_eq!(app.tab, Tab::Review);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while app.review.is_running() {
+            app.refresh(&ctx);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "capture audit did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        let written = report["capture"]["written"].as_u64().unwrap();
+        let parts = report["capture"]["parts"].as_u64().unwrap();
+        assert!(written >= 5 && parts >= 3);
+        assert_eq!(report["context"]["profile"]["tx"][0]["name"], "Counter");
+        let labels = draw(&mut app, &ctx, egui::vec2(1100.0, 840.0), vec![]);
+        let expected = format!("CSV structure passed · {written} rows · {parts} parts");
+        assert!(labels.iter().any(|(s, _)| s == &expected));
+
+        for index in 1..=parts {
+            std::fs::remove_file(dir.join(format!("capture.{index:04}.csv"))).unwrap();
+        }
+        std::fs::remove_file(report_path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

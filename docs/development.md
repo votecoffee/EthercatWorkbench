@@ -10,6 +10,8 @@ Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supp
 
 ## Data and ownership
 
+`gui_capture_review.rs` retains the final worker report and the CSV base frozen at session start. It suggests a create-new report destination and sends the saved report path and original CSV base to the existing cancellable Review worker. The live display snapshot can be cleared independently of the completed run. The shortcut leaves the editable trial rows available for manual audits and comparisons.
+
 | Area | Owner and change route |
 | --- | --- |
 | Profiles and typed mappings | `model.rs`: schema 1, validation, decoding, source provenance, create-new saves |

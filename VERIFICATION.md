@@ -426,3 +426,11 @@ The desktop marks changes against the last loaded, saved, or demo profile. Profi
 Formatting, Clippy with warnings denied, 170 locked offline Rust tests (132 library, 38 GUI), and the Windows x64 MSVC release build passed. Tests cover the offline demo prompt and cancellation, protected save before replacement, the frozen load path, failed load, and close after a worker has drained. The full release CLI offline verification passed. Logs and binary identities are retained under ignored .local/ with the 0.36.0 prefix. Package and extracted CLI checks are recorded in the local delivery receipts.
 
 The GUI tests used headless egui events and an authored worker for the close sequence. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.37.0 completed capture review (2026-11-19)
+
+Logging and Diagnostics retain the final worker report with the original CSV base. Save report and audit suggests a create-new JSON beside the CSV base and submits the resulting pair to the cancellable Review worker. Audit saved capture uses the saved pair again. Draft profile changes and next-run paths leave the completed capture association intact. Manual trial rows still support older reports and comparisons.
+
+Formatting, Clippy, 171 locked offline Rust tests (132 library, 39 GUI), and the Windows x64 MSVC release build passed. The new headless test captures multiple numbered parts, stops and flushes through the workspace, edits the next profile and path, verifies that an existing report is preserved, and audits the final captured rows and parts through Logging and Review. The full release CLI offline verification also passed. Logs and binary identities are kept under ignored .local/ with the 0.37.0 prefix. Package and extracted CLI checks are recorded in the local delivery receipts.
+
+The GUI test used a synthetic acquisition and headless egui events. Native GUI review and physical bench qualification remain pending.

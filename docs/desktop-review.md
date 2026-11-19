@@ -2,6 +2,12 @@
 
 Open **Review → Run reports and CSV** in the Windows application to review completed captures without using the CLI. Analysis reads saved files and performs no NIC enumeration, EtherCAT exchange, device setup or output writes. Report/CSV review uses the saved report's effective profile for decoding and logging settings. PCAP inspection instead freezes the currently edited commissioning profile when the inspection starts; a PCAP file supplies no verified mapping or device identity.
 
+## Audit the latest desktop capture
+
+After acquisition stops and CSV flush completes, **Logging** and **Diagnostics** show the completed run and its original CSV base. Review the suggested report destination, such as `capture.run.json` beside `capture.csv`, and choose **Save report and audit**. Existing files are preserved. If a save fails, choose a fresh destination and try again. **Save report** is available for exporting the report on its own.
+
+Once the report is saved, **Audit saved capture** reopens that report and the original CSV files on the Review worker. The worker uses the run's frozen profile and the recorded number of parts. Edits to the current profile or the next CSV destination have no effect on those paths. The result appears on **Review → Run reports and CSV**, with the files and hashes it actually read. The latest-run controls remain available until the next session starts. To review older captures, enter their paths in the trial rows.
+
 ## Audit a capture
 
 Enter a saved run JSON and its original CSV base path in a trial row, then choose **Audit this capture**. For a rotated capture, enter `capture.csv`, even when the files on disk are named `capture.0001.csv`, `capture.0002.csv`, and so on. Only the report's declared part sequence is read.

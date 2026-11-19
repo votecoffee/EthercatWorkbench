@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod gui_capture_review;
 mod gui_connection;
 mod gui_mode_pdo;
 mod gui_profiles;
@@ -8,6 +9,7 @@ mod gui_runtime_check;
 mod gui_stage;
 mod gui_workspace;
 
+use gui_capture_review::CompletedRun;
 use gui_connection::{DiscoveryJob, DiscoveryOrigin};
 use gui_profiles::{ProfileAction, ProfileEditor};
 use gui_workspace::{ConnectPage, MappingPage, Tab};
@@ -63,6 +65,7 @@ struct Session {
     stop: Arc<AtomicBool>,
     view: Arc<Mutex<Snapshot>>,
     worker: JoinHandle<Report>,
+    csv_base: Option<PathBuf>,
 }
 
 struct App {
@@ -91,7 +94,7 @@ struct App {
     auto_start: bool,
     auto_exit: bool,
     report_path: Option<PathBuf>,
-    report_save: String,
+    completed_run: Option<CompletedRun>,
     deferred_close: bool,
     review: gui_review::Panel,
     host_check: gui_runtime_check::Panel,
@@ -136,7 +139,7 @@ impl App {
             auto_start: args.simulate_seconds.is_some(),
             auto_exit: args.simulate_seconds.is_some(),
             report_path: args.report,
-            report_save: String::new(),
+            completed_run: None,
             deferred_close: false,
             review: gui_review::Panel::default(),
             host_check: gui_runtime_check::Panel::default(),
@@ -170,7 +173,7 @@ impl App {
         let opts = RunOptions {
             frontend: ethercat_workbench::benchmark::Frontend::Gui,
             mode,
-            csv,
+            csv: csv.clone(),
             duration: Duration::from_secs(self.seconds),
             generation: self.generation,
         };
@@ -178,7 +181,13 @@ impl App {
             Ok(worker) => {
                 self.last = None;
                 self.message.clear();
-                self.session = Some(Session { stop, view, worker });
+                self.completed_run = None;
+                self.session = Some(Session {
+                    stop,
+                    view,
+                    worker,
+                    csv_base: csv,
+                });
                 self.tab = Tab::Inputs;
                 self.connect_open = false;
             }
@@ -223,12 +232,14 @@ impl App {
             match session.worker.join() {
                 Ok(report) => {
                     self.last = session.view.lock().ok().map(|view| view.clone());
+                    let mut completed = CompletedRun::new(report, session.csv_base);
                     if let Some(path) = &self.report_path
-                        && let Err(error) = write_report(path, &report)
+                        && let Err(error) = completed.save(path.clone())
                     {
                         self.message = format!("Write run report: {error:#}");
                         self.auto_exit = false;
                     }
+                    self.completed_run = Some(completed);
                 }
                 Err(_) => self.message = "Cycle worker failed".into(),
             }

@@ -19,7 +19,7 @@ The desktop follows the same workflow tabs as EthernetIP Workbench. EtherCAT add
 2. Inspect **Mappings → Input fields** and choose the fields to log. For manual setup, enter image lengths and field definitions there. **Outputs** stages bytes offline.
 3. In **Logging**, set a fresh CSV base path and logging mode. Expand **Advanced cycle scheduling** to choose requested cycle and scheduler; duration is on the main Logging page. The 1 ms period is a measurement target.
 4. Choose **Connect… → Offline fixtures**, then start synthetic input, a matching virtual ESC model or an authored replay. A successful session start selects **Inputs**. No adapter is enumerated merely by opening the dialog or switching tabs.
-5. Navigate freely while the worker runs. **Stop and flush** stops acquisition and drains the CSV writer. A configured duration also ends the session. Use **Diagnostics → Save report** afterward and **Review** to audit the files.
+5. Navigate freely while the worker runs. **Stop and flush** stops acquisition and drains the CSV writer. A configured duration also ends the session. Use **Logging → Save report and audit** afterward. Diagnostics offers the same action. Workbench suggests a new report path and uses the original CSV base for Review, including numbered capture parts.
 
 CSV is configured before connection and runs with that session. **Record CSV…** navigates to its setup/status page; it does not start recording on an existing session. Stopping CSV independently while keeping acquisition active is not implemented. The selected-field summary links to Mappings instead of embedding its editor. Rotation uses a base path even when numbered files are produced.
 

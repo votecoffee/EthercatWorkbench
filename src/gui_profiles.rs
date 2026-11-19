@@ -304,6 +304,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         app.session = Some(Session {
+            csv_base: None,
             stop: stop.clone(),
             view: Arc::new(Mutex::new(Snapshot::default())),
             worker: std::thread::spawn(move || {

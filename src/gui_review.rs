@@ -74,6 +74,11 @@ impl Default for Panel {
 }
 
 impl Panel {
+    pub(super) fn start_capture_audit(&mut self, input: Input) {
+        self.page = Page::Trials;
+        self.start(Task::Audit(input));
+    }
+
     fn selected_interface(&self) -> anyhow::Result<Option<u32>> {
         let text = self.pcap_interface.trim();
         if text.is_empty() {
