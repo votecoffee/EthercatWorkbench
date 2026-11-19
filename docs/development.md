@@ -10,6 +10,8 @@ Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supp
 
 ## Data and ownership
 
+`gui_trial_set.rs` owns the versioned desktop trial-list JSON, bounded reads, relative-reference resolution and create-new saves. `gui_review.rs` confirms draft replacement and installs a fully parsed list and audit option together. Trial sets reference evidence files. The review controller still freezes the inputs when an audit or comparison starts.
+
 `gui_capture_review.rs` retains the final worker report and the CSV base frozen at session start. It suggests a create-new report destination and sends the saved report path and original CSV base to the existing cancellable Review worker. The live display snapshot can be cleared independently of the completed run. The shortcut leaves the editable trial rows available for manual audits and comparisons.
 
 | Area | Owner and change route |

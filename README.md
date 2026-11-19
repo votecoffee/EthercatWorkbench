@@ -27,6 +27,8 @@ cargo build --locked --release --target x86_64-pc-windows-msvc
 
 ## Usage
 
+In **Review → Run reports and CSV → Trial set files**, save the current comparison list to a new JSON file and reopen it later. The set retains row order and the CSV-audit setting. See the [desktop trial set guide](docs/desktop-review.md#save-and-reopen-a-trial-set).
+
 Use **Add saved capture to comparison** or **Add audited capture to comparison** to carry a report and its CSV base into the scheduler trial list. See the [desktop scheduler comparison workflow](docs/desktop-review.md#compare-schedulers).
 
 After a desktop capture, open **Logging** or **Diagnostics** and choose **Save report and audit**. Review uses the completed run’s report and CSV base, including rotated captures. The report path is editable and saves create new files. See the [desktop capture review guide](docs/desktop-review.md#audit-the-latest-desktop-capture).

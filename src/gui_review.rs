@@ -1,3 +1,4 @@
+use crate::gui_trial_set::{MAX_TRIALS, Row, TrialSet};
 use eframe::egui;
 use ethercat_workbench::{
     benchmark::Comparison,
@@ -8,26 +9,6 @@ use ethercat_workbench::{
     shared_memory::reader,
 };
 use std::path::{Path, PathBuf};
-
-const MAX_TRIALS: usize = 32;
-
-#[derive(Default)]
-struct Row {
-    report: String,
-    csv: String,
-}
-impl Row {
-    fn is_empty(&self) -> bool {
-        self.report.trim().is_empty() && self.csv.trim().is_empty()
-    }
-
-    fn input(&self) -> Input {
-        Input {
-            report: PathBuf::from(self.report.trim()),
-            csv: (!self.csv.trim().is_empty()).then(|| PathBuf::from(self.csv.trim())),
-        }
-    }
-}
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -41,6 +22,9 @@ pub struct Panel {
     page: Page,
     rows: Vec<Row>,
     audit_csv: bool,
+    trial_set_load: String,
+    trial_set_save: String,
+    pending_trial_set: Option<PathBuf>,
     controller: Controller,
     export: String,
     message: String,
@@ -65,6 +49,9 @@ impl Default for Panel {
             page: Page::default(),
             rows: vec![Row::default(), Row::default()],
             audit_csv: true,
+            trial_set_load: String::new(),
+            trial_set_save: String::new(),
+            pending_trial_set: None,
             controller: Controller::default(),
             export: String::new(),
             message: String::new(),
@@ -80,6 +67,80 @@ impl Default for Panel {
 }
 
 impl Panel {
+    fn load_trial_set(&mut self, path: &Path) {
+        self.pending_trial_set = None;
+        self.message = match TrialSet::load(path) {
+            Ok(set) => {
+                self.rows = set.trials;
+                self.audit_csv = set.audit_csv;
+                format!(
+                    "Loaded {} trial rows from {}",
+                    self.rows.len(),
+                    path.display()
+                )
+            }
+            Err(error) => format!("Load trial set: {error:#}"),
+        };
+    }
+
+    fn trial_set_controls(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        ui.collapsing("Trial set files", |ui| {
+            ui.add_enabled_ui(enabled, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Existing trial set JSON");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.trial_set_load).desired_width(360.0),
+                    );
+                    let path = self.trial_set_load.trim();
+                    if ui
+                        .add_enabled(!path.is_empty(), egui::Button::new("Load trial set"))
+                        .clicked()
+                    {
+                        let path = PathBuf::from(path);
+                        if self.rows.iter().any(|row| !row.is_empty()) || !self.audit_csv {
+                            self.pending_trial_set = Some(path);
+                        } else {
+                            self.load_trial_set(&path);
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("New trial set JSON");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.trial_set_save).desired_width(360.0),
+                    );
+                    let path = self.trial_set_save.trim();
+                    if ui
+                        .add_enabled(!path.is_empty(), egui::Button::new("Save trial set"))
+                        .clicked()
+                    {
+                        self.message =
+                            match TrialSet::save_new(Path::new(path), &self.rows, self.audit_csv) {
+                                Ok(()) => format!("Saved trial set to {path}"),
+                                Err(error) => format!("Save trial set: {error:#}"),
+                            };
+                    }
+                });
+                if let Some(path) = &self.pending_trial_set {
+                    ui.label(format!(
+                        "Replace the current rows and CSV audit setting with {}?",
+                        path.display()
+                    ));
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Replace trial list").clicked()
+                            && let Some(path) = self.pending_trial_set.take()
+                        {
+                            self.load_trial_set(&path);
+                        }
+                        if ui.button("Keep current trial list").clicked() {
+                            self.pending_trial_set = None;
+                        }
+                    });
+                }
+            });
+        });
+    }
+
     pub(super) fn add_capture_trial(&mut self, input: Input) {
         self.page = Page::Trials;
         self.message = match self.insert_trial(&input) {
@@ -105,11 +166,10 @@ impl Panel {
             .as_deref()
             .and_then(Path::to_str)
             .context("The CSV base path cannot be displayed in the trial editor.")?;
-        if let Some(index) = self
-            .rows
-            .iter()
-            .position(|row| Path::new(row.report.trim()) == input.report)
-        {
+        let absolute = std::path::absolute(&input.report).context("resolve trial report path")?;
+        if let Some(index) = self.rows.iter().position(|row| {
+            std::path::absolute(row.report.trim()).is_ok_and(|path| path == absolute)
+        }) {
             anyhow::bail!("This report is already in trial {}.", index + 1);
         }
         let row = Row {
@@ -264,6 +324,7 @@ impl Panel {
         });
         }
         if self.page == Page::Trials {
+            self.trial_set_controls(ui, !self.is_running() && !bus_busy);
             let mut audit = None;
             let mut move_row = None;
             let mut remove = None;
@@ -1034,6 +1095,38 @@ fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn malformed_trial_set_does_not_replace_the_editor() {
+        let file = PathBuf::from(format!(
+            ".local/invalid-trial-set-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            br#"{"schema":1,"audit_csv":true,"trials":[{"report":"missing.csv"}]}"#,
+        )
+        .unwrap();
+        let mut panel = Panel::default();
+        panel.rows[0].csv = "unfinished.csv".into();
+        panel.audit_csv = false;
+        panel.pending_trial_set = Some(file.clone());
+        let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+        assert!(text.contains("Replace the current rows and CSV audit setting"));
+        assert!(text.contains("Keep current trial list"));
+        panel.load_trial_set(&file);
+        assert_eq!(panel.rows[0].csv, "unfinished.csv");
+        assert!(!panel.audit_csv);
+        assert!(!panel.is_running());
+        assert!(panel.pending_trial_set.is_none());
+        assert!(panel.message.contains("parse trial set JSON"));
+        std::fs::remove_file(file).unwrap();
+    }
+
+    #[test]
     fn adding_capture_trials_preserves_partial_rows_and_limits_the_list() {
         let mut panel = Panel::default();
         panel.rows[0].csv = "draft.csv".into();
@@ -1046,8 +1139,8 @@ mod tests {
         assert!(panel.rows[0].report.is_empty());
         assert_eq!(panel.rows[1].input(), input);
         let duplicate = Input {
+            report: std::path::absolute(&input.report).unwrap(),
             csv: Some("different.csv".into()),
-            ..input.clone()
         };
         assert!(
             panel

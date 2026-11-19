@@ -25,6 +25,8 @@ Use headless files/CLI by default. Desktop input, screenshots or recording need 
 
 ## Desktop navigation
 
+Use **Review → Run reports and CSV → Trial set files** to save or reopen a schema 1 ordered trial list, including partial rows and the CSV-audit option. Save to a new JSON path. Confirm replacement of populated rows or a changed audit option. Relative references follow the set's directory. Keep reports and CSV parts available for a separate **Compare saved trials** action.
+
 Add a saved desktop or audited capture pair to the scheduler comparison from **Logging**, **Diagnostics**, or its completed **Review** result. Existing partial rows stay in place. Arrange trials in capture-start order, leave CSV audits enabled when comparing saved bytes, and let the comparison worker check compatibility. CSV structure passing alone does not qualify a timing trial.
 
 After an acquisition with CSV finishes, **Logging** or **Diagnostics → Save report and audit** uses the completed report and its original CSV base. Once the report is saved, **Audit saved capture** opens the saved pair on the existing review worker. Review inputs and file hashes identify the evidence checked. Manual trial rows remain available for older captures and comparisons.

@@ -26,6 +26,16 @@ The comparison checks the same configuration, device/PDO/synchronization and evi
 
 **Inputs used** identifies the frozen input paths for the completed job. Editing path fields or reordering rows afterward does not relabel or recalculate that result. The input-file hashes bind the result to the bytes read during review; files changed afterward need a new review.
 
+## Save and reopen a trial set
+
+Under **Review → Run reports and CSV**, expand **Trial set files**. Enter a **New trial set JSON** path and choose **Save trial set**. Workbench creates the file at that path and preserves existing files. The set stores the ordered draft rows, including partial and empty rows, and the **Audit CSV files during comparison** setting. Keep private trial sets in `.local/` with the corresponding evidence.
+
+Enter the saved path under **Existing trial set JSON**, then choose **Load trial set**. If you have populated rows or have turned off the audit option, confirm **Replace trial list** or choose **Keep current trial list**. Invalid files leave the current rows and option intact. Loading prepares the editor. Use **Compare saved trials** to read and check the referenced files. Completed results retain the inputs from their own review jobs.
+
+References under the set's directory are saved as relative paths. Move or copy that directory as a unit to retain the links. Paths elsewhere are saved as absolute references and may require editing after a move. Trial sets contain file references, so retain the original reports and CSV parts alongside them.
+
+The desktop reads schema 1 UTF-8 JSON up to 2 MiB, with an optional BOM. The `trials` array holds 1–32 rows in display order. Each row has a `report` and `csv` string. Use an empty string for a missing path. Relative paths are resolved from the directory containing the trial set. The `audit_csv` boolean selects CSV audits when starting the comparison.
+
 ## Inspect Ethernet PCAP
 
 Load or edit the intended commissioning profile in **Device** and **Mappings** first. Choose **Review → Ethernet PCAP**, enter a classic Ethernet PCAP or supported PCAPNG path, its expected configured station address (decimal or `0x` hexadecimal), and a preview limit of 0–64. The default address `0x1000` is an expectation, not a value discovered from the file. Choose **Inspect PCAP with current profile**. Invalid profile/settings are rejected before a job starts. Version 0.23 supports up to 32 PCAPNG descriptors in one section. Leave **PCAPNG interface** blank for a sole interface or enter its ID (decimal or `0x`, 0–31). Multiple descriptors require an explicit selection; an ambiguity error lists IDs, link types and packet counts. Select Ethernet. A supplied interface choice on classic PCAP fails. All interfaces must use supported microsecond/nanosecond timestamps. Additional sections, generic EtherCAT dissection and VLAN decoding remain unsupported.

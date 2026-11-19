@@ -37,6 +37,8 @@ Version 0.20 also retains independent [shared-memory counters](shared-input-feed
 
 ## Desktop review
 
+Use **Trial set files** to save and reopen the ordered rows and CSV-audit choice. Retain the original reports and numbered CSV parts. See [Save and reopen a trial set](desktop-review.md#save-and-reopen-a-trial-set).
+
 For a desktop comparison, let each trial finish at its configured duration. In **Logging** or **Diagnostics**, save the report and choose **Add saved capture to comparison**. A completed CSV audit offers **Add audited capture to comparison**. Review the trial order before comparing. The same comparison checks apply to the added pairs.
 
 The **Review** panel can compare the same reports without the CLI, with optional CSV audits, per-trial timing/loss tables and new-file JSON export. See [desktop review](desktop-review.md) for worker and cancellation behavior.

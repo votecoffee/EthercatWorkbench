@@ -442,3 +442,11 @@ A saved desktop run or a completed CSV audit can add its report and original CSV
 Formatting, Clippy, 173 locked offline Rust tests (132 library, 41 GUI), and the Windows x64 MSVC release build passed. One new test covers partial rows, duplicate paths and the list limit. Another runs synthetic Deadline and Stock relative captures through the desktop, adds one saved pair and one audited pair, and completes a comparison with CSV audits enabled. The full release CLI offline verification passed. Logs and binary identities are kept under ignored .local/ with the 0.38.0 prefix. Package and extracted CLI checks are recorded in the local delivery receipts.
 
 The desktop test used headless egui events and synthetic acquisition. Native GUI review and the physical bench run remain pending.
+
+## Version 0.39.0 saved desktop trial sets (2026-11-19)
+
+Review can save the ordered trial rows and CSV-audit choice to a new schema 1 JSON file. Incomplete and empty rows survive. References under the set directory are saved relative to it. Other references use absolute paths. Loading confirms replacement of populated rows or a changed audit option. Parsing and path resolution complete before the editor changes. Review jobs still freeze the evidence paths at launch.
+
+Formatting, Clippy, 176 locked offline Rust tests (132 library and 44 GUI), and the Windows x64 MSVC release build passed. New checks cover path relocation, partial rows, create-new saves, schema and size bounds, and a malformed load preserving the current editor. The relocation assertion compares resolved Windows paths so slash spelling does not affect the result. The full release CLI offline verification passed. Logs and binary identities use the 0.39.0 prefix under ignored .local/. Package and extracted CLI checks are recorded in the local delivery receipts.
+
+GUI checks used headless egui. Native GUI review and physical bench qualification remain pending.

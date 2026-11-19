@@ -7,6 +7,7 @@ mod gui_profiles;
 mod gui_review;
 mod gui_runtime_check;
 mod gui_stage;
+mod gui_trial_set;
 mod gui_workspace;
 
 use gui_capture_review::CompletedRun;
