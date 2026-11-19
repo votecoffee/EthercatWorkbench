@@ -44,6 +44,9 @@ pub enum Task {
         inputs: Vec<Input>,
         audit_csv: bool,
     },
+    InspectComparison {
+        file: PathBuf,
+    },
     InspectPcap {
         file: PathBuf,
         profile: Box<Profile>,
@@ -86,6 +89,13 @@ impl Task {
                 return pcap_inspect::validate_settings(profile, *station, *preview_limit);
             }
             Self::Audit(input) => (std::slice::from_ref(input), true),
+            Self::InspectComparison { file } => {
+                ensure!(
+                    !file.as_os_str().is_empty(),
+                    "enter a saved comparison JSON path"
+                );
+                return Ok(());
+            }
             Self::Compare { inputs, audit_csv } => {
                 ensure!(
                     (2..=32).contains(&inputs.len()),
@@ -165,6 +175,9 @@ impl Task {
                     stop,
                 )?))
             }
+            Self::InspectComparison { file } => {
+                Outcome::SavedComparison(Box::new(benchmark::inspect_saved_comparison(file, stop)?))
+            }
         };
         check_cancel(Some(stop))?;
         Ok(outcome)
@@ -177,6 +190,7 @@ pub enum Outcome {
     Shared(Box<reader::Inspection>),
     Audit(Box<capture_audit::Audit>),
     Comparison(Box<benchmark::Comparison>),
+    SavedComparison(Box<benchmark::SavedComparison>),
     Pcap(Box<pcap_inspect::Report>),
 }
 
@@ -309,6 +323,10 @@ impl Controller {
             .completed
             .as_ref()
             .context("no completed review to export")?;
+        ensure!(
+            !matches!(completed.outcome, Outcome::SavedComparison(_)),
+            "the saved comparison already has a JSON file"
+        );
         ensure!(
             path.extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("json")),
@@ -1019,6 +1037,44 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|a| a.rows == 2)
+        );
+
+        let expected = serde_json::to_value(result).unwrap();
+        let export = fixture.0.join("comparison.json");
+        controller.save_new(&export).unwrap();
+        let bytes = std::fs::read(&export).unwrap();
+        for index in 0..2 {
+            std::fs::remove_file(fixture.0.join(format!("trial-{index}.json"))).unwrap();
+            std::fs::remove_file(fixture.0.join(format!("trial-{index}.csv"))).unwrap();
+        }
+        controller
+            .start(Task::InspectComparison {
+                file: export.clone(),
+            })
+            .unwrap();
+        finish(&mut controller);
+        let Outcome::SavedComparison(result) = &controller.completed().unwrap().outcome else {
+            panic!("expected saved comparison")
+        };
+        assert_eq!(result.file, export);
+        assert_eq!(result.sha256, benchmark::hash(&bytes));
+        assert_eq!(serde_json::to_value(&result.comparison).unwrap(), expected);
+        assert!(controller.save_new(&fixture.0.join("copy.json")).is_err());
+
+        let mut unsupported = expected;
+        unsupported["schema"] = 99.into();
+        let path = fixture.0.join("unsupported-comparison.json");
+        std::fs::write(&path, serde_json::to_vec(&unsupported).unwrap()).unwrap();
+        controller
+            .start(Task::InspectComparison { file: path })
+            .unwrap();
+        finish(&mut controller);
+        assert_eq!(controller.state(), State::Failed);
+        assert!(
+            controller
+                .error()
+                .unwrap()
+                .contains("unsupported comparison schema 99")
         );
     }
 

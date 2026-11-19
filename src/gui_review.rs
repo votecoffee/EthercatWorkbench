@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 enum Page {
     #[default]
     Trials,
+    SavedComparison,
     Pcap,
     Shared,
 }
@@ -25,6 +26,7 @@ pub struct Panel {
     trial_set_load: String,
     trial_set_save: String,
     pending_trial_set: Option<PathBuf>,
+    comparison_path: String,
     controller: Controller,
     export: String,
     message: String,
@@ -52,6 +54,7 @@ impl Default for Panel {
             trial_set_load: String::new(),
             trial_set_save: String::new(),
             pending_trial_set: None,
+            comparison_path: String::new(),
             controller: Controller::default(),
             export: String::new(),
             message: String::new(),
@@ -264,10 +267,15 @@ impl Panel {
         }
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.page, Page::Trials, "Run reports and CSV");
+            ui.selectable_value(&mut self.page, Page::SavedComparison, "Saved comparison");
             ui.selectable_value(&mut self.page, Page::Pcap, "Ethernet PCAP");
             ui.selectable_value(&mut self.page, Page::Shared, "Saved input snapshot");
         });
         ui.separator();
+        if self.page == Page::SavedComparison {
+            self.saved_comparison_controls(ui, !self.is_running() && !bus_busy);
+            return;
+        }
         if self.page == Page::Pcap {
             ui.strong("Inspect a saved Ethernet PCAP");
             ui.scope(|ui| {
@@ -382,7 +390,9 @@ impl Panel {
             let inputs = match &completed.task {
                 Task::Audit(input) => std::slice::from_ref(input),
                 Task::Compare { inputs, .. } => inputs.as_slice(),
-                Task::InspectPcap { .. } | Task::InspectShared { .. } => &[],
+                Task::InspectPcap { .. }
+                | Task::InspectShared { .. }
+                | Task::InspectComparison { .. } => &[],
             };
             ui.collapsing("Inputs used", |ui| {
                 let used_csv = matches!(
@@ -422,9 +432,10 @@ impl Panel {
             });
             match &completed.outcome {
                 Outcome::Audit(result) => show_audit(ui, result),
-                Outcome::Comparison(result) => show_comparison(ui, result),
+                Outcome::Comparison(result) => show_comparison(ui, result, false),
                 Outcome::Pcap(result) => show_pcap(ui, result),
                 Outcome::Shared(result) => show_shared(ui, result),
+                Outcome::SavedComparison(_) => unreachable!("saved comparison has its own page"),
             }
             ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
                 if let Task::Audit(input) = &completed.task
@@ -457,6 +468,41 @@ impl Panel {
         }
         if let Some(input) = add_trial {
             self.add_capture_trial(input);
+        }
+    }
+
+    fn saved_comparison_controls(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        ui.strong("Open a comparison result");
+        ui.label("View recorded timing, losses and audit status. For a fresh check of the source files, run a new comparison in Run reports and CSV.");
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Comparison JSON");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.comparison_path)
+                        .hint_text(".local/comparison.json")
+                        .desired_width(360.0),
+                );
+                if ui
+                    .add_enabled(
+                        !self.comparison_path.trim().is_empty(),
+                        egui::Button::new("Open comparison"),
+                    )
+                    .clicked()
+                {
+                    self.start(Task::InspectComparison {
+                        file: PathBuf::from(self.comparison_path.trim()),
+                    });
+                }
+            });
+        });
+        if let Some(job) = self.controller.completed()
+            && let Outcome::SavedComparison(saved) = &job.outcome
+        {
+            ui.separator();
+            ui.strong("Saved scheduler comparison");
+            ui.label(saved.file.display().to_string());
+            ui.label(format!("SHA-256 · {}", saved.sha256));
+            show_comparison(ui, &saved.comparison, true);
         }
     }
 }
@@ -950,7 +996,7 @@ fn show_audit(ui: &mut egui::Ui, audit: &Audit) {
     warnings(ui, &audit.warnings);
 }
 
-fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
+fn show_comparison(ui: &mut egui::Ui, result: &Comparison, saved: bool) {
     for (index, trial) in result.trials.iter().enumerate() {
         if let Some(memory) = &trial.shared_memory {
             ui.label(format!("Trial {} shared memory · queue drops {} · coalesced {} · unsent {} · writes {} · busy {} · abandoned {} · worker failed {}",index+1,memory.queue_drops,memory.coalesced,memory.unsent_events,memory.writes,memory.lock_misses,memory.abandoned_recoveries,memory.worker_failed));
@@ -965,15 +1011,25 @@ fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
         }
     }
     ui.strong(format!(
-        "{} compatible saved trials · {} · {:?}",
+        "{} {} · {} · {:?}",
         result.trials.len(),
-        result.app_version,
+        if saved {
+            "recorded trials"
+        } else {
+            "compatible saved trials"
+        },
+        shared_preview(&result.app_version),
         result.frontend
     ));
     ui.label(format!(
-        "Requested {} µs · duration limit {} µs · CSV audit {}",
+        "Requested {} µs · duration limit {} µs · {} {}",
         result.common_profile_settings["requested_cycle_us"],
         result.duration_limit_us,
+        if saved {
+            "Recorded CSV audit"
+        } else {
+            "CSV audit"
+        },
         if result.csv_audits.is_some() {
             "included"
         } else {
@@ -1083,13 +1139,26 @@ fn show_comparison(ui: &mut egui::Ui, result: &Comparison) {
             ui.label(format!(
                 "Trial {} · {} · {}",
                 index + 1,
-                trial.file.display(),
-                trial.utc_start
+                shared_preview(&trial.file.to_string_lossy()),
+                shared_preview(&trial.utc_start)
             ));
-            ui.monospace(&trial.sha256);
+            ui.monospace(shared_preview(&trial.sha256));
         }
     });
-    warnings(ui, &result.warnings);
+    if saved {
+        let mut preview: Vec<_> = result
+            .warnings
+            .iter()
+            .take(64)
+            .map(|warning| shared_preview(warning))
+            .collect();
+        if result.warnings.len() > 64 {
+            preview.push("64 warnings shown. See the saved JSON for the complete list.".into());
+        }
+        warnings(ui, &preview);
+    } else {
+        warnings(ui, &result.warnings);
+    }
 }
 
 #[cfg(test)]
@@ -1181,9 +1250,18 @@ mod tests {
             shared_path: "retained.bin".into(),
             ..Default::default()
         };
-        for page in [Page::Trials, Page::Pcap, Page::Shared] {
+        for page in [
+            Page::Trials,
+            Page::SavedComparison,
+            Page::Pcap,
+            Page::Shared,
+        ] {
             panel.page = page;
             let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+            assert_eq!(
+                text.contains("Open a comparison result"),
+                page == Page::SavedComparison
+            );
             assert_eq!(text.contains("Audit this capture"), page == Page::Trials);
             assert_eq!(
                 text.contains("Inspect PCAP with current profile"),

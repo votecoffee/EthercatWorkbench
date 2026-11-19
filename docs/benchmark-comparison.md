@@ -39,6 +39,8 @@ Version 0.20 also retains independent [shared-memory counters](shared-input-feed
 
 ## Desktop review
 
+Add `--out .local/comparison.json` to `compare-runs` in either input mode to write a new result file while retaining JSON on stdout. Existing destinations are preserved. An invalid comparison creates no output file. The desktop can reopen this JSON in **Review → Saved comparison**. See [Open a saved comparison](desktop-review.md#open-a-saved-comparison).
+
 Use **Trial set files** to save and reopen the ordered rows and CSV-audit choice. Retain the original reports and numbered CSV parts. See [Save and reopen a trial set](desktop-review.md#save-and-reopen-a-trial-set).
 
 For a desktop comparison, let each trial finish at its configured duration. In **Logging** or **Diagnostics**, save the report and choose **Add saved capture to comparison**. A completed CSV audit offers **Add audited capture to comparison**. Review the trial order before comparing. The same comparison checks apply to the added pairs.

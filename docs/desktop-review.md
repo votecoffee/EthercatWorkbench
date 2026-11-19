@@ -38,6 +38,10 @@ Both the desktop and CLI read schema 1 UTF-8 JSON up to 2 MiB, with an optional 
 
 To run the saved comparison headlessly, use `ethercat-workbench-cli.exe compare-runs --trial-set .local/trials.json`. A comparison requires 2–32 complete report rows in capture-start order. The CLI identifies an incomplete report or CSV field by row number.
 
+## Open a saved comparison
+
+Choose **Review → Saved comparison** and enter a comparison JSON path. The view opens results written by desktop **Save new result** or `compare-runs --out FILE`. It reads schema 1 JSON up to 16 MiB and displays the saved file path and SHA-256, recorded timing and loss values, recorded CSV audit status, and trial file identifiers. Keep the JSON if someone needs the full warnings and original audit details. The view checks the result's structure and labels it as saved evidence. To check the original reports and CSV parts again, run a new comparison in **Run reports and CSV**.
+
 ## Inspect Ethernet PCAP
 
 Load or edit the intended commissioning profile in **Device** and **Mappings** first. Choose **Review → Ethernet PCAP**, enter a classic Ethernet PCAP or supported PCAPNG path, its expected configured station address (decimal or `0x` hexadecimal), and a preview limit of 0–64. The default address `0x1000` is an expectation, not a value discovered from the file. Choose **Inspect PCAP with current profile**. Invalid profile/settings are rejected before a job starts. Version 0.23 supports up to 32 PCAPNG descriptors in one section. Leave **PCAPNG interface** blank for a sole interface or enter its ID (decimal or `0x`, 0–31). Multiple descriptors require an explicit selection; an ambiguity error lists IDs, link types and packet counts. Select Ethernet. A supplied interface choice on classic PCAP fails. All interfaces must use supported microsecond/nanosecond timestamps. Additional sections, generic EtherCAT dissection and VLAN decoding remain unsupported.
@@ -62,7 +66,7 @@ The latest recorded exchange shows expected/actual WKC, nullable AL state/code a
 
 ## Worker, cancellation and export
 
-One background review worker runs at a time for report/CSV analysis, PCAP inspection or saved shared-input review. New bus, discovery and review starts are disabled while it is running; review starts and exports are disabled while a bus or discovery job is active. File analysis runs outside the UI, cyclic I/O and CSV writer threads. Status updates are polled without waiting on an unfinished worker.
+One background review worker runs at a time for report/CSV analysis, saved comparison viewing, PCAP inspection or saved shared-input review. New bus, discovery and review starts are disabled while it is running; review starts and exports are disabled while a bus or discovery job is active. File analysis runs outside the UI, cyclic I/O and CSV writer threads. Status updates are polled without waiting on an unfinished worker.
 
 **Cancel file review** requests cooperative cancellation. Checks run between report reads, CSV buffer reads, records and parts. PCAP checks run between 64 KiB file reads, packet records and 64 KiB raw-file hash chunks. Shared-input jobs check cancellation before/after effective-profile loading and the bounded snapshot read/validation/decoding. An individual blocking file-system operation, profile validation/serialization or in-progress record parse cannot be interrupted immediately. A cancellation also discards a success that finished but had not yet been published. No result can be exported while the job is running, cancelling, cancelled or failed. There is no automatic retry.
 

@@ -8,7 +8,13 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, fs::File, io::Read, path::PathBuf, sync::atomic::AtomicBool};
+use std::{
+    collections::HashSet,
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
+};
 
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -389,7 +395,7 @@ fn sync_settings(sync: &Option<crate::sync::Synchronization>) -> Result<Option<V
     Ok(settings)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Trial {
     pub file: PathBuf,
     pub sha256: String,
@@ -414,7 +420,7 @@ pub struct Trial {
     pub shared_memory: Option<crate::shared_memory::Stats>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Range {
     pub min: u64,
     pub median: f64,
@@ -436,17 +442,18 @@ fn range(mut values: Vec<u64>) -> Range {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ScheduleSummary {
     pub scheduler: Scheduler,
     pub trials: usize,
     pub send_p99_us: Range,
     pub receive_p99_us: Range,
+    #[serde(default)]
     pub valid_receive_trials: usize,
     pub valid_receive_p99_us: Option<Range>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Comparison {
     pub schema: u32,
     pub app_version: String,
@@ -462,6 +469,69 @@ pub struct Comparison {
     pub schedules: Vec<ScheduleSummary>,
     pub csv_audits: Option<Vec<crate::capture_audit::Audit>>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SavedComparison {
+    pub file: PathBuf,
+    pub sha256: String,
+    pub comparison: Comparison,
+}
+
+pub(crate) fn inspect_saved_comparison(file: &Path, stop: &AtomicBool) -> Result<SavedComparison> {
+    let bytes = read_report_bytes_with_stop(file, Some(stop))
+        .with_context(|| format!("read saved comparison {}", file.display()))?;
+    let comparison: Comparison =
+        serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
+            .context("parse saved comparison JSON")?;
+    ensure!(
+        comparison.schema == 1,
+        "unsupported comparison schema {}",
+        comparison.schema
+    );
+    ensure!(
+        (2..=32).contains(&comparison.trials.len()),
+        "saved comparison must contain 2–32 trials"
+    );
+    ensure!(
+        comparison.common_profile_settings["requested_cycle_us"]
+            .as_u64()
+            .is_some(),
+        "saved comparison needs a numeric requested cycle"
+    );
+    ensure!(
+        comparison.schedules.len() == 2,
+        "saved comparison needs both scheduler summaries"
+    );
+    for scheduler in [Scheduler::Deadline, Scheduler::Relative] {
+        let trials = comparison
+            .trials
+            .iter()
+            .filter(|trial| trial.scheduler == scheduler)
+            .count();
+        ensure!(
+            trials > 0
+                && comparison
+                    .schedules
+                    .iter()
+                    .any(|group| group.scheduler == scheduler && group.trials == trials),
+            "saved scheduler summaries do not match trial counts"
+        );
+    }
+    ensure!(
+        comparison
+            .csv_audits
+            .as_ref()
+            .is_none_or(|audits| audits.len() == comparison.trials.len()),
+        "saved CSV audit count does not match trial count"
+    );
+    let sha256 = hash(&bytes);
+    crate::review::check_cancel(Some(stop))?;
+    Ok(SavedComparison {
+        file: file.to_owned(),
+        sha256,
+        comparison,
+    })
 }
 
 pub fn compare_files(files: &[PathBuf]) -> Result<Comparison> {

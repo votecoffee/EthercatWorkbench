@@ -937,17 +937,35 @@ def verify_trial_set_comparison(cli, destination, reports, bases):
     manifest = {"schema": 1, "audit_csv": True, "trials": rows}
     set_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     before = set_path.read_bytes()
-    from_set = cli_call(cli, "compare-runs", "--trial-set", set_path)
+    result_path = destination / "exported-set-comparison.json"
+    from_set = cli_call(cli, "compare-runs", "--trial-set", set_path, "--out", result_path)
+    result_bytes = result_path.read_bytes()
+    assert json.loads(result_bytes) == from_set and result_bytes.endswith(b"\n")
     assert from_set == direct
     assert len(from_set["csv_audits"]) == 2
     assert set_path.read_bytes() == before
+    assert "already exists" in cli_call(cli, "compare-runs", "--trial-set", set_path,
+                                        "--out", result_path, success=False)
+    assert "already exists" in cli_call(cli, "compare-runs", "--trial-set", set_path,
+                                        "--out", set_path, success=False)
+    assert result_path.read_bytes() == result_bytes and set_path.read_bytes() == before
+    wrong_ext = destination / "no-export.txt"
+    assert "must end in .json" in cli_call(cli, "compare-runs", "--trial-set", set_path,
+                                            "--out", wrong_ext, success=False)
+    assert not wrong_ext.exists()
+    direct_path = destination / "exported-direct-comparison.json"
+    assert cli_call(cli, "compare-runs", *reports, "--csv", bases[0], "--csv", bases[1],
+                    "--out", direct_path) == json.loads(direct_path.read_bytes()) == from_set
     assert "cannot be used with" in cli_call(cli, "compare-runs", *reports, "--trial-set", set_path, success=False)
     assert "cannot be used with" in cli_call(cli, "compare-runs", "--trial-set", set_path, "--csv", bases[0], success=False)
 
     draft = destination / "cli-incomplete-trial-set.json"
     manifest["trials"][1]["csv"] = ""
     draft.write_text(json.dumps(manifest), encoding="utf-8")
-    assert "missing at row 2" in cli_call(cli, "compare-runs", "--trial-set", draft, success=False)
+    failed_output = destination / "failed-comparison.json"
+    assert "missing at row 2" in cli_call(cli, "compare-runs", "--trial-set", draft,
+                                           "--out", failed_output, success=False)
+    assert not failed_output.exists()
     manifest["audit_csv"] = False
     counters = destination / "cli-counter-trial-set.json"
     counters.write_text(json.dumps(manifest), encoding="utf-8-sig")

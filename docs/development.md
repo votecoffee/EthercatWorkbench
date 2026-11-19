@@ -10,6 +10,8 @@ Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supp
 
 ## Data and ownership
 
+`compare-runs --out` uses the CLI's create-new JSON export. Desktop **Saved comparison** reads and hashes the selected result on the existing cancellable review worker. `benchmark.rs` checks the saved structure and passes recorded values to the comparison display. Source evidence remains independently reviewable through a fresh comparison.
+
 `trial_set.rs` owns the shared trial-list JSON, bounded reads, relative-reference resolution and create-new saves. It prepares comparison tasks for desktop Review and `compare-runs --trial-set`. `gui_review.rs` confirms draft replacement and installs a fully parsed list and audit option together. The review task checks row completeness before opening evidence and freezes the paths it receives.
 
 `gui_capture_review.rs` retains the final worker report and the CSV base frozen at session start. It suggests a create-new report destination and sends the saved report path and original CSV base to the existing cancellable Review worker. The live display snapshot can be cleared independently of the completed run. The shortcut leaves the editable trial rows available for manual audits and comparisons.

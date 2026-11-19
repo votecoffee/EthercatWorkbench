@@ -38,7 +38,7 @@ struct SavedCapture {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Part {
     pub file: PathBuf,
     pub sha256: String,
@@ -48,7 +48,7 @@ pub struct Part {
     pub utf8_bom: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Audit {
     pub schema: u32,
     pub auditor_version: String,

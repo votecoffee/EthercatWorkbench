@@ -458,3 +458,11 @@ GUI checks used headless egui. Native GUI review and physical bench qualificatio
 Formatting, Clippy, 176 offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. A targeted CLI check on retained 0.39.0 captures and the full release regression on new captures both verified identical comparison JSON across explicit and set inputs. The checks cover relative and absolute references, auditor results, disabled audits, optional BOM, incomplete rows, argument conflicts and preserved set bytes. Logs and binary identities use the 0.40.0 prefix under ignored .local/. Package and extracted CLI checks are recorded in local delivery receipts.
 
 The comparison checks used captured synthetic evidence. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.41.0 export and reopen comparison results (2026-11-19)
+
+Both `compare-runs` input modes accept `--out NEW.json`. Existing destinations are preserved and the CLI still prints the same JSON. Desktop Review opens schema 1 comparison exports on its review worker, checks the saved structure and displays recorded metrics, audit status, and the selected result file's SHA-256.
+
+Formatting, Clippy, 176 offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. Tests reopened a comparison after its temporary source reports and CSV files were removed, then checked the recorded result and byte hash. They also rejected an unsupported schema and checked that the viewer has a separate page. CLI checks on retained 0.40.0 captures and fresh synthetic captures covered both modes, export equals stdout, preservation of existing output and input paths, invalid extensions and no export on a failed comparison. The full offline release regression passed. Logs and binary identities use the 0.41.0 prefix under ignored .local/. Package and extracted CLI checks are recorded in local delivery receipts.
+
+The viewer was checked headlessly. Native GUI review and physical bench qualification remain pending.

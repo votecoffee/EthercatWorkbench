@@ -25,6 +25,8 @@ Use headless files/CLI by default. Desktop input, screenshots or recording need 
 
 ## Desktop navigation
 
+Add `--out NEW.json` to `compare-runs` to save its JSON result. **Review → Saved comparison** opens desktop or CLI exports and identifies the saved bytes by SHA-256. Treat its values and audit status as recorded evidence. Run a fresh comparison to check the original files again.
+
 Run a completed desktop trial set headlessly with `compare-runs --trial-set FILE`. This mode uses the saved report order, CSV path references and `audit_csv` choice. Resolve incomplete rows before comparing. Use explicit report paths and optional `--csv` bases for the alternate CLI mode.
 
 Use **Review → Run reports and CSV → Trial set files** to save or reopen a schema 1 ordered trial list, including partial rows and the CSV-audit option. Save to a new JSON path. Confirm replacement of populated rows or a changed audit option. Relative references follow the set's directory. Keep reports and CSV parts available for a separate **Compare saved trials** action.

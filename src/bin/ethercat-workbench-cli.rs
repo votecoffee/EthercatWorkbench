@@ -157,6 +157,9 @@ enum Command {
         /// Use the ordered report paths and audit setting from a saved trial set.
         #[arg(long, value_name = "JSON", conflicts_with_all = ["reports", "csv"])]
         trial_set: Option<PathBuf>,
+        /// Save the comparison result to a new JSON file. JSON is also printed to stdout.
+        #[arg(long, value_name = "JSON")]
+        out: Option<PathBuf>,
     },
     /// Audit the CSV parts declared by a saved run report, without bus operations.
     VerifyCapture { report: PathBuf, csv: PathBuf },
@@ -404,21 +407,23 @@ fn main() -> Result<()> {
             reports,
             csv,
             trial_set,
+            out,
         } => {
+            shared_outputs(out.as_deref(), None)?;
             if let Some(path) = trial_set {
                 let set = TrialSet::load(&path)
                     .with_context(|| format!("load trial set {}", path.display()))?;
                 let result = comparison_task(&set.trials, set.audit_csv)
                     .execute(&AtomicBool::new(false))
                     .with_context(|| format!("compare trial set {}", path.display()))?;
-                return output(&result);
+                return inspection_export(&result, out.as_deref());
             }
             let result = if csv.is_empty() {
                 ethercat_workbench::benchmark::compare_files(&reports)?
             } else {
                 ethercat_workbench::benchmark::compare_with_captures(&reports, &csv)?
             };
-            output(&result)
+            inspection_export(&result, out.as_deref())
         }
         Command::VerifyCapture { report, csv } => {
             output(&ethercat_workbench::capture_audit::verify(&report, &csv)?)
