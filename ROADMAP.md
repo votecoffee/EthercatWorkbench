@@ -10,6 +10,9 @@ The desktop now uses the EthernetIP Workbench workflow tabs with persistent stop
 
 ## One-device bench acceptance
 
+The desktop preflight now reviews expected identity/images, requested host cycle and capture settings, and binds its acknowledgement to those effective settings plus scoped discovery. New scans/NIC refresh invalidate it. Only successful physical snapshots on the selected NIC inform the single-device topology check; virtual, failed and other-NIC observations remain separate. Headless controls and preflight are covered; this is not native or physical acceptance.
+
+
 - The CLI and desktop host check now observe installed Npcap x64 headers/file versions, local service state and recorded AdminOnly policy without probing an adapter. Missing/denied/invalid states have fixture coverage and host/export checks; the focused desktop window now collects/exports through an exclusive background job with headless lifecycle/layout coverage. Actual DLL/export compatibility, effective NIC access and driver/device qualification remain pending.
 - Record device model and revision, ESI hash, NIC and driver version, bench wiring, selected input and an independent way to vary or observe it.
 - Use read-only discovery to confirm a single SubDevice. Review and approve the ESC setup and INIT teardown scope before starting the GUI SAFEOP run.

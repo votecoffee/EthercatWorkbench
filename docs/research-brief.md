@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Snapshot: 2026-11-19. Version **0.34.0** adds the explicit desktop host-prerequisites window and background metadata/export jobs to the focused 0.33.0 workflow tabs. Its observations remain independent from capture permission and device acceptance. The previous retained 0.32.0 build (`d73e88b9a9199219f93992c923858e18023aecc8`) remains a rollback baseline. See the current [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source/binary identity. Native GUI acceptance and physical bench qualification remain open.
+Snapshot: 2026-11-19. Version **0.35.0** adds a proposed SAFEOP plan, settings-bound acknowledgement and explicitly scoped discovery to the focused desktop. The 0.34.0 host-prerequisites window remains read-only and independent from capture permission/device acceptance. The previous retained 0.32.0 build (`d73e88b9a9199219f93992c923858e18023aecc8`) remains a rollback baseline. See the current [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source/binary identity. Native GUI acceptance and physical bench qualification remain open.
 
 ## Decisions to retain
 

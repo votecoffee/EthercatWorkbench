@@ -65,7 +65,7 @@ impl App {
     }
 
     fn open_connection(&mut self) {
-        self.approved = false;
+        self.invalidate_bench_review();
         self.connect_open = true;
         self.profiles_open = false;
         self.decoder_open = false;
@@ -85,6 +85,7 @@ impl App {
     }
 
     pub(super) fn show_workspace(&mut self, ctx: &egui::Context) {
+        self.reconcile_bench_review();
         egui::TopBottomPanel::top("workspace_header").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("EtherCAT Workbench");
@@ -163,10 +164,6 @@ impl App {
             });
         });
 
-        // A profile edit elsewhere must invalidate an earlier live review before its button runs.
-        let previous_profile = self
-            .approved
-            .then(|| serde_json::to_vec(&self.profile).expect("serializable profile"));
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().id_salt(self.tab).show(ui, |ui| {
                 if self.busy() && matches!(self.tab, Tab::Device | Tab::Outputs | Tab::Logging | Tab::Mappings | Tab::Integration) {
@@ -195,11 +192,7 @@ impl App {
                             self.device_controls(ui);
                             ui.collapsing("Expected identity / manual override", |ui| self.identity_controls(ui));
                         });
-                        if !self.discovery.is_empty() {
-                            ui.collapsing("Discovered devices (last scan)", |ui| {
-                                for device in &self.discovery { device_info(ui, device); }
-                            });
-                        }
+                        self.discovery_controls(ui);
                     }
                     Tab::Inputs => self.input_page(ui),
                     Tab::Outputs => {
@@ -258,11 +251,7 @@ impl App {
                 }
             });
         });
-        if previous_profile.is_some_and(|previous| {
-            previous != serde_json::to_vec(&self.profile).expect("serializable profile")
-        }) {
-            self.approved = false;
-        }
+        self.reconcile_bench_review();
         self.dialogs(ctx);
         // Navigation must never preserve a write-capable preview across active work.
         if self.busy() {
@@ -452,18 +441,22 @@ impl App {
                 ui.set_width(680.0_f32.min(ctx.screen_rect().width() - 60.0));
                 ui.horizontal_wrapped(|ui| {
                     ui.heading("Connect / review session");
-                    if ui.button("Close").clicked() { self.connect_open = false; self.approved = false; }
+                    if ui.button("Close").clicked() { self.connect_open = false; self.invalidate_bench_review(); }
                     self.stop_control(ui);
                 });
-                ui.label(format!("{} · requested {} µs · {:?} · {} s · CSV {}", self.profile.name, self.profile.requested_cycle_us, self.profile.scheduler, self.seconds,
-                    if self.csv.trim().is_empty() { "disabled" } else { self.csv.trim() }));
+                if self.connect_page == ConnectPage::Bench {
+                    ui.add(egui::Label::new(&self.profile.name).truncate()).on_hover_text(&self.profile.name);
+                } else {
+                    ui.label(format!("{} · requested {} µs · {:?} · {} s · CSV {}", self.profile.name, self.profile.requested_cycle_us, self.profile.scheduler, self.seconds,
+                        if self.csv.trim().is_empty() { "disabled" } else { self.csv.trim() }));
+                }
                 let before = self.connect_page;
                 ui.horizontal_wrapped(|ui| {
                     ui.selectable_value(&mut self.connect_page, ConnectPage::Offline, "Offline fixtures");
                     ui.selectable_value(&mut self.connect_page, ConnectPage::Bench, "Isolated bench / SAFEOP");
                 });
-                if before != self.connect_page { self.approved = false; }
-                egui::ScrollArea::vertical().id_salt("connect_content").max_height((ctx.screen_rect().height() - 220.0).max(150.0)).show(ui, |ui| {
+                if before != self.connect_page { self.invalidate_bench_review(); }
+                egui::ScrollArea::vertical().id_salt("connect_content").max_height((ctx.screen_rect().height() - 260.0).max(120.0)).show(ui, |ui| {
                     ui.add_enabled_ui(!self.busy(), |ui| match self.connect_page {
                         ConnectPage::Offline => {
                             ui.label("Synthetic, virtual and replay sessions use no physical NIC. Configure input fields in Mappings first, or use the offline demo in Device.");
@@ -472,20 +465,24 @@ impl App {
                         ConnectPage::Bench => {
                             if ui.button("Host prerequisites…").clicked() {
                                 self.connect_open = false;
-                                self.approved = false;
+                                self.invalidate_bench_review();
                                 self.host_check.open = true;
                             }
                             ui.label("Select the identified isolated NIC. Discovery does not initialize SAFEOP. Starting live inputs performs ESC setup, SM/FMMU configuration from the current mapping, SAFEOP entry and INIT cleanup.");
                             ui.label("OP, PDO mapping downloads, enabled DC and live outputs are unavailable. Staged RxPDO bytes are not sent.");
                             self.nic_controls(ui);
-                            self.live_connection_controls(ui);
+                            self.show_bench_plan(ui);
                         }
                     });
                 });
+                if self.connect_page == ConnectPage::Bench {
+                    ui.separator();
+                    self.live_connection_controls(ui);
+                }
             });
             if response.should_close() {
                 self.connect_open = false;
-                self.approved = false;
+                self.invalidate_bench_review();
             }
         }
         self.host_check.show(
@@ -699,10 +696,15 @@ mod tests {
     fn discovery_blocks_configuration_and_duplicate_start_across_tabs() {
         let mut app = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        app.scan = Some(std::thread::spawn(move || {
-            rx.recv().unwrap();
-            Ok(vec![])
-        }));
+        app.scan = Some(DiscoveryJob {
+            origin: DiscoveryOrigin::Virtual {
+                model: "Authored lock fixture".into(),
+            },
+            worker: std::thread::spawn(move || {
+                rx.recv().unwrap();
+                Ok(vec![])
+            }),
+        });
         let ctx = egui::Context::default();
         for tab in [
             Tab::Device,
@@ -720,7 +722,7 @@ mod tests {
         app.start(Mode::Simulate { faults: false });
         assert!(app.session.is_none() && app.generation == 0);
         tx.send(()).unwrap();
-        app.scan.take().unwrap().join().unwrap().unwrap();
+        app.scan.take().unwrap().worker.join().unwrap().unwrap();
     }
 
     #[test]

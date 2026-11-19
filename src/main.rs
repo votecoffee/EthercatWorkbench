@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod gui_connection;
 mod gui_mode_pdo;
+
+use gui_connection::{DiscoveryJob, DiscoveryOrigin};
 mod gui_review;
 mod gui_runtime_check;
 mod gui_stage;
@@ -71,13 +74,15 @@ struct App {
     profile_pdo_draft: Option<Selection>,
     nics: Vec<Nic>,
     discovery: Vec<DeviceInfo>,
-    scan: Option<JoinHandle<anyhow::Result<Vec<DeviceInfo>>>>,
+    scan: Option<DiscoveryJob>,
+    discovery_origin: Option<DiscoveryOrigin>,
     csv: String,
     offline_hex: String,
     replay_path: String,
     virtual_model: ethercat_workbench::virtual_esc::VirtualModel,
     seconds: u64,
     approved: bool,
+    approved_settings: Option<Vec<u8>>,
     generation: u64,
     session: Option<Session>,
     last: Option<Snapshot>,
@@ -112,6 +117,7 @@ impl App {
             nics: Vec::new(),
             discovery: Vec::new(),
             scan: None,
+            discovery_origin: None,
             csv: args
                 .csv
                 .map(|p| p.to_string_lossy().into_owned())
@@ -121,6 +127,7 @@ impl App {
             virtual_model: ethercat_workbench::virtual_esc::VirtualModel::Coe,
             seconds: args.simulate_seconds.unwrap_or(10),
             approved: false,
+            approved_settings: None,
             generation: 0,
             session: None,
             last: None,
@@ -155,7 +162,7 @@ impl App {
                 self.profile_pdo_draft = None;
                 self.stage = gui_stage::Panel::default();
                 self.mode_pdos = gui_mode_pdo::Panel::default();
-                self.approved = false;
+                self.invalidate_bench_review();
                 self.last = None;
                 self.message = "Profile loaded".into();
             }
@@ -169,7 +176,7 @@ impl App {
                 "Wait for or stop the active session, discovery, saved-file review or host check before starting".into();
             return;
         }
-        self.approved = false;
+        self.invalidate_bench_review();
         self.generation += 1;
         let stop = Arc::new(AtomicBool::new(false));
         let view = Arc::new(Mutex::new(Snapshot::default()));
@@ -199,12 +206,18 @@ impl App {
         if self
             .scan
             .as_ref()
-            .is_some_and(|worker| worker.is_finished())
+            .is_some_and(|job| job.worker.is_finished())
         {
-            match self.scan.take().expect("finished scan").join() {
+            let job = self.scan.take().expect("finished scan");
+            self.invalidate_bench_review();
+            match job.worker.join() {
                 Ok(Ok(devices)) => {
                     self.discovery = devices;
-                    self.message = "Discovery complete. ESC diagnostics are snapshots; device identity requires approved SII access.".into();
+                    let scope = job.origin.label();
+                    self.discovery_origin = Some(job.origin);
+                    self.message = format!(
+                        "Discovery complete · {scope}. Snapshot only; virtual evidence does not qualify a physical bench."
+                    );
                 }
                 Ok(Err(error)) => self.message = format!("{error:#}"),
                 Err(_) => self.message = "Read-only scan worker failed".into(),
@@ -339,7 +352,7 @@ impl App {
                 match device.apply_selection(&mut self.profile, draft.clone()) {
                     Ok(()) => {
                         self.profile_pdo_draft = None;
-                        self.approved = false;
+                        self.invalidate_bench_review();
                         self.last = None;
                         self.message.clear();
                     }
@@ -401,7 +414,7 @@ impl App {
                     {
                         match pdo_catalog::apply(&mut self.profile, draft.clone()) {
                             Ok(()) => {
-                                self.approved = false;
+                                self.invalidate_bench_review();
                                 self.last = None;
                                 self.message.clear();
                             }
@@ -482,7 +495,7 @@ impl App {
         if self.mode_pdos.draw(ui, &mut self.profile, blocked) {
             self.profile_pdo_draft = None;
             self.stage = gui_stage::Panel::default();
-            self.approved = false;
+            self.invalidate_bench_review();
             self.last = None;
             self.message =
                 "Mode PDO candidate applied offline. Save new to retain the profile.".into();
@@ -591,6 +604,7 @@ impl App {
     fn nic_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if ui.button("Refresh NICs").clicked() {
+                self.invalidate_bench_review();
                 match live::nics() {
                     Ok(nics) => {
                         self.nics = nics;
@@ -602,6 +616,7 @@ impl App {
                     }
                 }
             }
+            let mut nic_changed = false;
             egui::ComboBox::from_id_salt("nic")
                 .width(420.0)
                 .truncate()
@@ -617,11 +632,15 @@ impl App {
                             .selectable_value(&mut self.profile.nic, nic.id.clone(), label)
                             .changed()
                         {
-                            self.discovery.clear();
-                            self.approved = false;
+                            nic_changed = true;
                         }
                     }
                 });
+            if nic_changed {
+                self.discovery.clear();
+                self.discovery_origin = None;
+                self.invalidate_bench_review();
+            }
             if ui
                 .add_enabled(
                     !self.profile.nic.is_empty() && self.scan.is_none(),
@@ -630,13 +649,11 @@ impl App {
                 .clicked()
             {
                 let nic = self.profile.nic.clone();
-                self.discovery.clear();
-                self.scan = Some(std::thread::spawn(move || live::scan(&nic)));
+                self.begin_discovery(DiscoveryOrigin::Physical { nic: nic.clone() }, move || {
+                    live::scan(&nic)
+                });
             }
         });
-        for device in &self.discovery {
-            device_info(ui, device);
-        }
     }
 
     fn timing_controls(&mut self, ui: &mut egui::Ui) {
@@ -726,15 +743,21 @@ impl App {
             .clicked()
         {
             let model = self.virtual_model;
-            self.discovery.clear();
-            self.scan = Some(std::thread::spawn(move || {
-                let report =
-                    live::scan_virtual(model, ethercat_workbench::virtual_esc::ScanCase::Normal);
-                if let Some(error) = report.error {
-                    anyhow::bail!("{error}");
-                }
-                Ok(report.devices)
-            }));
+            self.begin_discovery(
+                DiscoveryOrigin::Virtual {
+                    model: format!("{model:?}"),
+                },
+                move || {
+                    let report = live::scan_virtual(
+                        model,
+                        ethercat_workbench::virtual_esc::ScanCase::Normal,
+                    );
+                    if let Some(error) = report.error {
+                        anyhow::bail!("{error}");
+                    }
+                    Ok(report.devices)
+                },
+            );
         }
         if ui.button("Start virtual EtherCAT controller").clicked() {
             self.start(Mode::Virtual {
@@ -761,25 +784,6 @@ impl App {
                 });
             }
         });
-    }
-
-    fn live_connection_controls(&mut self, ui: &mut egui::Ui) {
-        ui.checkbox(
-            &mut self.approved,
-            "Approved: isolated one-device bench, ESC setup writes, SAFEOP and INIT on stop",
-        );
-        if ui
-            .add_enabled(
-                self.approved && !self.profile.nic.is_empty() && self.scan.is_none(),
-                egui::Button::new("Start live SAFEOP inputs"),
-            )
-            .clicked()
-        {
-            match BenchApproval::confirm(self.approved) {
-                Ok(approved) => self.start(Mode::SafeOp { approved }),
-                Err(error) => self.message = format!("{error:#}"),
-            }
-        }
     }
 }
 

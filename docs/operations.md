@@ -12,6 +12,14 @@ In **Device**, choose **Host prerequisites…**, then explicitly **Check host me
 
 Use `check-runtime`, optionally with `--out NEW.json`, to inspect Npcap host files, service state and recorded access policy. It reads Windows metadata without opening an adapter or invoking Npcap exports. A successful collection or `present_unprobed` status is not a capture-permission or device test. The [host-check guide](runtime-check.md) explains missing/unavailable values, literal file versions, export behavior and the remaining commissioning steps.
 
+## Review a proposed SAFEOP session
+
+**Connect… → Isolated bench / SAFEOP** shows configured identity/PDO sizes, requested host cycle/duration and CSV settings. These are expectations, not device readback. Raw RxPDO staging and ESI timing hints stay offline; device synchronization readback is collected during approved setup and runtime DC/SYNC remains disabled. The acknowledgement/start controls stay below the scrolling details.
+
+A valid profile, selected NIC and exact expected identity are required before acknowledging. A successful read-only scan reporting zero or multiple devices on that same NIC blocks the one-device preflight until corrected/rescanned. A scan is optional; neither absence of a scan nor a single historical result proves current compatibility. Physical, virtual and other-NIC results have separate labels. A failed scan is not a successful zero-device observation. A scan worker retains the NIC/model chosen when it started.
+
+Acknowledgement binds the full effective profile, run duration, normalized CSV destination and discovery scope/data. Changing those settings, refreshing NICs, starting/completing a new scan, closing/reopening review or changing its source clears it. Profile save paths and offline decoder text do not change the run plan. Native setup independently validates actual device count, identity, PDO and AL evidence; this UI preflight does not replace authorization or device qualification.
+
 ## Choose the evidence and target
 
 Use `samples/synthetic.json` for generated inputs, the matching `samples/virtual*.json` for the selected in-memory ESC model, and `samples/synthetic-replay.json` for authored raw-frame replay. They provide no physical device evidence. Put vendor ESI files, selected-NIC profiles, raw captures and receipts in ignored `.local/`.
