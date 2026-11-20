@@ -1,6 +1,6 @@
 //! Authored EtherCAT ESCs and in-memory transport for discovery and process data.
 use crate::model::Identity;
-use crate::wire::{APRD, BRD, LWR};
+use crate::wire::{APRD, BRD, FRMW, LWR};
 use anyhow::{Context, Result, bail, ensure};
 use clap::ValueEnum;
 use serde::Serialize;
@@ -18,7 +18,7 @@ pub(crate) const DC_START: u16 = 0x0990;
 pub(crate) const DC_SYNC0_CYCLE: u16 = 0x09a0;
 pub(crate) const DC_SYNC1_DELAY: u16 = 0x09a4;
 const VIRTUAL_DC_STARTING_TIME: u64 = 1_000_000_000;
-const FRMW: u8 = 0x0e;
+pub(crate) const DC_TIME_DIFFERENCE: u16 = 0x092c;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -158,6 +158,7 @@ struct Upload {
 
 pub(crate) const GROUP_STATIONS: [u16; 2] = [0x1000, 0x1001];
 pub(crate) const GROUP_MODELS: [VirtualModel; 2] = [VirtualModel::Coe, VirtualModel::Sii];
+pub(crate) const GROUP_DC_MODELS: [VirtualModel; 2] = [VirtualModel::CoeDc; 2];
 pub(crate) const GROUP_TX_BYTES: usize = 8;
 pub(crate) const GROUP_RX_BYTES: usize = 2;
 
@@ -242,6 +243,23 @@ pub struct DcProgramWrite {
     register: u16,
     payload: Vec<u8>,
     wkc: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroupClockCase {
+    #[default]
+    Normal,
+    FollowerWkc,
+    FollowerStale,
+    FollowerOffset,
+    DifferenceReadWkc,
+    ReferenceRegression,
+}
+
+struct GroupClock {
+    reference: bool,
+    case: GroupClockCase,
 }
 
 struct DcRehearsal {
@@ -332,19 +350,38 @@ impl VirtualWire {
     }
 
     pub(crate) fn for_group_replay() -> Self {
-        let mut wire = Self::single(VirtualEsc::for_scan(GROUP_MODELS[0], ScanCase::Normal));
-        wire.devices
-            .push(VirtualEsc::for_scan(GROUP_MODELS[1], ScanCase::Normal));
+        Self::with_group_layout(GROUP_MODELS)
+    }
+
+    pub(crate) fn for_group_dc(case: GroupClockCase, period_ns: u32) -> Self {
+        let mut wire = Self::with_group_layout(GROUP_DC_MODELS);
         for (index, esc) in wire.devices.iter_mut().enumerate() {
-            // Seed the authored SAFEOP layout directly. All wire datagrams are reads.
+            esc.group_clock = Some(GroupClock {
+                reference: index == 0,
+                case,
+            });
+            esc.registers[usize::from(DC_ACTIVATION)] = 3;
+            let cycle = usize::from(DC_SYNC0_CYCLE);
+            esc.registers[cycle..cycle + 4].copy_from_slice(&period_ns.to_le_bytes());
+            let time = usize::from(DC_TIME);
+            esc.registers[time..time + 8].copy_from_slice(&VIRTUAL_DC_STARTING_TIME.to_le_bytes());
+        }
+        wire
+    }
+
+    fn with_group_layout(models: [VirtualModel; 2]) -> Self {
+        let mut wire = Self::single(VirtualEsc::for_scan(models[0], ScanCase::Normal));
+        wire.devices
+            .push(VirtualEsc::for_scan(models[1], ScanCase::Normal));
+        for (index, esc) in wire.devices.iter_mut().enumerate() {
+            // Seed the authored SAFEOP layout without register-write datagrams.
             let input_start = (index * GROUP_TX_BYTES) as u32;
-            let output_start =
-                (GROUP_MODELS.len() * GROUP_TX_BYTES + GROUP_RX_BYTES * index) as u32;
+            let output_start = (models.len() * GROUP_TX_BYTES + GROUP_RX_BYTES * index) as u32;
             esc.logical_starts = (input_start, output_start);
             esc.registers[0x0010..0x0012].copy_from_slice(&GROUP_STATIONS[index].to_le_bytes());
             esc.registers[0x0130] = 4;
             esc.logical_counter_offset = index as u16;
-            let (input_sm, output_sm, input_fmmu, output_fmmu) = if index == 0 {
+            let (input_sm, output_sm, input_fmmu, output_fmmu) = if esc.model.has_coe() {
                 (3, 2, 0, 1)
             } else {
                 (1, 0, 1, 0)
@@ -474,6 +511,7 @@ pub(crate) struct VirtualEsc {
     logical_counter_offset: u16,
     output_rehearsal: Option<OutputRehearsal>,
     dc_rehearsal: Option<DcRehearsal>,
+    group_clock: Option<GroupClock>,
     clock_started: Instant,
     transport_lost: bool,
     upload: Option<Upload>,
@@ -513,6 +551,7 @@ impl VirtualEsc {
             logical_counter_offset: 0,
             output_rehearsal: None,
             dc_rehearsal: None,
+            group_clock: None,
             clock_started: Instant::now(),
             transport_lost: false,
             upload: None,
@@ -588,14 +627,17 @@ impl VirtualEsc {
                 FRMW => {
                     self.stats.dc_clock_distribution += 1;
                     ensure!(
-                        self.dc_rehearsal.is_some(),
+                        self.dc_rehearsal.is_some() || self.group_clock.is_some(),
                         "virtual fixture rejects cyclic DC clock distribution"
                     );
+                    let reference = if self.group_clock.is_some() {
+                        GROUP_STATIONS[0]
+                    } else {
+                        word(&self.registers[0x0010..])
+                    };
                     ensure!(
-                        station == word(&self.registers[0x0010..])
-                            && register == DC_TIME
-                            && len == 8,
-                        "virtual DC rehearsal expects one designated reference-clock read"
+                        station == reference && register == DC_TIME && len == 8,
+                        "virtual DC rehearsal expects the designated reference-clock address"
                     );
                     true
                 }
@@ -626,7 +668,14 @@ impl VirtualEsc {
                             && self.output_rehearsal.as_ref().is_some_and(|output| {
                                 output.case == OutputRehearsalCase::WatchdogUnavailable
                             });
-                        u16::from(!(dc_unavailable || watchdog_unavailable))
+                        let difference_unavailable = register == DC_TIME_DIFFERENCE
+                            && self.stats.dc_clock_distribution == 2
+                            && self.group_clock.as_ref().is_some_and(|clock| {
+                                !clock.reference && clock.case == GroupClockCase::DifferenceReadWkc
+                            });
+                        u16::from(
+                            !(dc_unavailable || watchdog_unavailable || difference_unavailable),
+                        )
                     }
                     0x05 if self.dc_rehearsal.is_some()
                         && matches!(
@@ -644,6 +693,7 @@ impl VirtualEsc {
                         let address = u32::from(station) | (u32::from(register) << 16);
                         self.logical_read(address, data)?
                     }
+                    FRMW if self.group_clock.is_some() => self.distribute_group_clock(data)?,
                     FRMW => self.reference_clock(data)?,
                     LWR => {
                         let address = u32::from(station) | (u32::from(register) << 16);
@@ -786,6 +836,48 @@ impl VirtualEsc {
             wkc,
         });
         Ok(wkc)
+    }
+
+    fn distribute_group_clock(&mut self, data: &mut [u8]) -> Result<u16> {
+        ensure!(
+            word(&self.registers[0x0130..]) == 4 && self.registers[usize::from(DC_ACTIVATION)] == 3,
+            "group clock fixture requires SYNC0 in SAFEOP"
+        );
+        let clock = self.group_clock.as_ref().expect("group clock configured");
+        let cycle = self.stats.dc_clock_distribution;
+        let time = usize::from(DC_TIME);
+        if clock.reference {
+            let period = u64::from(dword(&self.registers[usize::from(DC_SYNC0_CYCLE)..]));
+            let timestamp = if cycle == 2 && clock.case == GroupClockCase::ReferenceRegression {
+                VIRTUAL_DC_STARTING_TIME + period - 1
+            } else {
+                VIRTUAL_DC_STARTING_TIME + period * cycle
+            };
+            self.registers[time..time + 8].copy_from_slice(&timestamp.to_le_bytes());
+            data.copy_from_slice(&timestamp.to_le_bytes());
+        } else {
+            if cycle == 2 {
+                match clock.case {
+                    GroupClockCase::FollowerWkc => return Ok(0),
+                    GroupClockCase::FollowerStale => return Ok(1),
+                    _ => {}
+                }
+            }
+            // The follower's local reading and filter result are authored responses.
+            let difference_ns: i32 = if cycle == 2 && clock.case == GroupClockCase::FollowerOffset {
+                2_500
+            } else {
+                -250
+            };
+            let reference = u64::from_le_bytes(data.try_into().expect("eight-byte FRMW payload"));
+            let timestamp = reference.saturating_add_signed(-i64::from(difference_ns));
+            self.registers[time..time + 8].copy_from_slice(&timestamp.to_le_bytes());
+            let encoded =
+                difference_ns.unsigned_abs() | if difference_ns < 0 { 1 << 31 } else { 0 };
+            let register = usize::from(DC_TIME_DIFFERENCE);
+            self.registers[register..register + 4].copy_from_slice(&encoded.to_le_bytes());
+        }
+        Ok(1)
     }
 
     fn reference_clock(&mut self, data: &mut [u8]) -> Result<u16> {

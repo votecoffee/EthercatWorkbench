@@ -1,6 +1,7 @@
 //! Offline planning and decoding for a byte-aligned, input-only logical read.
 pub mod audit;
 pub mod bundle;
+pub mod clock_rehearsal;
 pub(crate) mod fmmu;
 mod pdo_readback;
 pub mod preflight;

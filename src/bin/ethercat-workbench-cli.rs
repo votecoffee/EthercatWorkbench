@@ -81,6 +81,23 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Rehearse clock distribution and qualify sampled inputs on two virtual DC stations.
+    RehearseGroupDc {
+        manifest: PathBuf,
+        /// Modeled SYNC0 period in nanoseconds.
+        #[arg(long, default_value_t = 1_000_000)]
+        period_ns: u32,
+        /// Maximum absolute filtered follower time difference in nanoseconds.
+        #[arg(long, default_value_t = 500)]
+        difference_limit_ns: u32,
+        #[arg(long, default_value_t = 4)]
+        cycles: u32,
+        #[arg(long, value_enum, default_value = "normal")]
+        scenario: ethercat_workbench::input_group::clock_rehearsal::GroupClockCase,
+        /// Save the clock and input evidence to a new JSON file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Generate deterministic replies from the authored two-device virtual wire.
     GenerateGroupReplay {
         manifest: PathBuf,
@@ -579,6 +596,28 @@ fn main() -> Result<()> {
             shared_outputs(out.as_deref(), None)?;
             let group = InputGroup::load(&manifest)?;
             let report = preflight::inspect_virtual(&group, scenario)?;
+            inspection_export(&report, out.as_deref())
+        }
+        Command::RehearseGroupDc {
+            manifest,
+            period_ns,
+            difference_limit_ns,
+            cycles,
+            scenario,
+            out,
+        } => {
+            use ethercat_workbench::input_group::{InputGroup, clock_rehearsal};
+            shared_outputs(out.as_deref(), None)?;
+            let group = InputGroup::load(&manifest)?;
+            let report = clock_rehearsal::run(
+                &group,
+                clock_rehearsal::Options {
+                    period_ns,
+                    difference_limit_ns,
+                    cycles,
+                    scenario,
+                },
+            )?;
             inspection_export(&report, out.as_deref())
         }
         Command::GenerateGroupReplay {

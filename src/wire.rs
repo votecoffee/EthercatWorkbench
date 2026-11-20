@@ -4,6 +4,7 @@ pub(crate) const FPWR: u8 = 0x05;
 pub const BRD: u8 = 0x07;
 pub const LRD: u8 = 0x0a;
 pub(crate) const LWR: u8 = 0x0b;
+pub(crate) const FRMW: u8 = 0x0e;
 
 const SOURCE: [u8; 6] = [0x10, 0x45, 0x43, 0x57, 0x42, 0x31];
 pub const CUSTOM_REPLY: [u8; 6] = [0x12, 0x45, 0x43, 0x57, 0x42, 0x31];
@@ -90,7 +91,7 @@ impl<const N: usize> Frame<N> {
             if bytes[offset..offset + 2] != self.bytes[offset..offset + 2]
                 || bytes[offset + 4..offset + 7] != self.bytes[offset + 4..offset + 7]
                 || bytes[offset + 7] & 0x87 != self.bytes[offset + 7]
-                || (matches!(part.command, FPRD | FPWR | LRD | LWR)
+                || (matches!(part.command, FPRD | FPWR | LRD | LWR | FRMW)
                     && bytes[offset + 2..offset + 4] != self.bytes[offset + 2..offset + 4])
             {
                 return None;
@@ -107,6 +108,10 @@ impl<const N: usize> Frame<N> {
 }
 
 impl Frame<1> {
+    pub(crate) fn clock_request(seq: u8, station: u16, register: u16) -> Self {
+        Self::encode(seq, [Datagram::register(FRMW, station, register, 8)], 1)
+    }
+
     pub(crate) fn write(seq: u8, command: u8, adp: u16, ado: u16, payload: &[u8; 2]) -> Self {
         assert!(matches!(command, FPWR | LWR));
         let mut frame = Self::encode(

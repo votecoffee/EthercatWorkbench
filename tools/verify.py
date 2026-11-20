@@ -2095,6 +2095,97 @@ def verify_input_group_pdo(cli, destination):
     assert "--sync-managers" in cli_call(cli, "inspect-input-group", manifest, "--pdo", sample, success=False)
 
 
+def verify_group_dc(cli, destination):
+    manifest = ROOT / "samples/input-group-dc.json"
+    period = 700_000
+
+    def rehearse(*args, plan=manifest, success=True):
+        return cli_call(cli, "rehearse-group-dc", plan, *args, success=success)
+
+    def audit(report, logical_reads):
+        assert len(report["wire_audit"]) == 2
+        for esc in report["wire_audit"]:
+            assert esc["model"] == "coe_dc"
+            assert esc["dc_clock_distribution"] == len(report["cycles"])
+            assert esc["logical_reads"] == logical_reads
+            assert esc["final_al_status"] == 4 and esc["final_al_code"] == 0
+            assert not esc["state_requests"] and not esc.get("dc_program_writes")
+            for key in ("register_writes", "op_requests", "logical_writes", "physical_output_writes",
+                        "sync_manager_writes", "fmmu_writes", "coe_downloads"):
+                assert esc[key] == 0, key
+
+    out = destination / "normal.json"
+    normal = rehearse("--period-ns", period, "--out", out)
+    assert json.loads(out.read_bytes()) == normal
+    assert normal["schema"] == 1 and normal["source"] == "virtual_group_dc_rehearsal"
+    assert normal["configured_sync0"] == [
+        {"station": station, "activation": 3, "period_ns": period}
+        for station in (4096, 4097)
+    ]
+    assert normal["plan"]["fmmu"]["valid"] and normal["plan"]["sync_managers"]["valid"]
+    assert normal["period_ns"] == period and normal["difference_limit_ns"] == 500
+    assert normal["scenario"] == "normal"
+    assert normal["clock_rejections"] == 0 and normal["valid_input_cycles"] == 4
+    for i, cycle in enumerate(normal["cycles"], 1):
+        assert cycle["cycle_index"] == i
+        clock = cycle["clock"]
+        ref = 1_000_000_000 + i * period
+        assert clock["valid"] and not clock["issues"]
+        assert clock["frmw_payload_ns"] == ref
+        assert clock["expected_distribution_wkc"] == clock["actual_distribution_wkc"] == 2
+        assert clock["reference"] == {"station": 4096, "wkc": 1, "time_ns": ref}
+        assert clock["follower"] == {"station": 4097, "wkc": 1, "time_ns": ref + 250}
+        assert clock["difference"] == {"wkc": 1, "raw": 0x800000FA, "received_minus_local_ns": -250}
+        assert clock["raw_follower_minus_reference_ns"] == 250
+        assert cycle["input"]["frame"]["valid"] and cycle["input"]["actual_wkc"] == 2
+        assert [d["input"]["raw_hex"][:4] for d in cycle["input"]["devices"]] == ["0000", "0100"]
+    audit(normal, 4)
+    before = out.read_bytes()
+    assert "exists" in rehearse("--out", out, success=False).lower()
+    assert out.read_bytes() == before
+
+    for scenario, issues in (
+        ("follower-wkc", ["distribution_wkc", "follower_time_not_new"]),
+        ("follower-stale", ["follower_time_not_new"]),
+        ("follower-offset", ["difference_outside_limit"]),
+        ("difference-read-wkc", ["difference_wkc"]),
+        ("reference-regression", ["reference_time_not_new", "follower_time_not_new"]),
+    ):
+        report = rehearse("--period-ns", period, "--scenario", scenario,
+                          "--out", destination / f"{scenario}.json")
+        assert report["scenario"] == scenario
+        assert report["clock_rejections"] == 1 and report["valid_input_cycles"] == 3
+        assert [c["clock"]["valid"] for c in report["cycles"]] == [True, False, True, True]
+        assert [c["input"] is not None for c in report["cycles"]] == [True, False, True, True]
+        clock = report["cycles"][1]["clock"]
+        assert clock["issues"] == issues
+        assert clock["actual_distribution_wkc"] == (1 if scenario == "follower-wkc" else 2)
+        if scenario in ("follower-wkc", "follower-stale"):
+            assert clock["follower"] == report["cycles"][0]["clock"]["follower"]
+            assert clock["difference"]["received_minus_local_ns"] == -250
+        if scenario == "follower-offset":
+            assert clock["difference"] == {"wkc": 1, "raw": 2500, "received_minus_local_ns": 2500}
+            assert clock["raw_follower_minus_reference_ns"] == -2500
+        if scenario == "difference-read-wkc":
+            assert clock["difference"] == {"wkc": 0, "raw": None, "received_minus_local_ns": None}
+        if scenario == "reference-regression":
+            assert clock["frmw_payload_ns"] == report["cycles"][0]["clock"]["frmw_payload_ns"] - 1
+        audit(report, 3)
+
+    strict = rehearse("--difference-limit-ns", 249)
+    assert strict["clock_rejections"] == 4 and strict["valid_input_cycles"] == 0
+    assert all(c["clock"]["issues"] == ["difference_outside_limit"] and c["input"] is None
+               for c in strict["cycles"])
+    audit(strict, 0)
+    assert rehearse("--difference-limit-ns", 250, "--cycles", 64)["valid_input_cycles"] == 64
+    assert rehearse("--difference-limit-ns", 2500, "--scenario", "follower-offset")["valid_input_cycles"] == 4
+    invalid = destination / "invalid.json"
+    assert "positive" in rehearse("--period-ns", 0, "--out", invalid, success=False)
+    assert "64 cycles" in rehearse("--cycles", 65, "--out", invalid, success=False)
+    assert "two authored CoE/DC" in rehearse("--out", invalid, plan=ROOT / "samples/input-group.json", success=False)
+    assert not invalid.exists()
+
+
 def verify_input_group_replay(cli, destination):
     manifest = ROOT / "samples/input-group.json"
     fixture = ROOT / "samples/input-group-replay.json"
@@ -3714,6 +3805,9 @@ def main():
     virtual_group_mapping_destination = destination / "input-group-virtual-mapping"
     virtual_group_mapping_destination.mkdir()
     verify_virtual_group_mapping(cli, virtual_group_mapping_destination)
+    group_dc_destination = destination / "input-group-dc"
+    group_dc_destination.mkdir()
+    verify_group_dc(cli, group_dc_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

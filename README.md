@@ -93,6 +93,8 @@ For a read-only two-device example, run `ethercat-workbench-cli.exe scan-virtual
 
 Run `ethercat-workbench-cli.exe inspect-input-group samples/input-group.json` to review byte ranges and expected Working Counter for a two-device input read. Saved evidence options check AL status, FMMU coverage, physical SyncManager buffers and TxPDO assignment order before decoding. [Offline input groups](docs/input-group.md)
 
+Run `ethercat-workbench-cli.exe rehearse-group-dc samples/input-group-dc.json` to check reference-clock distribution and follower readback on two virtual DC stations. The rehearsal collects grouped inputs only when the clock checks pass. [Two-station DC rehearsal](docs/input-group.md#rehearse-two-distributed-clocks)
+
 Use `inspect-virtual-group-mapping` to check register readback from the two virtual SubDevices before replay. Use `generate-group-replay` to exercise the pair with clean replies or injected faults. Use `replay-input-group` to write valid grouped inputs to CSV with the fixture's receive timestamps. Run `verify-group-replay` to check values against the saved frame sequence, or `bundle-group-replay` to export evidence for rechecking after relocation. [Grouped CSV replay](docs/input-group.md#replay-group-cycles-to-csv)
 
 ```powershell

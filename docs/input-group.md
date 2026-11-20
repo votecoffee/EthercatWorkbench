@@ -67,6 +67,19 @@ The default `clean` scenario passes. `logical-shift` moves the second device's i
 
 The nested `fmmu_snapshot` and `sync_manager_snapshot` objects use the same schema as the saved snapshot files. Save each object to its own JSON file to use it with `inspect-input-group` or replay. Their `source_sha256` values in the preflight report identify the compact JSON object bytes. A separately saved file may have different formatting and a different hash. Review of actual TxPDO descriptors still uses separate `--pdo` evidence.
 
+## Rehearse two distributed clocks
+
+```powershell
+.\ethercat-workbench-cli.exe rehearse-group-dc samples/input-group-dc.json --period-ns 700000 --difference-limit-ns 500 --out .local/group-dc.json
+.\ethercat-workbench-cli.exe rehearse-group-dc samples/input-group-dc.json --scenario follower-stale
+```
+
+The sample uses two authored CoE/DC SubDevices at `0x1000` and `0x1001`. The rehearsal checks their FMMUs and SyncManagers, then reads the seeded SYNC0 activation and period from both stations. Each cycle sends an eight-byte FRMW to `0x0910`. The reference supplies the timestamp and the follower consumes it. The expected aggregate WKC is 2. A subsequent FPRD frame reads each station's system time and the follower's filtered system time difference at `0x092C`. The separate frame allows for the ESC's end-of-frame difference update. [Beckhoff ESC technology reference, sections 2.4 and 9.1.3.3](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf) · [Beckhoff ESC register reference, section 2.49.2](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec2_registers_3i0.pdf)
+
+A cycle needs FRMW WKC 2, WKC 1 for each fixed-address read, a reference readback matching the FRMW payload, both clocks increasing from the last accepted observation, and an absolute filtered difference at or below `--difference-limit-ns`. The register stores received time minus follower local time as sign and magnitude. The report also shows raw follower time minus raw reference time separately. The raw subtraction does not set the acceptance limit. After clock acceptance, the grouped LRD still needs its expected WKC and both stations in clean SAFEOP before exposing inputs.
+
+`follower-wkc`, `follower-stale`, `follower-offset`, `difference-read-wkc` and `reference-regression` inject a fault on cycle two. Diagnostic runs still return a report. Check `clock_rejections`, `valid_input_cycles` and each cycle's `clock.issues`. A clock failure leaves `input` null and skips the LRD. Set `--cycles` from 1 to 64. The default 1,000,000 ns SYNC0 period advances authored time without pacing the host. The virtual wire audit records FRMW distribution separately from configuration, state requests and PDO writes. Physical DC initialization, propagation compensation, phase convergence and measured frame intervals require bench evidence.
+
 ## Generate a two-device replay
 
 ```powershell

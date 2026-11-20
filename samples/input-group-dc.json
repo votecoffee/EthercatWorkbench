@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "devices": [
+    {
+      "position": 0,
+      "profile": "virtual-dc.json",
+      "identity": { "vendor": 16715776, "product": 3, "revision": 1 }
+    },
+    {
+      "position": 1,
+      "profile": "virtual-dc.json",
+      "identity": { "vendor": 16715776, "product": 3, "revision": 1 }
+    }
+  ]
+}

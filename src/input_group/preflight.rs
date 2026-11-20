@@ -3,7 +3,8 @@ use super::{InputGroup, Inspection, MappingReview, fmmu, fmmu::Read, sync_manage
 pub use crate::virtual_esc::GroupMappingScenario;
 use crate::{
     virtual_esc::{
-        GROUP_MODELS, GROUP_RX_BYTES, GROUP_STATIONS, GROUP_TX_BYTES, VirtualStats, VirtualWire,
+        GROUP_MODELS, GROUP_RX_BYTES, GROUP_STATIONS, GROUP_TX_BYTES, VirtualModel, VirtualStats,
+        VirtualWire,
     },
     wire::{Datagram, FPRD, Frame},
 };
@@ -46,28 +47,32 @@ pub fn inspect_virtual(group: &InputGroup, scenario: GroupMappingScenario) -> Re
 
 pub(super) fn validate_virtual_group(group: &InputGroup) -> Result<()> {
     ensure!(
-        group.bindings.len() == GROUP_MODELS.len()
-            && group
-                .bindings
-                .iter()
-                .zip(GROUP_MODELS)
-                .all(|(binding, model)| {
-                    binding.entry.identity == model.identity()
-                        && binding.profile.tx_bytes == GROUP_TX_BYTES
-                        && binding.profile.rx_bytes == GROUP_RX_BYTES
-                }),
+        matches_fixture(group, GROUP_MODELS),
         "virtual group requires the authored CoE and SII identities in order with 8 TxPDO and 2 RxPDO bytes each"
     );
     Ok(())
 }
 
-pub(super) fn require_valid_mapping(group: &InputGroup, wire: &mut VirtualWire) -> Result<()> {
+pub(super) fn matches_fixture(group: &InputGroup, models: [VirtualModel; 2]) -> bool {
+    group.bindings.len() == models.len()
+        && group.bindings.iter().zip(models).all(|(binding, model)| {
+            binding.entry.identity == model.identity()
+                && binding.profile.tx_bytes == GROUP_TX_BYTES
+                && binding.profile.rx_bytes == GROUP_RX_BYTES
+        })
+}
+
+pub(super) fn require_valid_mapping(
+    group: &InputGroup,
+    wire: &mut VirtualWire,
+) -> Result<MappingReview> {
     let (fmmu, sync_manager) = capture_registers(wire)?;
+    let mapping = review(group, fmmu, sync_manager)?;
     ensure!(
-        review(group, fmmu, sync_manager)?.valid(),
+        mapping.valid(),
         "virtual group FMMU or SyncManager preflight failed before cyclic reads"
     );
-    Ok(())
+    Ok(mapping)
 }
 
 fn review(
@@ -189,7 +194,9 @@ mod tests {
         let mut wire = VirtualWire::for_group_replay();
         wire.apply_group_mapping_scenario(GroupMappingScenario::LogicalShift);
 
-        let error = require_valid_mapping(&group, &mut wire).unwrap_err();
+        let Err(error) = require_valid_mapping(&group, &mut wire) else {
+            panic!("shifted slot passed the preflight");
+        };
         assert!(
             error
                 .to_string()
