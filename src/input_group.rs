@@ -26,7 +26,7 @@ const MAX_DEVICES: usize = 16;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_PROFILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_FRAME_FILE_BYTES: u64 = 16 * 1024;
-const MAX_DATAGRAMS: usize = MAX_DEVICES + 1;
+const MAX_DATAGRAMS: usize = 2 * (MAX_DEVICES + 1);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -357,12 +357,32 @@ impl InputGroup {
         index: u8,
         stations: &[u16],
     ) -> Result<Frame<MAX_DATAGRAMS>> {
+        self.cyclic_frame(index, stations, false)
+    }
+
+    fn cyclic_frame(
+        &self,
+        index: u8,
+        stations: &[u16],
+        monitor_topology: bool,
+    ) -> Result<Frame<MAX_DATAGRAMS>> {
         validate_stations(stations, self.bindings.len())?;
         let mut parts = [Datagram::register(LRD, 0, 0, self.input_bytes); MAX_DATAGRAMS];
         for (position, &station) in stations.iter().enumerate() {
             parts[position + 1] = Datagram::register(FPRD, station, 0x0130, 6);
         }
-        Ok(Frame::with_count(index, parts, 1 + stations.len()))
+        let input_datagrams = 1 + stations.len();
+        let used = if monitor_topology {
+            preflight::topology::fill_probe(&mut parts[input_datagrams..], stations.len());
+            2 * input_datagrams
+        } else {
+            input_datagrams
+        };
+        ensure!(
+            Frame::<MAX_DATAGRAMS>::encoded_len(&parts[..used]) <= MAX_FRAME_BYTES,
+            "grouped cyclic frame exceeds {MAX_FRAME_BYTES} bytes"
+        );
+        Ok(Frame::with_count(index, parts, used))
     }
 
     pub(crate) fn inspect_reply(

@@ -3226,6 +3226,102 @@ def verify_replay_setup_topology(cli, destination):
     assert "differs from the rebuilt cycles" in failure
 
 
+def verify_cyclic_topology_guard(cli, destination):
+    manifest = ROOT / "samples/input-group.json"
+    fixture = destination / "monitored.json"
+    captured = cli_call(cli, "generate-group-replay", manifest, "--scenario", "topology-change", "--out", fixture)
+    assert captured["schema"] == 5 and captured["virtual_scenario"] == "topology_change"
+    assert [item["connection_generation"] for item in captured["setup_topology"]] == [1, 2]
+    assert all(len(item["mapping_replies"]) == 14 for item in captured["setup_topology"])
+    for ordinal, cycle in enumerate(captured["cycles"]):
+        [text] = cycle["received_hex"]
+        raw = bytes.fromhex(text)
+        assert len(raw) == 126
+        for offset, command in ((16, 10), (44, 4), (62, 4), (80, 7), (94, 1), (110, 1)):
+            assert raw[offset:offset + 2] == bytes([command, cycle["index"]])
+        assert struct.unpack_from("<H", raw, 42)[0] == 2
+        assert struct.unpack_from("<H", raw, 92)[0] == 2
+        assert struct.unpack_from("<H", raw, 60)[0] == 1 and struct.unpack_from("<H", raw, 78)[0] == 1
+        stations = [struct.unpack_from("<H", raw, offset)[0] for offset in (104, 120)]
+        assert stations == ([0x1001, 0x1000] if ordinal in (2, 3) else [0x1000, 0x1001])
+
+    base = destination / "every.csv"
+    receipt = destination / "every.json"
+    report = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", base, "--rotate-rows", 2, "--out", receipt)
+    assert report["counts"] == {
+        "cycles": 12, "matched_replies": 12, "valid": 6, "unmatched_cycles": 0,
+        "topology_rejections": 2, "topology_hold_rejections": 4,
+        "wkc_mismatches": 0, "invalid_al": 0, "ignored_frames": 0,
+    }
+    for ordinal, cycle in enumerate(report["cycles"]):
+        assert cycle["actual_wkc"] == 2 and all(al["clean_safeop"] for al in cycle["al"])
+        topology = cycle["cyclic_topology"]
+        assert topology["count_wkc"] == 2
+        assert topology["matches_setup"] == (ordinal not in (2, 3))
+        assert topology["held_for_setup"] == (4 <= ordinal <= 7)
+        assert cycle["valid"] == (ordinal in (0, 1, 8, 9, 10, 11))
+    parts, csv_rows = rows(base)
+    assert len(parts) == 3
+    positions = [tuple(int(row[key]) for key in ("connection_generation", "cycle_index", "elapsed_us")) for row in csv_rows]
+    assert positions == [(1, 1, 0), (1, 2, 1000), (2, 1, 8000), (2, 2, 9000), (2, 3, 10000), (2, 4, 11000)]
+    checked = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, base)
+    assert checked["complete"] and checked["verified_rows"] == 6
+    bundle = destination / "capture-bundle"
+    cli_call(cli, "bundle-group-replay", manifest, fixture, receipt, base, "--out", bundle)
+    moved = bundle.rename(destination / "moved-bundle")
+    assert cli_call(cli, "verify-group-bundle", moved)["audit"]["verified_rows"] == 6
+
+    change_base = destination / "change.csv"
+    change_receipt = destination / "change.json"
+    change = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", change_base,
+                      "--on-change", "--out", change_receipt)
+    assert change["counts"] == report["counts"]
+    with change_base.open(encoding="utf-8", newline="") as stream:
+        changed = list(csv.DictReader(stream, strict=True))
+    assert [(row["connection_generation"], row["cycle_index"]) for row in changed] == [("1", "1"), ("2", "1")]
+
+    def write_modified(name, mutate):
+        data = json.loads(fixture.read_bytes())
+        mutate(data)
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def mutate_probe(data, offset, value):
+        raw = bytearray.fromhex(data["cycles"][0]["received_hex"][0])
+        raw[offset] = value
+        data["cycles"][0]["received_hex"][0] = raw.hex()
+
+    for name, offset, value in (("broadcast-wkc-change", 92, 3), ("position-wkc-zero", 108, 0), ("alias-change", 106, 0x99)):
+        altered = write_modified(name, lambda data: mutate_probe(data, offset, value))
+        changed = cli_call(cli, "replay-input-group", manifest, altered, "--csv", destination / f"{name}.csv")
+        first = changed["cycles"][0]
+        assert first["actual_wkc"] == 2 and not first["valid"] and not first["cyclic_topology"]["matches_setup"]
+        assert changed["counts"]["topology_rejections"] == 3
+        assert changed["counts"]["topology_hold_rejections"] == 5 and changed["counts"]["valid"] == 4
+        if name == "alias-change":
+            assert first["cyclic_topology"]["valid"]
+
+    for name, mutate, message in [
+        ("setup-missing", lambda data: data["setup_topology"].pop(), "missing setup topology for generation 2"),
+        ("setup-downgrade", lambda data: data.update(schema=4), "requires a monitored group replay fixture"),
+        ("wrong-traversal", lambda data: mutate_probe(data, 96, 0xFF), "auto-increment address differs"),
+    ]:
+        altered = write_modified(name, mutate)
+        failed_csv = destination / "blocked.csv"
+        failed_report = destination / "blocked.json"
+        failure = cli_call(cli, "replay-input-group", manifest, altered, "--csv", failed_csv,
+                           "--out", failed_report, success=False)
+        assert message in failure
+        assert not failed_csv.exists() and not failed_report.exists()
+
+    amended = destination / "incorrect-hold.json"
+    report["cycles"][4]["cyclic_topology"]["held_for_setup"] = False
+    amended.write_text(json.dumps(report), encoding="utf-8")
+    failed = cli_call(cli, "verify-group-replay", manifest, fixture, amended, base, success=False)
+    assert "differs from the rebuilt cycles" in failed
+
+
 def verify_generated_group_replay(cli, destination):
     sample = ROOT / "samples"
     manifest = sample / "input-group.json"
@@ -4162,6 +4258,9 @@ def main():
     group_topology_replay_destination = destination / "input-group-topology-replay"
     group_topology_replay_destination.mkdir()
     verify_replay_setup_topology(cli, group_topology_replay_destination)
+    cyclic_topology_destination = destination / "input-group-cyclic-topology"
+    cyclic_topology_destination.mkdir()
+    verify_cyclic_topology_guard(cli, cyclic_topology_destination)
     virtual_group_mapping_destination = destination / "input-group-virtual-mapping"
     virtual_group_mapping_destination.mkdir()
     verify_virtual_group_mapping(cli, virtual_group_mapping_destination)

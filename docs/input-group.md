@@ -110,7 +110,7 @@ Generated fixtures and replay receipts include `virtual_scenario`. The fixed UTC
 
 ## Verify saved setup topology
 
-Both virtual generators save schema 4 fixtures. Each entry in `setup_topology` binds a connection generation to two raw replies, one before and one after its mapping reads. Replay requires one pair for every generation in the cycle stream, in the same order. It checks the raw datagram structure and increasing probe indexes, broadcast and per-position WKC, configured station addresses, and stability of observed addresses and aliases. Copies of one probe cannot serve as both observations.
+Schema 4 fixtures and the monitored schema 5 fixture include setup topology. Each entry in `setup_topology` binds a connection generation to two raw replies, one before and one after its mapping reads. Replay requires one pair for every generation in the cycle stream, in the same order. It checks the raw datagram structure and increasing probe indexes, broadcast and per-position WKC, configured station addresses, and stability of observed addresses and aliases. Copies of one probe cannot serve as both observations.
 
 A missing or invalid pair stops replay before it creates the CSV. The receipt retains the rebuilt observations. Group audit requires agreement with the original fixture bytes and the rebuilt receipt, and reports `verified_topology_generations`. Portable bundle verification repeats this check using the copied fixture. The setup probes record evidence at those observations. The saved mapping snapshots and individual cyclic replies have their own checks.
 
@@ -118,11 +118,25 @@ Schema 3 fixtures keep the same topology checks. Schema 1 input-only and schema 
 
 ## Verify saved setup mapping
 
-In a schema 4 fixture, each `setup_topology` entry also contains `mapping_replies`. The list holds the FMMU and SyncManager register replies between that generation's two setup probes. Replay rebuilds the expected sequence from the station order and the reported channel counts. It checks each reply against its expected datagram index, station address, register offset, and width. It then checks WKC and the logical and physical mapping geometry before creating a CSV.
+In schema 4 and 5 fixtures, each `setup_topology` entry also contains `mapping_replies`. The list holds the FMMU and SyncManager register replies between that generation's two setup probes. Replay rebuilds the expected sequence from the station order and the reported channel counts. It checks each reply against its expected datagram index, station address, register offset, and width. It then checks WKC and the logical and physical mapping geometry before creating a CSV.
 
 The replay receipt retains the rebuilt mapping per generation and the audit reports `verified_mapping_generations`. A missing reply, changed mapping or invalid register WKC can stop replay while the recorded cyclic replies still look healthy. The verified portable bundle retains the original fixture bytes.
 
 Optional `--fmmu` and `--sync-managers` files must describe the same register reads as the fixture in each generation. JSON formatting may differ. `inspect-virtual-group-mapping` exposes the corresponding snapshots for the authored input-only group. Optional `--pdo` evidence still has its own descriptor and placement checks. Older schema 1–3 fixtures follow their original mapping evidence rules.
+
+## Rehearse a station swap during acquisition
+
+```powershell
+.\ethercat-workbench-cli.exe generate-group-replay samples/input-group.json --scenario topology-change --out .local/topology-change.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group.json .local/topology-change.json --csv .local/topology-change.csv --out .local/topology-change-replay.json
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group.json .local/topology-change.json .local/topology-change-replay.json .local/topology-change.csv
+```
+
+This scenario creates a monitored schema 5 fixture. Each cyclic reply carries the grouped LRD, per-station AL reads, then a broadcast count and position-based reads of the configured station addresses and aliases. Replay checks the matched reply against the last verified setup observation for its connection generation. A changed count, address, order or alias, or a wrong position WKC, withholds the sample and latches that generation. After the expected topology returns, the generation stays held until a fresh setup passes.
+
+The two stations swap during cycles 3 and 4 of generation 1 while LRD WKC stays at 2 and AL stays clean SAFEOP. Those replies count as `topology_rejections`. The following four cycles match the setup again and count as `topology_hold_rejections`. Generation 2 passes a fresh setup check and accepts all four inputs. Every-valid mode writes six rows overall. On-change mode writes the first accepted row of each generation. Desktop **Review → Grouped capture** shows the observed station order and separates the two rejection counts.
+
+Bundle audit rebuilds the topology decisions from the raw cyclic replies. Schema 1–4 fixtures keep their original frame rules. The scenario uses an in-memory wire and an authored receive timeline.
 
 ## Replay group cycles to CSV
 

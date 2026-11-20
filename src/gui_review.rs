@@ -1538,6 +1538,8 @@ mod tests {
         }
     }
 
+    use ethercat_workbench::input_group::replay::VirtualScenario;
+
     struct GroupScratch(PathBuf);
 
     impl GroupScratch {
@@ -1554,7 +1556,8 @@ mod tests {
             Self(root)
         }
 
-        fn archived_group(&self, dc: bool) -> PathBuf {
+        fn archived_group(&self, virtual_case: Option<VirtualScenario>) -> PathBuf {
+            let dc = virtual_case.is_none();
             use ethercat_workbench::input_group::{
                 InputGroup, audit::Evidence, bundle, clock_rehearsal, replay,
             };
@@ -1564,7 +1567,9 @@ mod tests {
                 "samples/input-group.json"
             });
             let group = InputGroup::load(&manifest).unwrap();
-            let generated = if dc {
+            let generated = if let Some(scenario) = virtual_case {
+                replay::generate_virtual(&group, scenario)
+            } else {
                 clock_rehearsal::generate_replay(
                     &group,
                     clock_rehearsal::Options {
@@ -1574,13 +1579,11 @@ mod tests {
                         scenario: clock_rehearsal::GroupClockCase::FollowerStale,
                     },
                 )
-            } else {
-                replay::generate_virtual(&group, replay::VirtualScenario::Faults)
             }
             .unwrap();
             let fixture = self.0.join("frames.json");
             let mut fixture_json = serde_json::to_value(generated).unwrap();
-            if !dc {
+            if virtual_case == Some(VirtualScenario::Faults) {
                 fixture_json["schema"] = 1.into();
                 fixture_json
                     .as_object_mut()
@@ -1652,7 +1655,7 @@ mod tests {
     #[test]
     fn grouped_review_verifies_relocated_dc_capture_and_freezes_its_source() {
         let scratch = GroupScratch::create();
-        let bundle = scratch.archived_group(true);
+        let bundle = scratch.archived_group(None);
         let mut panel = Panel {
             page: Page::Grouped,
             ..Default::default()
@@ -1717,7 +1720,7 @@ mod tests {
     fn grouped_review_distinguishes_legacy_faults_and_rejects_changed_csv() {
         use std::sync::atomic::AtomicBool;
         let scratch = GroupScratch::create();
-        let bundle = scratch.archived_group(false);
+        let bundle = scratch.archived_group(Some(VirtualScenario::Faults));
         let task = Task::ReviewGroupBundle {
             directory: bundle.clone(),
         };
@@ -1765,6 +1768,36 @@ mod tests {
         );
         assert!(panel.controller.completed().is_none());
         assert_eq!(std::fs::read(original).unwrap(), changed);
+    }
+
+    #[test]
+    fn grouped_review_shows_topology_faults_and_holds_separately() {
+        let scratch = GroupScratch::create();
+        let bundle = scratch.archived_group(Some(VirtualScenario::TopologyChange));
+        let mut panel = Panel {
+            page: Page::Grouped,
+            ..Default::default()
+        };
+        panel.start(Task::ReviewGroupBundle { directory: bundle });
+        wait_for_saved_job(&mut panel);
+        assert_eq!(
+            panel.controller.state(),
+            State::Complete,
+            "{:?}",
+            panel.controller.error()
+        );
+        let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+        for label in [
+            "6 of 6 selected CSV rows verified",
+            "Topology rejections 2",
+            "Held for fresh setup 4",
+            "Generation 1 · Cycle 3 · Topology rejected · LRD WKC 2/2",
+            "Generation 1 · Cycle 5 · Held for fresh setup · LRD WKC 2/2",
+            "Observed station order · 0x1001, 0x1000",
+        ] {
+            assert!(text.contains(label), "missing {label} in {text}");
+        }
+        assert!(!text.contains("Generation 2 · Cycle 1"));
     }
 
     // Pure egui layout: no native window, desktop input, screenshot or GPU.

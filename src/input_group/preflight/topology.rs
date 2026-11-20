@@ -10,7 +10,6 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-const FIRST_DATAGRAM: usize = 16;
 const ADDRESS_OFFSET: usize = 2;
 const COUNT_DATAGRAM_BYTES: usize = 14;
 const POSITION_DATAGRAM_BYTES: usize = 16;
@@ -79,11 +78,10 @@ pub(crate) struct Check {
 
 impl Check {
     pub(super) fn new(before_mapping: Observation, after_mapping: Observation) -> Self {
-        let unchanged = before_mapping.count_wkc == after_mapping.count_wkc
-            && before_mapping.positions == after_mapping.positions;
+        let unchanged = before_mapping.reading == after_mapping.reading;
         Self {
-            expected_count: before_mapping.positions.len(),
-            valid: before_mapping.valid && after_mapping.valid && unchanged,
+            expected_count: before_mapping.reading.positions.len(),
+            valid: before_mapping.reading.valid && after_mapping.reading.valid && unchanged,
             before_mapping,
             after_mapping,
             unchanged,
@@ -127,12 +125,57 @@ impl ProbeReply {
 pub(super) struct Observation {
     #[serde(flatten)]
     raw: ProbeReply,
+    #[serde(flatten)]
+    reading: Reading,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Reading {
     count_wkc: u16,
     positions: Vec<Position>,
     valid: bool,
 }
 
-#[derive(PartialEq, Eq, Serialize)]
+#[derive(Debug, Serialize)]
+pub struct RuntimeCheck {
+    #[serde(flatten)]
+    reading: Reading,
+    pub matches_setup: bool,
+    pub held_for_setup: bool,
+}
+
+impl RuntimeCheck {
+    pub fn count_wkc(&self) -> u16 {
+        self.reading.count_wkc
+    }
+
+    pub fn stations(&self) -> impl Iterator<Item = Option<u16>> + '_ {
+        self.reading
+            .positions
+            .iter()
+            .map(|position| position.station_address)
+    }
+}
+
+impl GenerationCheck {
+    pub(in crate::input_group) fn check_cycle(
+        &self,
+        reply: &[u8],
+        parts: &[(&[u8], u16)],
+        stations: &[u16],
+        latched: bool,
+    ) -> Result<RuntimeCheck> {
+        let reading = decode_reading(reply, parts, stations)?;
+        let matches_setup = reading == self.topology.after_mapping.reading;
+        Ok(RuntimeCheck {
+            reading,
+            matches_setup,
+            held_for_setup: matches_setup && latched,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
 struct Position {
     position: usize,
     expected_station_address: u16,
@@ -141,12 +184,17 @@ struct Position {
     configured_alias: Option<u16>,
 }
 
-fn probe(index: u8, expected_count: usize) -> Frame<MAX_DATAGRAMS> {
-    let mut parts = [Datagram::register(BRD, 0, 0x0000, 2); MAX_DATAGRAMS];
+pub(in crate::input_group) fn fill_probe(parts: &mut [Datagram], expected_count: usize) {
+    parts[0] = Datagram::register(BRD, 0, 0x0000, 2);
     for (position, part) in parts[1..1 + expected_count].iter_mut().enumerate() {
         let address = 0u16.wrapping_sub(position as u16);
         *part = Datagram::register(APRD, address, 0x0010, 4);
     }
+}
+
+fn probe(index: u8, expected_count: usize) -> Frame<MAX_DATAGRAMS> {
+    let mut parts = [Datagram::register(BRD, 0, 0x0000, 2); MAX_DATAGRAMS];
+    fill_probe(&mut parts, expected_count);
     Frame::with_count(index, parts, 1 + expected_count)
 }
 
@@ -172,13 +220,31 @@ fn inspect_reply(
     let parts = frame
         .reply(reply)
         .context("group topology reply does not match the probe")?;
+    Ok(Observation {
+        raw: ProbeReply {
+            index,
+            reply_hex: hex::encode(reply),
+        },
+        reading: decode_reading(
+            &reply[frame.datagram_offset(0)..],
+            &parts,
+            expected_stations,
+        )?,
+    })
+}
+
+fn decode_reading(
+    reply: &[u8],
+    parts: &[(&[u8], u16)],
+    expected_stations: &[u16],
+) -> Result<Reading> {
     let address = |offset: usize| {
         let start = offset + ADDRESS_OFFSET;
         u16::from_le_bytes([reply[start], reply[start + 1]])
     };
-    let traversed = address(FIRST_DATAGRAM);
+    let traversed = address(0);
     for position in 0..expected_stations.len() {
-        let offset = FIRST_DATAGRAM + COUNT_DATAGRAM_BYTES + position * POSITION_DATAGRAM_BYTES;
+        let offset = COUNT_DATAGRAM_BYTES + position * POSITION_DATAGRAM_BYTES;
         ensure!(
             address(offset) == traversed.wrapping_sub(position as u16),
             "group topology reply auto-increment address differs at position {position}"
@@ -204,11 +270,7 @@ fn inspect_reply(
         && positions
             .iter()
             .all(|position| position.station_address == Some(position.expected_station_address));
-    Ok(Observation {
-        raw: ProbeReply {
-            index,
-            reply_hex: hex::encode(reply),
-        },
+    Ok(Reading {
         count_wkc,
         positions,
         valid,

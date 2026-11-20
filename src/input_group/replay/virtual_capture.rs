@@ -1,5 +1,8 @@
 //! Produce replay candidates from an authored two-device virtual wire.
-use super::{Fixture, InputGroup, MAPPING_FIXTURE_SCHEMA, MODELED_UTC, RecordedCycle};
+use super::{
+    Fixture, InputGroup, MAPPING_FIXTURE_SCHEMA, MODELED_UTC, MONITORED_FIXTURE_SCHEMA,
+    RecordedCycle,
+};
 use crate::{
     input_group::preflight,
     virtual_esc::{GROUP_MODELS, GROUP_STATIONS, GroupDownstream, VirtualWire},
@@ -14,6 +17,7 @@ pub enum VirtualScenario {
     #[default]
     Clean,
     Faults,
+    TopologyChange,
 }
 
 pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result<Fixture> {
@@ -23,8 +27,12 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
     let mut previous_reply = String::new();
     let mut cycles = Vec::with_capacity(12);
     let faults = scenario == VirtualScenario::Faults;
+    let monitored = scenario == VirtualScenario::TopologyChange;
     for ordinal in 0..12u8 {
         let index = 254u8.wrapping_add(ordinal);
+        if monitored && matches!(ordinal, 2 | 4) {
+            wire.swap_group_stations();
+        }
         if faults {
             let condition = match ordinal {
                 2 => GroupDownstream::Preop,
@@ -49,7 +57,7 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
                 .context("missing verified setup topology")?;
             setup_topology.push(topology.recording(connection_generation, replies));
         }
-        let frame = group.expected_frame(index, &GROUP_STATIONS)?;
+        let frame = group.cyclic_frame(index, &GROUP_STATIONS, monitored)?;
         wire.send(frame.bytes())?;
         let reply = wire.receive().context("virtual wire produced no reply")?;
         ensure!(
@@ -87,7 +95,11 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
         "virtual group replay expected one logical read per device and cycle, with zero writes"
     );
     Ok(Fixture {
-        schema: MAPPING_FIXTURE_SCHEMA,
+        schema: if monitored {
+            MONITORED_FIXTURE_SCHEMA
+        } else {
+            MAPPING_FIXTURE_SCHEMA
+        },
         virtual_scenario: Some(scenario),
         virtual_dc: None,
         capture_start_utc: MODELED_UTC.into(),

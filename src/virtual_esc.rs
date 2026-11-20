@@ -459,7 +459,7 @@ impl VirtualWire {
                 esc.registers[4] = u8::MAX;
                 esc.registers[5] = u8::MAX;
             }
-            GroupMappingScenario::SwappedStations => self.devices.swap(0, 1),
+            GroupMappingScenario::SwappedStations => self.swap_group_stations(),
             GroupMappingScenario::SwapDuringReadback => self.swap_after_next_frame = true,
             GroupMappingScenario::ExtraStation => {
                 let mut extra = VirtualEsc::for_scan(VirtualModel::Coe, ScanCase::Normal);
@@ -472,6 +472,10 @@ impl VirtualWire {
             }
             GroupMappingScenario::PositionWkc => esc.scan_case = ScanCase::CoreWkc,
         }
+    }
+
+    pub(crate) fn swap_group_stations(&mut self) {
+        self.devices.swap(0, 1);
     }
 
     pub(crate) fn set_group_downstream(&mut self, condition: GroupDownstream) {
@@ -515,7 +519,7 @@ impl VirtualWire {
             self.replies.push_back(reply);
         }
         if std::mem::take(&mut self.swap_after_next_frame) {
-            self.devices.swap(0, 1);
+            self.swap_group_stations();
         }
         Ok(())
     }

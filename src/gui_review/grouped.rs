@@ -104,6 +104,12 @@ impl Panel {
             if let Some(rejections) = counts.clock_rejections {
                 ui.label(format!("Clock rejections {rejections}"));
             }
+            if let Some(rejections) = counts.topology_rejections {
+                ui.label(format!("Topology rejections {rejections}"));
+            }
+            if let Some(holds) = counts.topology_hold_rejections {
+                ui.label(format!("Held for fresh setup {holds}"));
+            }
             ui.label(format!("Unanswered inputs {}", counts.unmatched_cycles));
             ui.label(format!("WKC mismatches {}", counts.wkc_mismatches));
             ui.label(format!("AL faults {}", counts.invalid_al));
@@ -229,7 +235,17 @@ fn show_cycle(ui: &mut egui::Ui, cycle: &Cycle, expected_wkc: u16) {
         let elapsed = cycle
             .elapsed_us
             .expect("matched replay cycle has a receive time");
-        let status = if cycle.valid {
+        let status = if let Some(topology) = &cycle.cyclic_topology
+            && !topology.matches_setup
+        {
+            "Topology rejected"
+        } else if cycle
+            .cyclic_topology
+            .as_ref()
+            .is_some_and(|topology| topology.held_for_setup)
+        {
+            "Held for fresh setup"
+        } else if cycle.valid {
             "Valid input"
         } else {
             "Input rejected"
@@ -267,6 +283,18 @@ fn show_cycle(ui: &mut egui::Ui, cycle: &Cycle, expected_wkc: u16) {
                 other => other,
             });
         }
+    }
+    if let Some(topology) = &cycle.cyclic_topology
+        && !topology.matches_setup
+    {
+        let stations = topology
+            .stations()
+            .map(|address| {
+                address.map_or_else(|| "unavailable".into(), |address| format!("{address:#06x}"))
+            })
+            .collect::<Vec<_>>();
+        ui.label(format!("Observed station order · {}", stations.join(", ")));
+        ui.label(format!("Broadcast WKC {}", topology.count_wkc()));
     }
     for al in cycle.al.iter().filter(|al| !al.clean_safeop) {
         let description = al.status.as_ref().map_or_else(

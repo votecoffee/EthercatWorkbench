@@ -1,5 +1,6 @@
 //! Replay saved group cycles into the bounded CSV writer using the recorded receive clock.
 mod virtual_capture;
+pub use super::preflight::topology::RuntimeCheck;
 pub use virtual_capture::{VirtualScenario, generate_virtual};
 
 use super::{
@@ -29,6 +30,7 @@ const MAX_CYCLES: usize = 4096;
 const MAX_CANDIDATES: usize = 64;
 const TOPOLOGY_FIXTURE_SCHEMA: u32 = 3;
 pub(super) const MAPPING_FIXTURE_SCHEMA: u32 = 4;
+pub(super) const MONITORED_FIXTURE_SCHEMA: u32 = 5;
 pub(super) const MODELED_UTC: &str = "2026-01-01T00:00:00.000000Z";
 
 pub struct Options<'a> {
@@ -83,6 +85,8 @@ pub struct Cycle {
     pub ignored_frames: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clock: Option<ClockCheck>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cyclic_topology: Option<RuntimeCheck>,
     pub valid: bool,
 }
 
@@ -94,6 +98,10 @@ pub struct Counts {
     pub unmatched_cycles: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clock_rejections: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topology_rejections: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topology_hold_rejections: Option<usize>,
     pub wkc_mismatches: usize,
     pub invalid_al: usize,
     pub ignored_frames: usize,
@@ -159,6 +167,7 @@ pub(super) struct PreparedReplay<'a> {
     pub(super) fixture_sha256: String,
     stations: Vec<u16>,
     setup_topology: Option<Vec<GenerationCheck>>,
+    monitor_topology: bool,
     plan: Inspection<'a>,
     pub(super) profile: Profile,
     pub(super) cycles: Vec<PreparedCycle>,
@@ -203,6 +212,13 @@ pub(super) fn prepare_capture<'a>(
         fixture.virtual_scenario,
         &fixture.setup_topology,
     ) {
+        (MONITORED_FIXTURE_SCHEMA, None, Some(VirtualScenario::TopologyChange), Some(_)) => {}
+        (MONITORED_FIXTURE_SCHEMA, None, Some(VirtualScenario::TopologyChange), None) => {
+            bail!("monitored group replay requires setup topology probes")
+        }
+        (MONITORED_FIXTURE_SCHEMA, ..) | (_, _, Some(VirtualScenario::TopologyChange), _) => {
+            bail!("topology-change requires a monitored group replay fixture")
+        }
         (1, None, _, None) | (2, Some(_), None, None) => {}
         (TOPOLOGY_FIXTURE_SCHEMA | MAPPING_FIXTURE_SCHEMA, None, Some(_), Some(_))
         | (TOPOLOGY_FIXTURE_SCHEMA | MAPPING_FIXTURE_SCHEMA, Some(_), None, Some(_)) => {}
@@ -234,6 +250,7 @@ pub(super) fn prepare_capture<'a>(
         "group replay requires 1–{MAX_CYCLES} cycles"
     );
     validate_stations(&fixture.stations, group.bindings.len())?;
+    let monitor_topology = fixture.schema == MONITORED_FIXTURE_SCHEMA;
     let setup_topology = fixture
         .setup_topology
         .as_ref()
@@ -243,7 +260,7 @@ pub(super) fn prepare_capture<'a>(
                 probes,
                 &fixture.stations,
                 &fixture.cycles,
-                fixture.schema == MAPPING_FIXTURE_SCHEMA,
+                fixture.schema == MAPPING_FIXTURE_SCHEMA || monitor_topology,
                 stop,
             )
         })
@@ -276,6 +293,7 @@ pub(super) fn prepare_capture<'a>(
         &fixture.stations,
         fixture.cycles,
         fixture.virtual_dc.as_ref(),
+        setup_topology.as_deref().filter(|_| monitor_topology),
         stop,
     )?;
     let queue_capacity = prepared.len(); // At most one CSV row per supplied cycle.
@@ -318,6 +336,7 @@ pub(super) fn prepare_capture<'a>(
         fixture_sha256: hex::encode(Sha256::digest(&bytes)),
         stations: fixture.stations,
         setup_topology,
+        monitor_topology,
         plan,
         profile,
         cycles: prepared,
@@ -329,12 +348,25 @@ impl<'a> PreparedReplay<'a> {
         let mut counts = Counts {
             cycles: self.cycles.len(),
             clock_rejections: self.virtual_dc.as_ref().map(|_| 0),
+            topology_rejections: self.monitor_topology.then_some(0),
+            topology_hold_rejections: self.monitor_topology.then_some(0),
             ..Counts::default()
         };
         let mut cycles = Vec::with_capacity(self.cycles.len());
         for PreparedCycle { receipt, .. } in self.cycles {
             counts.ignored_frames += receipt.ignored_frames;
             counts.valid += usize::from(receipt.valid);
+            if let Some(topology) = &receipt.cyclic_topology {
+                *counts
+                    .topology_rejections
+                    .as_mut()
+                    .expect("monitored topology counts") += usize::from(!topology.matches_setup);
+                *counts
+                    .topology_hold_rejections
+                    .as_mut()
+                    .expect("monitored topology hold counts") +=
+                    usize::from(topology.held_for_setup);
+            }
             if let Some(wkc) = receipt.actual_wkc {
                 counts.matched_replies += 1;
                 counts.wkc_mismatches += usize::from(wkc != self.plan.expected_wkc);
@@ -452,6 +484,7 @@ fn prepare(
     stations: &[u16],
     cycles: Vec<RecordedCycle>,
     dc: Option<&ClockRecording>,
+    monitored_setup: Option<&[GenerationCheck]>,
     stop: Option<&AtomicBool>,
 ) -> Result<Vec<PreparedCycle>> {
     check_cancel(stop)?;
@@ -460,6 +493,9 @@ fn prepare(
         .transpose()?;
     let mut previous_cycle = (0, 0);
     let mut previous_received = None;
+    let mut verified_generations = monitored_setup.into_iter().flatten();
+    let mut setup = None;
+    let mut topology_latched = false;
     cycles
         .into_iter()
         .enumerate()
@@ -471,6 +507,10 @@ fn prepare(
                 order.0 > 0 && order.1 > 0 && order > previous_cycle,
                 "replay cycle {label} needs positive, increasing generation/cycle order"
             );
+            if order.0 != previous_cycle.0 && monitored_setup.is_some() {
+                setup = Some(verified_generations.next().context("verified topology missing for monitored generation")?);
+                topology_latched = false;
+            }
             previous_cycle = order;
             ensure!(
                 cycle.received_hex.len() <= MAX_CANDIDATES,
@@ -493,7 +533,8 @@ fn prepare(
                 (None, None) => None,
                 _ => anyhow::bail!("unexpected or missing DC frames in replay cycle {label}"),
             };
-            let expected = group.expected_frame(cycle.index, stations)?;
+            let expected = group.cyclic_frame(cycle.index, stations, setup.is_some())?;
+            let topology_start = 1 + stations.len();
             let mut receipt = Cycle {
                 connection_generation: order.0,
                 cycle_index: order.1,
@@ -503,6 +544,7 @@ fn prepare(
                 al: Vec::new(),
                 ignored_frames: 0,
                 clock,
+                cyclic_topology: None,
                 valid: false,
             };
             let mut payload = None;
@@ -517,9 +559,20 @@ fn prepare(
                     );
                     let (data, wkc) = parts[0];
                     receipt.actual_wkc = Some(wkc);
-                    receipt.al = decode_al_reads(stations, &parts[1..]);
-                    receipt.valid =
-                        wkc == group.expected_wkc && receipt.al.iter().all(|al| al.clean_safeop);
+                    receipt.al = decode_al_reads(stations, &parts[1..topology_start]);
+                    if let Some(setup) = setup {
+                        let topology = setup.check_cycle(
+                            &bytes[expected.datagram_offset(topology_start)..],
+                            &parts[topology_start..],
+                            stations,
+                            topology_latched,
+                        ).with_context(|| format!("cyclic topology for generation {}, cycle {}", order.0, order.1))?;
+                        topology_latched |= !topology.matches_setup;
+                        receipt.cyclic_topology = Some(topology);
+                    }
+                    receipt.valid = !topology_latched
+                        && wkc == group.expected_wkc
+                        && receipt.al.iter().all(|al| al.clean_safeop);
                     if receipt.valid {
                         payload = Some(data.to_vec());
                     }

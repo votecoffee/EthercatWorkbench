@@ -78,6 +78,14 @@ impl<const N: usize> Frame<N> {
         &self.bytes[..self.end.max(60)]
     }
 
+    pub(crate) fn encoded_len(parts: &[Datagram]) -> usize {
+        16 + parts.iter().map(|part| 12 + part.len).sum::<usize>()
+    }
+
+    pub(crate) fn datagram_offset(&self, position: usize) -> usize {
+        Self::encoded_len(&self.parts[..position])
+    }
+
     pub fn reply<'a>(&self, bytes: &'a [u8]) -> Option<[(&'a [u8], u16); N]> {
         if bytes.len() < self.end
             || bytes[6..12] != CUSTOM_REPLY
