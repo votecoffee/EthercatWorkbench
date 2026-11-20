@@ -50,14 +50,22 @@ The bundled fixture has bit fields, a signed setpoint, a big-endian float, a wor
 With the selected NIC and exact device identity set in the profile, stage a deliberate RxPDO image. Specify a separate full safe image, the device-specific watchdog interval, your proposed maximum time in OP, and how you will independently observe the stop. Supply `--serial` if the proposal should bind an observed serial. The following example uses an illustrative two-byte output and fixture timing values.
 
 ```powershell
-$review = .\ethercat-workbench-cli.exe plan-output .local/rehearsal-profile.json --safe-hex '00 00' --watchdog-us 10000 --max-op-us 1000 --stop-observation 'Confirm zero using the independent indicator' --out .local/output-plan.json | ConvertFrom-Json
+$review = .\ethercat-workbench-cli.exe plan-output .local/rehearsal-profile.json --safe-hex '00 00' --watchdog-us 100 --max-op-us 1000 --stop-observation 'Confirm zero using the independent indicator' --out .local/output-plan.json | ConvertFrom-Json
 .\ethercat-workbench-cli.exe verify-output-plan .local/rehearsal-profile.json .local/output-plan.json --sha256 $review.plan_sha256
 .\ethercat-workbench-cli.exe rehearse-output .local/rehearsal-profile.json --plan .local/output-plan.json --plan-sha256 $review.plan_sha256
 ```
 
 Record the returned `plan_sha256` independently at review time. Verification rebuilds the proposal and checks it against that digest and the current effective profile. The proposal records the declared target, decoded staged and safe values, and planned operations. A changed profile, stop policy or image requires a new review. Use an authored virtual profile with a NIC label for the rehearsal. Physical approval, timing enforcement and device-specific stop observation remain separate.
 
-With a verified plan, the virtual sequence preloads the safe image, confirms OP, sends the staged image once, and restores the safe image after an acknowledged staged write. It then requests INIT and reads back AL status. A missing write reply stops further output sends and still attempts INIT. The independent model audit shows the sequence of images applied. Watchdog and OP limit values are recorded review inputs. Hardware enforcement and independent physical stop observation remain to be implemented and tested.
+With a verified plan, the virtual sequence preloads the safe image, confirms OP, sends the staged image once, and restores the safe image after an acknowledged staged write. It then requests INIT and reads back AL status. A missing write reply stops further output sends and still attempts INIT. The independent model audit shows the sequence of images applied. The rehearsal uses the reviewed timing values on its deterministic clock. Hardware enforcement and independent physical stop observation remain to be implemented and tested.
+
+## Rehearse OP time and watchdog limits
+
+With a verified plan, the output rehearsal advances a modeled clock by 10 µs per exchange. The OP time budget starts just before dispatching the OP request. The controller withholds a staged or safe-image write if its modeled dispatch would be at or beyond the limit, then proceeds to INIT. The report preserves the proposed write's dispatch time, the INIT request time, and the separate time and AL observation confirming INIT. A late observation fails the timing check while preserving evidence of the actual final AL state.
+
+The virtual device refreshes its modeled watchdog on successful output writes. The controller reads AL and the process-data watchdog status (`0x0440`) together before each planned OP output write. A zero status bit or a missing single-device acknowledgement withholds the next write. Some devices can retain OP during watchdog expiry. The authored model covers that behavior and a separate SAFEOP-with-error response. The register's set bit indicates active or disabled watchdog state. [ESC register reference, sections 2.41–2.43](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec2_registers_3i0.pdf), [Beckhoff watchdog behavior](https://infosys.beckhoff.com/content/1033/el2044/1036979339.html?id=5605995545892794548)
+
+Use `--scenario watchdog-expires` or `--scenario watchdog-expires-in-op` to introduce a pause after the staged write. A third case, `watchdog-unavailable`, returns WKC zero for the watchdog read. Use the fixture timing above to let the modeled watchdog expire ahead of the OP deadline. The clock, expiry time and output state are simulation evidence. Physical timeout behavior and stop confirmation still require a device-specific bench trial.
 
 ## Rehearse an RxPDO write
 

@@ -11,6 +11,7 @@ const MAILBOX_OUT: usize = 0x1040;
 const MAILBOX_BYTES: usize = 64;
 const OUTPUTS: usize = 0x1100;
 const INPUTS: usize = 0x1200;
+pub(crate) const PD_WATCHDOG_STATUS: u16 = 0x0440;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -180,6 +181,9 @@ pub enum OutputRehearsalCase {
     OpReject,
     WriteReplyLost,
     SafeStopReplyLost,
+    WatchdogExpires,
+    WatchdogExpiresInOp,
+    WatchdogUnavailable,
     InitReject,
 }
 
@@ -191,6 +195,7 @@ pub(crate) struct OutputAudit {
     // OP entry and the two bounded OP writes. The last applied value is always retained.
     pub(crate) applied_in_order: Vec<[u8; 2]>,
     pub(crate) outputs_active: bool,
+    pub(crate) watchdog_expired_at_us: Option<u128>,
 }
 
 impl OutputAudit {
@@ -205,6 +210,9 @@ impl OutputAudit {
 struct OutputRehearsal {
     case: OutputRehearsalCase,
     preload: Option<[u8; 2]>,
+    watchdog_us: Option<u64>,
+    last_output_us: Option<u128>,
+    now_us: u128,
     audit: OutputAudit,
 }
 
@@ -219,14 +227,25 @@ impl VirtualWire {
         Self::single(VirtualEsc::new(model, fault))
     }
 
-    pub(crate) fn for_output_rehearsal(model: VirtualModel, case: OutputRehearsalCase) -> Self {
+    pub(crate) fn for_output_rehearsal(
+        model: VirtualModel,
+        case: OutputRehearsalCase,
+        watchdog_us: Option<u64>,
+    ) -> Self {
         let mut esc = VirtualEsc::new(model, VirtualFault::None);
         esc.output_rehearsal = Some(OutputRehearsal {
             case,
             preload: None,
+            watchdog_us,
+            last_output_us: None,
+            now_us: 0,
             audit: OutputAudit::default(),
         });
         Self::single(esc)
+    }
+
+    pub(crate) fn advance_output_time(&mut self, now_us: u128) {
+        self.devices[0].advance_output_time(now_us);
     }
 
     pub(crate) fn output_audit(&mut self) -> OutputAudit {
@@ -547,10 +566,13 @@ impl VirtualEsc {
                         } else {
                             self.read(usize::from(register), data)?;
                         }
-                        u16::from(
-                            !(self.fault == VirtualFault::DcReadbackUnavailable
-                                && (0x0980..=0x0981).contains(&register)),
-                        )
+                        let dc_unavailable = self.fault == VirtualFault::DcReadbackUnavailable
+                            && (0x0980..=0x0981).contains(&register);
+                        let watchdog_unavailable = register == PD_WATCHDOG_STATUS
+                            && self.output_rehearsal.as_ref().is_some_and(|output| {
+                                output.case == OutputRehearsalCase::WatchdogUnavailable
+                            });
+                        u16::from(!(dc_unavailable || watchdog_unavailable))
                     }
                     0x02 | 0x05 | 0x08 => {
                         self.write(usize::from(register), data)?;
@@ -753,6 +775,7 @@ impl VirtualEsc {
                 if let Some(output) = &mut self.output_rehearsal {
                     output.audit.outputs_active = false;
                     output.preload = None;
+                    output.last_output_us = None;
                 }
                 if requested == 1 {
                     self.mailbox = None;
@@ -774,6 +797,28 @@ impl VirtualEsc {
         Ok(())
     }
 
+    fn advance_output_time(&mut self, now_us: u128) {
+        let output = self
+            .output_rehearsal
+            .as_mut()
+            .expect("output rehearsal clock");
+        debug_assert!(now_us >= output.now_us);
+        output.now_us = now_us;
+        if let Some((last, period)) = output.last_output_us.zip(output.watchdog_us)
+            && now_us - last >= u128::from(period)
+        {
+            self.registers[usize::from(PD_WATCHDOG_STATUS)] = 0;
+            if output.audit.outputs_active {
+                output.audit.outputs_active = false;
+                output.audit.watchdog_expired_at_us = Some(last + u128::from(period));
+                if output.case != OutputRehearsalCase::WatchdogExpiresInOp {
+                    self.registers[0x0130..0x0132].copy_from_slice(&0x14u16.to_le_bytes());
+                    self.registers[0x0134..0x0136].copy_from_slice(&0x1bu16.to_le_bytes());
+                }
+            }
+        }
+    }
+
     fn enter_rehearsal_op(&mut self) -> Result<()> {
         let valid = self.process_configuration_valid()
             && word(&self.registers[0x0130..]) == 4
@@ -785,6 +830,7 @@ impl VirtualEsc {
         if let Some(bytes) = output.preload
             && valid
             && output.case != OutputRehearsalCase::OpReject
+            && self.registers[usize::from(PD_WATCHDOG_STATUS)] & 1 != 0
         {
             self.registers[0x0130..0x0132].copy_from_slice(&8u16.to_le_bytes());
             output.audit.outputs_active = true;
@@ -820,6 +866,8 @@ impl VirtualEsc {
             }
             _ => return false,
         }
+        output.last_output_us = Some(output.now_us);
+        self.registers[usize::from(PD_WATCHDOG_STATUS)] = 1;
         self.registers[OUTPUTS..OUTPUTS + 2].copy_from_slice(data);
         true
     }

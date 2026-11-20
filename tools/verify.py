@@ -2408,6 +2408,85 @@ def verify_output_plan(cli, destination):
         assert rejected["wire"]["op_requests"] == 0 and rejected["sequence"]["init"]["raw"] == 1
 
 
+def verify_output_timing(cli, destination):
+    profile = json.loads((ROOT / "samples/virtual.json").read_bytes())
+    profile.update(nic=r"\Device\NPF_{11111111-1111-1111-1111-111111111111}", staged_rx_hex="3412")
+    profile_path = destination / "profile.json"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+
+    def run(name, max_op, watchdog=100, scenario="normal", success=False):
+        plan = destination / f"{name}-plan.json"
+        review = cli_call(cli, "plan-output", profile_path, "--safe-hex", "0000", "--max-op-us",
+                          max_op, "--watchdog-us", watchdog, "--stop-observation", "Observe safe state",
+                          "--out", plan)
+        out = destination / f"{name}.json"
+        attempted = cli_call(cli, "rehearse-output", profile_path, "--scenario", scenario, "--plan",
+                             plan, "--plan-sha256", review["plan_sha256"], "--out", out, success=success)
+        assert attempted == json.loads(out.read_bytes())
+        timing = attempted["timing"]
+        assert timing["clock"] == "modeled_frame_dispatch" and timing["frame_step_us"] == 10
+        assert timing["max_op_us"] == max_op and timing["watchdog_us"] == watchdog
+        assert attempted["sequence"]["init"]["raw"] == 1
+        assert not attempted["modeled_outputs"]["outputs_active"]
+        return attempted
+
+    normal = run("normal", 70, success=True)
+    assert normal["timing"]["init_request_elapsed_us"] == 60
+    assert normal["timing"]["init_confirmed_elapsed_us"] == 70
+    assert normal["timing"]["init_within_limit"] is True
+    assert normal["sequence"]["op_watchdog"] == {"wkc": 1, "raw": 1}
+    assert normal["sequence"]["before_safe_restore"]["watchdog"] == {"wkc": 1, "raw": 1}
+    assert normal["modeled_outputs"]["applied_in_order"] == [[0, 0], [52, 18], [0, 0]]
+
+    for limit, blocked, init_sent, init_seen, applied in [
+        (30, "staged_write", 30, 40, [[0, 0]]),
+        (50, "safe_restore", 40, 50, [[0, 0], [52, 18]]),
+        (65, None, 60, 70, [[0, 0], [52, 18], [0, 0]]),
+    ]:
+        report = run(f"limit-{limit}", limit)
+        timing = report["timing"]
+        assert timing["blocked_write"] == blocked
+        assert timing["blocked_dispatch_elapsed_us"] == (limit if blocked else None)
+        assert timing["init_request_elapsed_us"] == init_sent and timing["init_confirmed_elapsed_us"] == init_seen
+        assert timing["init_within_limit"] == (init_seen <= limit)
+        assert (f"blocks {blocked}" if blocked else "INIT confirmed at 70 us") in report["error"]
+        assert report["modeled_outputs"]["applied_in_order"] == applied
+        assert report["wire"]["logical_writes"] == len(applied)
+        assert report["modeled_outputs"]["watchdog_expired_at_us"] is None
+
+    for scenario, al_raw, code in [("watchdog-expires", 0x14, 0x1b), ("watchdog-expires-in-op", 8, 0)]:
+        lost = run(scenario, 1000, scenario=scenario)
+        observed = lost["sequence"]["before_safe_restore"]
+        assert observed["al"]["raw"] == al_raw and observed["al"]["code"] == code
+        assert observed["watchdog"] == {"wkc": 1, "raw": 0}
+        assert "safe_stop" not in lost["sequence"]
+        assert lost["wire"]["logical_writes"] == 2 and lost["wire"]["op_requests"] == 1
+        assert lost["modeled_outputs"]["watchdog_expired_at_us"] == 150
+        assert lost["timing"]["init_within_limit"] is True
+
+    gap = run("expires-during-staged-dispatch", 1000, watchdog=30)
+    assert gap["sequence"]["op_watchdog"] == {"wkc": 1, "raw": 1}
+    assert gap["sequence"]["output"]["actual_wkc"] == 0
+    assert gap["modeled_outputs"]["applied_in_order"] == [[0, 0]]
+    assert gap["modeled_outputs"]["watchdog_expired_at_us"] == 50
+    assert gap["wire"]["logical_writes"] == 2 and gap["timing"]["init_within_limit"] is True
+
+    largest_limit = (1 << 64) - 1
+    long_pause = run("long-pause", largest_limit, watchdog=largest_limit, scenario="watchdog-expires")
+    assert long_pause["timing"]["blocked_write"] == "safe_restore"
+    assert long_pause["timing"]["init_within_limit"] is False
+    assert long_pause["modeled_outputs"]["watchdog_expired_at_us"] == largest_limit + 50
+    assert long_pause["wire"]["logical_writes"] == 2
+
+    unreadable = run("watchdog-unavailable", 1000, scenario="watchdog-unavailable")
+    assert unreadable["sequence"]["op"]["raw"] == 8
+    assert unreadable["sequence"]["op_watchdog"] == {"wkc": 0, "raw": None}
+    assert unreadable["sequence"]["output"] is None and unreadable["wire"]["logical_writes"] == 1
+    assert "did not return WKC 1" in unreadable["error"]
+    error = cli_call(cli, "rehearse-output", profile_path, "--scenario", "watchdog-expires", success=False)
+    assert "requires a verified output plan" in error
+
+
 def verify_output_rehearsal(cli, destination):
     sample = ROOT / "samples" / "virtual.json"
     source_bytes = sample.read_bytes()
@@ -3385,6 +3464,9 @@ def main():
     output_plan_destination = destination / "output-plan"
     output_plan_destination.mkdir()
     verify_output_plan(cli, output_plan_destination)
+    output_timing_destination = destination / "output-timing"
+    output_timing_destination.mkdir()
+    verify_output_timing(cli, output_timing_destination)
     pcap_destination = destination / "pcap"
     pcap_destination.mkdir()
     verify_pcap(cli, pcap_destination)
