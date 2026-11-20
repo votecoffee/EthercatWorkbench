@@ -27,6 +27,8 @@ Use `inspect-input-group samples/input-group.json` to plan one byte-aligned inpu
 
 Use `inspect-input-group MANIFEST --frame FILE` for a saved single Workbench reply. The file declares the expected datagram index, unique station addresses in bus order and raw Ethernet reply hex. Check `frame.valid` and each device's `al` record even when the command succeeds. WKC mismatches, missing AL reads or unclean SAFEOP withhold all decoded inputs. Treat the declaration and reply as offline evidence. `--frame` cannot be combined with `--hex` and `--wkc`.
 
+Add `--fmmu FILE` for a saved per-station channel count and ordered 16-byte FMMU records with WKC. Input mappings must cover exactly the planned byte slices. With `--frame`, check both `frame.valid` and `fmmu.valid`. The same station order, full register coverage and matching geometry are necessary for decoding. Use snapshots from the same setup; these are offline checks and do not verify physical PDO assignments or freshness.
+
 Use headless files/CLI by default. Desktop input, screenshots or recording need an explicit request in the current chat. Do not run the verification script's optional native GUI mode automatically.
 
 ## Desktop navigation

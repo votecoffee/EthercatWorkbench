@@ -59,6 +59,9 @@ enum Command {
         /// Inspect a saved Workbench Ethernet reply with its ordered station addresses.
         #[arg(long, conflicts_with_all = ["hex", "wkc"])]
         frame: Option<PathBuf>,
+        /// Check a saved FMMU register snapshot against the input plan.
+        #[arg(long, conflicts_with_all = ["hex", "wkc"])]
+        fmmu: Option<PathBuf>,
         /// Export inspection JSON to a new file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -385,14 +388,17 @@ fn main() -> Result<()> {
             hex,
             wkc,
             frame,
+            fmmu,
             out,
         } => {
             let group = ethercat_workbench::input_group::InputGroup::load(&manifest)?;
-            let inspection = if let Some(path) = frame {
-                group.inspect_frame_file(&path)?
-            } else {
-                let payload = hex.as_deref().map(payload_hex).transpose()?;
-                group.inspect(payload.as_deref().zip(wkc))?
+            let inspection = match (fmmu.as_deref(), frame.as_deref()) {
+                (Some(path), frame) => group.inspect_fmmu_file(path, frame)?,
+                (None, Some(path)) => group.inspect_frame_file(path)?,
+                (None, None) => {
+                    let payload = hex.as_deref().map(payload_hex).transpose()?;
+                    group.inspect(payload.as_deref().zip(wkc))?
+                }
             };
             inspection_export(&inspection, out.as_deref())
         }

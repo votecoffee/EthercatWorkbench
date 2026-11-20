@@ -1545,7 +1545,7 @@ def verify_input_group(cli, destination):
     plan = cli_call(cli, "inspect-input-group", manifest)
     assert (plan["schema"], plan["source"], plan["logical_start"]) == (1, "offline_profiles", 0)
     assert (plan["input_bytes"], plan["expected_wkc"], plan["actual_wkc"]) == (16, 2, None)
-    assert "frame" not in plan and all("al" not in device for device in plan["devices"])
+    assert "frame" not in plan and "fmmu" not in plan and all("al" not in device for device in plan["devices"])
     for index, device in enumerate(plan["devices"]):
         assert (device["position"], device["offset"], device["tx_bytes"]) == (index, index * 8, 8)
         assert device["input"] is None
@@ -1718,6 +1718,141 @@ def verify_input_group_frame(cli, destination):
     assert partial["devices"][-1]["al"]["status"] is None
     assert all(d["input"] is None for d in partial["devices"])
     (destination / "healthy-receipt.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+
+def verify_input_group_fmmu(cli, destination):
+    manifest = ROOT / "samples/input-group.json"
+    saved_frame = ROOT / "samples/input-group-frame.json"
+    sample = ROOT / "samples/input-group-fmmu.json"
+    frame_args = ("--frame", saved_frame)
+    standalone = cli_call(cli, "inspect-input-group", manifest, "--fmmu", sample)
+    review = standalone["fmmu"]
+    assert review["source_sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert review["valid"] and review["layout_matches"] and review["stations_match"] is None
+    assert standalone["actual_wkc"] is None and "frame" not in standalone
+    assert all(d["input"] is None for d in standalone["devices"])
+    first, second = review["devices"]
+    assert [d["station_address"] for d in (first, second)] == [4096, 4097]
+    assert not first["issues"] and not second["issues"]
+    assert first["slots"][0]["mapping"]["physical_start"] == 0x1200
+    assert first["slots"][1]["mapping"]["write_enabled"] and not first["slots"][1]["mapping"]["read_enabled"]
+    assert [s["mapping"]["logical_start"] for s in second["slots"]] == [18, 12, 8]
+    checked = cli_call(cli, "inspect-input-group", manifest, "--fmmu", sample, *frame_args)
+    previous = cli_call(cli, "inspect-input-group", manifest, *frame_args)
+    assert "fmmu" not in previous
+    assert checked["frame"] == previous["frame"] and checked["devices"] == previous["devices"]
+    assert checked["fmmu"]["valid"] and checked["fmmu"]["stations_match"]
+    assert all(device["station_matches"] for device in checked["fmmu"]["devices"])
+    (destination / "healthy-receipt.json").write_text(json.dumps(checked, indent=2), encoding="utf-8")
+
+    for name, expected in [
+        ("wrong-range", "outside planned input"), ("overlap", "overlaps"), ("gap", "unmapped logical input bytes"),
+        ("unaligned", "not byte aligned"), ("zero-length", "zero length"), ("physical-overflow", "exceeds the physical"),
+        ("logical-overflow", "exceeds the logical"), ("unknown-count", "FMMU count WKC"),
+        ("over-limit-count", "count 17 exceeds 16"), ("missing-slot", "ESC reports 3 slots"),
+        ("bad-slot-wkc", "FMMU 0 WKC 2"), ("wrong-station", None),
+    ]:
+        evidence = json.loads(sample.read_bytes())
+        downstream = evidence["devices"][1]
+        mapped = downstream["slots"][2]["value"]
+        if name == "wrong-range":
+            mapped[0] = 7
+        elif name == "overlap":
+            mapped[4] = 5
+        elif name == "gap":
+            mapped[12] = 0
+        elif name == "unaligned":
+            mapped[10] = 1
+        elif name == "zero-length":
+            mapped[4] = 0
+        elif name == "physical-overflow":
+            mapped[8:10] = [255, 255]
+        elif name == "logical-overflow":
+            mapped[:4] = [255] * 4
+        elif name == "unknown-count":
+            downstream["count"]["wkc"] = 0
+        elif name == "over-limit-count":
+            downstream["count"]["value"] = 17
+        elif name == "missing-slot":
+            downstream["slots"].pop(0)
+        elif name == "bad-slot-wkc":
+            downstream["slots"][0]["wkc"] = 2
+        else:
+            downstream["station_address"] = 4100
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        out = destination / f"{name}-receipt.json"
+        report = cli_call(cli, "inspect-input-group", manifest, "--fmmu", path, *frame_args, "--out", out)
+        assert report == json.loads(out.read_bytes())
+        audit = report["fmmu"]
+        assert report["frame"]["valid"] and not audit["valid"]
+        assert all(device["input"] is None for device in report["devices"])
+        assert audit["layout_matches"] == (name == "wrong-station")
+        assert audit["stations_match"] == (name != "wrong-station")
+        if expected:
+            assert any(expected in issue for issue in audit["devices"][1]["issues"]), audit
+        if name == "bad-slot-wkc":
+            assert audit["devices"][1]["slots"][0]["mapping"] is None
+        if name == "wrong-station":
+            assert not audit["devices"][1]["station_matches"]
+
+    for name, expected in [
+        ("wrong-schema", "unsupported group FMMU schema"),
+        ("duplicate-station", "duplicate station address"),
+        ("oversize-record", "parse "),
+        ("oversize-slot-list", "more than 16 FMMU slots"),
+        ("missing-device", "one station address per position"),
+    ]:
+        evidence = json.loads(sample.read_bytes())
+        downstream = evidence["devices"][1]
+        if name == "wrong-schema":
+            evidence["schema"] = 2
+        elif name == "duplicate-station":
+            downstream["station_address"] = 4096
+        elif name == "oversize-record":
+            downstream["slots"][0]["value"].append(0)
+        elif name == "oversize-slot-list":
+            downstream["slots"] = [downstream["slots"][0]] * 17
+        else:
+            evidence["devices"].pop()
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        out = destination / f"{name}-no-output.json"
+        assert expected in cli_call(cli, "inspect-input-group", manifest, "--fmmu", path, "--out", out, success=False)
+        assert not out.exists()
+    assert "cannot be used" in cli_call(cli, "inspect-input-group", manifest, "--fmmu", sample,
+                                       "--hex", "00", "--wkc", 2, success=False)
+
+    zero = destination / "zero-input.json"
+    plan = json.loads(manifest.read_bytes())
+    for device in plan["devices"]:
+        device["profile"] = str((manifest.parent / device["profile"]).resolve())
+    identity = plan["devices"][1]["identity"]
+    zero.write_text(json.dumps({"expected_identity": identity}), encoding="utf-8")
+    plan["devices"].append({"position": 2, "profile": zero.name, "identity": identity})
+    zero_plan = destination / "zero-plan.json"
+    zero_plan.write_text(json.dumps(plan), encoding="utf-8")
+    evidence = json.loads(sample.read_bytes())
+    zero_device = {"station_address": 4098, "count": {"wkc": 1, "value": 0}, "slots": []}
+    evidence["devices"].append(zero_device)
+    zero_snapshot = destination / "zero-snapshot.json"
+    zero_snapshot.write_text(json.dumps(evidence), encoding="utf-8")
+    assert cli_call(cli, "inspect-input-group", zero_plan, "--fmmu", zero_snapshot)["fmmu"]["valid"]
+    zero_device["count"]["value"] = 1
+    zero_device["slots"].append(evidence["devices"][0]["slots"][0])
+    zero_snapshot.write_text(json.dumps(evidence), encoding="utf-8")
+    zero_report = cli_call(cli, "inspect-input-group", zero_plan, "--fmmu", zero_snapshot)["fmmu"]
+    assert not zero_report["valid"] and "no planned input" in zero_report["devices"][2]["issues"][0]
+
+    dirty = json.loads(saved_frame.read_bytes())
+    raw = bytearray.fromhex(dirty["reply_hex"])
+    raw[76] = 0x1e
+    dirty["reply_hex"] = raw.hex()
+    dirty_frame = destination / "bad-al-frame.json"
+    dirty_frame.write_text(json.dumps(dirty), encoding="utf-8")
+    dirty_report = cli_call(cli, "inspect-input-group", manifest, "--fmmu", sample, "--frame", dirty_frame)
+    assert dirty_report["fmmu"]["valid"] and not dirty_report["frame"]["valid"]
+    assert all(device["input"] is None for device in dirty_report["devices"])
 
 
 def verify_pcap(cli, destination):
@@ -2381,6 +2516,9 @@ def main():
     frame_destination = destination / "input-group-frame"
     frame_destination.mkdir()
     verify_input_group_frame(cli, frame_destination)
+    fmmu_destination = destination / "input-group-fmmu"
+    fmmu_destination.mkdir()
+    verify_input_group_fmmu(cli, fmmu_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

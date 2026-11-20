@@ -1,4 +1,6 @@
 //! Offline planning and decoding for a byte-aligned, input-only logical read.
+pub(crate) mod fmmu;
+
 use crate::{
     esc::{AlStatus, al_status, clean_safeop},
     model::{Identity, MAX_PAYLOAD, Profile, Source},
@@ -66,6 +68,8 @@ pub struct Inspection<'a> {
     actual_wkc: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) frame: Option<FrameCheck>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fmmu: Option<fmmu::Review>,
     pub(crate) devices: Vec<Device<'a>>,
 }
 
@@ -205,6 +209,24 @@ impl InputGroup {
     }
 
     pub fn inspect_frame_file(&self, path: &Path) -> Result<Inspection<'_>> {
+        self.inspect_saved_frame(path, None)
+    }
+
+    pub fn inspect_fmmu_file(&self, path: &Path, frame: Option<&Path>) -> Result<Inspection<'_>> {
+        let review = fmmu::review(path, &self.bindings)?;
+        if let Some(frame) = frame {
+            return self.inspect_saved_frame(frame, Some(review));
+        }
+        let mut inspection = self.inspection(None, None);
+        inspection.fmmu = Some(review);
+        Ok(inspection)
+    }
+
+    fn inspect_saved_frame(
+        &self,
+        path: &Path,
+        fmmu: Option<fmmu::Review>,
+    ) -> Result<Inspection<'_>> {
         let (sample, _) = read_json::<FrameSample>(path, MAX_FRAME_FILE_BYTES)?;
         ensure!(
             sample.schema == 1,
@@ -222,7 +244,7 @@ impl InputGroup {
             "frame exceeds {MAX_FRAME_BYTES} bytes"
         );
         let reply = hex::decode(hex).context("group frame reply must contain hex byte pairs")?;
-        self.inspect_reply(sample.index, &sample.stations, &reply)
+        self.inspect_reply(sample.index, &sample.stations, &reply, fmmu)
     }
 
     pub(crate) fn expected_frame(
@@ -230,22 +252,9 @@ impl InputGroup {
         index: u8,
         stations: &[u16],
     ) -> Result<Frame<MAX_DATAGRAMS>> {
-        ensure!(
-            stations.len() == self.bindings.len(),
-            "expected one station address per position ({}), got {}",
-            self.bindings.len(),
-            stations.len()
-        );
+        validate_stations(stations, self.bindings.len())?;
         let mut parts = [Datagram::register(LRD, 0, 0, self.input_bytes); MAX_DATAGRAMS];
         for (position, &station) in stations.iter().enumerate() {
-            ensure!(
-                station != 0,
-                "station address at position {position} must be nonzero"
-            );
-            ensure!(
-                !stations[..position].contains(&station),
-                "duplicate station address {station:#06x}"
-            );
             parts[position + 1] = Datagram::register(FPRD, station, 0x0130, 6);
         }
         Ok(Frame::with_count(index, parts, 1 + stations.len()))
@@ -256,6 +265,7 @@ impl InputGroup {
         index: u8,
         stations: &[u16],
         reply: &[u8],
+        mut fmmu: Option<fmmu::Review>,
     ) -> Result<Inspection<'_>> {
         ensure!(
             reply.len() <= MAX_FRAME_BYTES,
@@ -282,13 +292,18 @@ impl InputGroup {
             .collect();
         let lrd_wkc_matches = wkc == self.expected_wkc;
         let valid = lrd_wkc_matches && al_reads.iter().all(|al| al.clean_safeop);
-        let mut inspection = self.inspection(valid.then_some(payload), Some(wkc));
+        if let Some(review) = &mut fmmu {
+            review.compare_stations(stations);
+        }
+        let usable = valid && fmmu.as_ref().is_none_or(|review| review.valid);
+        let mut inspection = self.inspection(usable.then_some(payload), Some(wkc));
         inspection.frame = Some(FrameCheck {
             index,
             reply_sha256: hex::encode(Sha256::digest(reply)),
             lrd_wkc_matches,
             valid,
         });
+        inspection.fmmu = fmmu;
         for (device, al) in inspection.devices.iter_mut().zip(al_reads) {
             device.al = Some(al);
         }
@@ -339,9 +354,29 @@ impl InputGroup {
             expected_wkc: self.expected_wkc,
             actual_wkc,
             frame: None,
+            fmmu: None,
             devices,
         }
     }
+}
+
+fn validate_stations(stations: &[u16], expected: usize) -> Result<()> {
+    ensure!(
+        stations.len() == expected,
+        "expected one station address per position ({expected}), got {}",
+        stations.len()
+    );
+    for (position, &station) in stations.iter().enumerate() {
+        ensure!(
+            station != 0,
+            "station address at position {position} must be nonzero"
+        );
+        ensure!(
+            !stations[..position].contains(&station),
+            "duplicate station address {station:#06x}"
+        );
+    }
+    Ok(())
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path, max_bytes: u64) -> Result<(T, Vec<u8>)> {

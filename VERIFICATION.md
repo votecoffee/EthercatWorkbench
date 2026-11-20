@@ -554,3 +554,11 @@ The virtual two-ESC frame returned two distinct input images and one AL reply at
 The focused release CLI checks validated the authored saved reply, independent hashes and typed decoder parity. They covered missing and ambiguous AL replies, flags and codes, OP/PREOP, partial LRD, incorrect index/address/command/chain, truncated or oversized frames, malformed declarations and a 1,024-byte LRD plus 16 AL replies. A zero-input position still needed a clean AL reply. Planning and payload-only decoding kept their existing report shape. Formatting, Clippy, 181 offline Rust tests (139 library and 42 desktop) and the Windows x64 MSVC release build passed.
 
 The saved-frame assessment covers the declared frame and profiles. Native GUI interaction, physical SAFEOP input and timing, grouped setup and live grouped acquisition remain open.
+
+## Version 0.52.0 grouped FMMU readback review (2026-11-20)
+
+The virtual two-ESC test used FPRD to read the channel count and both FMMU slots at each station. The initial snapshots matched the planned logical ranges. Moving the downstream input range one byte earlier kept the LRD WKC and AL checks valid, while the FMMU comparison identified the range outside that station's slot. The transport audit recorded no writes or state requests.
+
+The focused release CLI checks used an independent saved snapshot with two adjacent input mappings in reverse slot order. They checked the source hash, raw slot evidence, exact coverage, overlap, gaps, alignment, logical and physical address overflow, disabled/write-only entries, zero-input positions, station order, missing slots and ambiguous read counters. Combining a clean frame with invalid FMMU evidence withheld decoding. Clean FMMU evidence did not qualify an invalid AL reply. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
+
+The audit checks supplied FMMU evidence and planned logical coverage. Live FMMU acquisition, physical SyncManager/PDO verification, snapshot freshness, native GUI interaction and physical bench qualification remain pending.

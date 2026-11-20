@@ -948,7 +948,7 @@ mod tests {
 
     #[test]
     fn grouped_lrd_and_al_reads_gate_scope_to_one_matching_reply() {
-        use crate::input_group::InputGroup;
+        use crate::input_group::{InputGroup, fmmu};
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/input-group.json");
         let group = InputGroup::load(&path).unwrap();
@@ -1008,9 +1008,41 @@ mod tests {
             let request = group.expected_frame(index, &stations).unwrap();
             wire.send(request.bytes()).unwrap();
             group
-                .inspect_reply(index, &stations, wire.receive().unwrap())
+                .inspect_reply(index, &stations, wire.receive().unwrap(), None)
                 .unwrap()
         };
+        let review_fmmu = |wire: &mut VirtualWire, position: usize| {
+            let station = stations[position];
+            let request = Frame::new(
+                0,
+                [
+                    Datagram::register(FPRD, station, 0x0004, 1),
+                    Datagram::register(FPRD, station, 0x0600, 16),
+                    Datagram::register(FPRD, station, 0x0610, 16),
+                ],
+            );
+            wire.send(request.bytes()).unwrap();
+            let [(count, count_wkc), first, second] =
+                request.reply(wire.receive().unwrap()).unwrap();
+            let evidence = fmmu::Station {
+                station_address: station,
+                count: fmmu::Read {
+                    wkc: count_wkc,
+                    value: count[0],
+                },
+                slots: [first, second]
+                    .into_iter()
+                    .map(|(bytes, wkc)| fmmu::Read {
+                        wkc,
+                        value: bytes.try_into().unwrap(),
+                    })
+                    .collect(),
+            };
+            let start = plan.devices[position].offset.unwrap() as u64;
+            fmmu::check(evidence, position, Some(start..start + 8))
+        };
+        assert!(review_fmmu(&mut wire, 0).issues.is_empty());
+        assert!(review_fmmu(&mut wire, 1).issues.is_empty());
         let decoded = exchange(&mut wire, 1);
         assert!(decoded.frame.unwrap().valid);
         assert!(
@@ -1072,6 +1104,18 @@ mod tests {
         assert_eq!(al.actual_wkc, 0);
         assert!(al.status.is_none());
         assert!(missing.devices.iter().all(|device| device.input.is_none()));
+
+        wire.devices[1].registers[0x0010] = 1;
+        // The second ESC now contributes to the LRD one byte before its expected slot.
+        wire.devices[1].logical_starts.0 = 7;
+        wire.devices[1].registers[0x0610] = 7;
+        assert!(exchange(&mut wire, 5).frame.unwrap().valid);
+        assert!(
+            review_fmmu(&mut wire, 1)
+                .issues
+                .iter()
+                .any(|issue| issue.contains("outside planned input"))
+        );
         for audit in wire.chain_audits() {
             assert_eq!(
                 audit.register_writes + audit.logical_writes + audit.physical_output_writes,

@@ -91,7 +91,7 @@ Live discovery is read-only on the selected NIC. It retains optional ESC informa
 
 For a read-only two-device example, run `ethercat-workbench-cli.exe scan-virtual --case two-devices`. The report includes a write audit for each bus position. The [ESC diagnostics guide](docs/esc-diagnostics.md#two-device-discovery-fixture) covers downstream timeouts.
 
-Run `ethercat-workbench-cli.exe inspect-input-group samples/input-group.json` to review byte ranges and expected Working Counter for a two-device input read. Add `--frame samples/input-group-frame.json` to require a clean AL reply from each station before decoding the shared payload. [Offline input groups](docs/input-group.md)
+Run `ethercat-workbench-cli.exe inspect-input-group samples/input-group.json` to review byte ranges and expected Working Counter for a two-device input read. Add a saved `--frame` to check each station's AL reply and a saved `--fmmu` snapshot to verify its logical input coverage before decoding. [Offline input groups](docs/input-group.md)
 
 ```powershell
 .\ethercat-workbench-cli.exe nics
