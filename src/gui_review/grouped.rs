@@ -271,17 +271,20 @@ fn show_cycle(ui: &mut egui::Ui, cycle: &Cycle, expected_wkc: u16) {
                 .map_or_else(|| "unavailable".into(), |ns| format!("{ns} ns"))
         ));
         for issue in &clock.issues {
-            ui.label(match *issue {
-                "distribution_wkc" => "Clock distribution Working Counter mismatch",
-                "reference_time_wkc" => "Reference clock read Working Counter mismatch",
-                "follower_time_wkc" => "Follower clock read Working Counter mismatch",
-                "difference_wkc" => "Time difference read Working Counter mismatch",
-                "reference_payload_mismatch" => "Reference time differs from distribution payload",
-                "reference_time_not_new" => "Reference clock did not advance",
-                "follower_time_not_new" => "Follower clock did not advance",
-                "difference_outside_limit" => "Follower time difference exceeds the limit",
-                other => other,
-            });
+            ui.label(clock_issue(issue));
+        }
+        for follower in &clock.additional_followers {
+            let difference = follower
+                .difference
+                .received_minus_local_ns
+                .map_or_else(|| "unavailable".into(), |ns| format!("{ns} ns"));
+            ui.label(format!(
+                "Follower {:#06x} · Difference {difference}",
+                follower.station()
+            ));
+            for issue in &follower.issues {
+                ui.label(clock_issue(issue));
+            }
         }
     }
     if let Some(topology) = &cycle.cyclic_topology
@@ -310,5 +313,20 @@ fn show_cycle(ui: &mut egui::Ui, cycle: &Cycle, expected_wkc: u16) {
             "Station {:#06x} · {description}",
             al.station_address
         ));
+    }
+}
+
+fn clock_issue(issue: &str) -> &str {
+    match issue {
+        "distribution_wkc" => "Clock distribution Working Counter mismatch",
+        "reference_time_wkc" => "Reference clock read Working Counter mismatch",
+        "follower_time_wkc" => "Follower clock read Working Counter mismatch",
+        "difference_wkc" => "Time difference read Working Counter mismatch",
+        "reference_payload_mismatch" => "Reference time differs from distribution payload",
+        "reference_time_not_new" => "Reference clock did not advance",
+        "follower_time_not_new" => "Follower clock did not advance",
+        "difference_outside_limit" => "Follower time difference exceeds the limit",
+        "additional_follower_rejected" => "An additional follower failed clock verification",
+        other => other,
     }
 }

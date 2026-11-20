@@ -214,6 +214,18 @@ pub(crate) const GROUP_DC: GroupFixture = GroupFixture {
     devices: &[GroupDevice::with_pdos(VirtualModel::CoeDc); 2],
 };
 
+pub(crate) const GROUP_DC_THREE: GroupFixture = GroupFixture {
+    stations: GROUP_THREE.stations,
+    devices: &[
+        GroupDevice::with_pdos(VirtualModel::CoeDc),
+        GroupDevice {
+            model: VirtualModel::CoeDc,
+            process_data: false,
+        },
+        GroupDevice::with_pdos(VirtualModel::CoeDc),
+    ],
+};
+
 #[derive(Default)]
 pub(crate) enum GroupCycleState {
     #[default]
@@ -312,11 +324,13 @@ pub enum GroupClockCase {
     FollowerOffset,
     DifferenceReadWkc,
     ReferenceRegression,
+    MiddleFollowerStale,
 }
 
 struct GroupClock {
     reference: bool,
     case: GroupClockCase,
+    nominal_difference_ns: i32,
 }
 
 struct DcRehearsal {
@@ -408,12 +422,26 @@ impl VirtualWire {
         wire
     }
 
-    pub(crate) fn for_group_dc(case: GroupClockCase, period_ns: u32) -> Self {
-        let mut wire = Self::with_group_layout(GROUP_DC);
+    pub(crate) fn for_group_dc(
+        fixture: GroupFixture,
+        case: GroupClockCase,
+        period_ns: u32,
+    ) -> Self {
+        let mut wire = Self::with_group_layout(fixture);
+        let fault_station = match case {
+            GroupClockCase::ReferenceRegression => 0,
+            GroupClockCase::MiddleFollowerStale => 1,
+            _ => fixture.stations.len() - 1,
+        };
         for (index, esc) in wire.devices.iter_mut().enumerate() {
             esc.group_clock = Some(GroupClock {
                 reference: index == 0,
-                case,
+                case: if index == fault_station {
+                    case
+                } else {
+                    GroupClockCase::Normal
+                },
+                nominal_difference_ns: if index == 2 { 350 } else { -250 },
             });
             esc.registers[usize::from(DC_ACTIVATION)] = 3;
             let cycle = usize::from(DC_SYNC0_CYCLE);
@@ -950,7 +978,9 @@ impl VirtualEsc {
             if cycle == 2 {
                 match clock.case {
                     GroupClockCase::FollowerWkc => return Ok(0),
-                    GroupClockCase::FollowerStale => return Ok(1),
+                    GroupClockCase::FollowerStale | GroupClockCase::MiddleFollowerStale => {
+                        return Ok(1);
+                    }
                     _ => {}
                 }
             }
@@ -958,7 +988,7 @@ impl VirtualEsc {
             let difference_ns: i32 = if cycle == 2 && clock.case == GroupClockCase::FollowerOffset {
                 2_500
             } else {
-                -250
+                clock.nominal_difference_ns
             };
             let reference = u64::from_le_bytes(data.try_into().expect("eight-byte FRMW payload"));
             let timestamp = reference.saturating_add_signed(-i64::from(difference_ns));

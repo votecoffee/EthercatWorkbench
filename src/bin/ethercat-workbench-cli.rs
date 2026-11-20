@@ -81,7 +81,7 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Rehearse clock distribution and qualify sampled inputs on two virtual DC stations.
+    /// Rehearse clock distribution and qualify sampled inputs on two or three virtual DC stations.
     RehearseGroupDc {
         manifest: PathBuf,
         #[command(flatten)]
@@ -90,7 +90,7 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Save raw two-station virtual DC and input replies for verified CSV replay.
+    /// Save raw virtual DC group and input replies for verified CSV replay.
     GenerateGroupDcReplay {
         manifest: PathBuf,
         #[command(flatten)]

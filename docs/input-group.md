@@ -96,6 +96,21 @@ Inspect `counts.clock_rejections` and each cycle's `clock.issues` in the replay 
 
 The generator derives elapsed microseconds from the modeled cycle index and SYNC0 period. The raw clock differences and saved elapsed times describe an authored offline run. Use the same fixture for `verify-group-replay` and `bundle-group-replay`. The audit rebuilds the clock decisions from the raw frames and checks the CSV rows, including when reopening a moved bundle. Older input-only schema 1 and DC schema 2 replay fixtures still work.
 
+## Rehearse three distributed clocks
+
+```powershell
+.\ethercat-workbench-cli.exe rehearse-group-dc samples/input-group-dc-three.json --scenario middle-follower-stale
+.\ethercat-workbench-cli.exe generate-group-dc-replay samples/input-group-dc-three.json --scenario middle-follower-stale --period-ns 700000 --cycles 8 --out .local/dc-three-frames.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group-dc-three.json .local/dc-three-frames.json --csv .local/dc-three.csv --out .local/dc-three-replay.json
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group-dc-three.json .local/dc-three-frames.json .local/dc-three-replay.json .local/dc-three.csv
+```
+
+The sample has a reference at `0x1000` and followers at `0x1001` and `0x1002`. The middle station has zero configured PDO bytes. All three take part in the modeled FRMW exchange, which expects WKC 3. The PDO read expects WKC 2 and still checks AL for all three stations. Setup reads SYNC0 configuration at each address. A subsequent FPRD frame checks the reference and each follower's time and filtered difference. [Beckhoff ESC technology reference, sections 2.4 and 9.1.3.3](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
+Each follower must advance and stay within the supplied difference limit before the generator requests the PDO input. The first follower stays at `clock.follower` and `clock.difference`. `clock.additional_followers` records the other follower with its readback and issues. `middle-follower-stale` holds the no-PDO station's time on cycle two. The standard follower fault scenarios target the last follower in this sample. The reference-regression scenario still targets the reference.
+
+Replay and bundle audit reconstruct the independent clock checks from the saved frames. The eight-cycle stale-middle example writes seven rows, with PDO columns for positions 0 and 2. This rehearsal uses authored clocks and timestamps.
+
 ## Generate a two-device replay
 
 ```powershell

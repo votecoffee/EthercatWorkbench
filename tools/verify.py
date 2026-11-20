@@ -2187,6 +2187,118 @@ def verify_group_dc(cli, destination):
     assert not invalid.exists()
 
 
+def verify_three_station_group_dc(cli, destination):
+    sample = ROOT / "samples"
+    manifest = sample / "input-group-dc-three.json"
+    period = 700_000
+
+    def rehearse(*args, **kwargs):
+        return cli_call(cli, "rehearse-group-dc", manifest, "--period-ns", period, *args, **kwargs)
+
+    normal = rehearse("--out", destination / "normal.json")
+    assert normal["clock_rejections"] == 0 and normal["valid_input_cycles"] == 4
+    assert normal["configured_sync0"] == [
+        {"station": station, "activation": 3, "period_ns": period}
+        for station in (4096, 4097, 4098)
+    ]
+    assert [(d["offset"], d["tx_bytes"]) for d in normal["plan"]["devices"]] == [(0, 8), (None, 0), (8, 8)]
+    assert normal["plan"]["topology"]["before_mapping"]["count_wkc"] == 3
+    for cycle_index, cycle in enumerate(normal["cycles"], 1):
+        clock = cycle["clock"]
+        assert clock["valid"] and not clock["issues"]
+        assert clock["actual_distribution_wkc"] == clock["expected_distribution_wkc"] == 3
+        reference = 1_000_000_000 + cycle_index * period
+        assert clock["reference"]["time_ns"] == reference
+        assert clock["follower"] == {"station": 4097, "wkc": 1, "time_ns": reference + 250}
+        assert clock["difference"]["received_minus_local_ns"] == -250
+        [last] = clock["additional_followers"]
+        assert last["follower"] == {"station": 4098, "wkc": 1, "time_ns": reference - 350}
+        assert last["difference"] == {"wkc": 1, "raw": 350, "received_minus_local_ns": 350}
+        assert last["raw_follower_minus_reference_ns"] == -350 and not last["issues"]
+        entry = cycle["input"]
+        assert entry["actual_wkc"] == entry["expected_wkc"] == 2
+        assert entry["devices"][1]["input"] is None and entry["devices"][1]["al"]["clean_safeop"]
+
+    for scenario, actual_wkc, main_issue, last_issue in (
+        ("middle-follower-stale", 3, "follower_time_not_new", None),
+        ("follower-stale", 3, "additional_follower_rejected", "follower_time_not_new"),
+        ("follower-wkc", 2, "distribution_wkc", "follower_time_not_new"),
+        ("follower-offset", 3, "additional_follower_rejected", "difference_outside_limit"),
+        ("difference-read-wkc", 3, "additional_follower_rejected", "difference_wkc"),
+        ("reference-regression", 3, "reference_time_not_new", "follower_time_not_new"),
+    ):
+        result = rehearse("--scenario", scenario, "--out", destination / f"{scenario}.json")
+        assert [c["clock"]["valid"] for c in result["cycles"]] == [True, False, True, True]
+        rejected = result["cycles"][1]
+        clock = rejected["clock"]
+        assert rejected["input"] is None and clock["actual_distribution_wkc"] == actual_wkc
+        assert main_issue in clock["issues"]
+        [last] = clock["additional_followers"]
+        assert last["issues"] == ([last_issue] if last_issue else [])
+        if scenario == "middle-follower-stale":
+            first = result["cycles"][0]["clock"]
+            assert clock["follower"]["time_ns"] == first["follower"]["time_ns"]
+            assert last["follower"]["time_ns"] > first["additional_followers"][0]["follower"]["time_ns"]
+        assert len(result["wire_audit"]) == 3
+        for position in result["wire_audit"]:
+            assert position["logical_reads"] == 3 and position["dc_clock_distribution"] == 4
+            assert all(position[field] == 0 for field in ("register_writes", "logical_writes", "op_requests", "physical_output_writes"))
+    all_rejected = rehearse("--difference-limit-ns", 300)
+    assert all_rejected["clock_rejections"] == 4 and all_rejected["valid_input_cycles"] == 0
+    assert all(c["clock"]["issues"] == ["additional_follower_rejected"] for c in all_rejected["cycles"])
+    assert rehearse("--difference-limit-ns", 350)["valid_input_cycles"] == 4
+    assert "three-station DC fixture" in cli_call(cli, "rehearse-group-dc", sample / "input-group-dc.json",
+                                                "--scenario", "middle-follower-stale", success=False)
+
+    fixture = destination / "dc-three-frames.json"
+    saved = cli_call(cli, "generate-group-dc-replay", manifest, "--period-ns", period, "--cycles", 8,
+                     "--scenario", "middle-follower-stale", "--out", fixture)
+    assert saved["schema"] == 4 and saved["stations"] == [4096, 4097, 4098]
+    assert len(saved["setup_topology"][0]["mapping_replies"]) == 24
+    assert saved["cycles"][1]["elapsed_us"] is None and not saved["cycles"][1]["received_hex"]
+    for cycle in saved["cycles"]:
+        frames = cycle["clock_frames"]
+        frmw = bytes.fromhex(frames["distribution_hex"])
+        assert frmw[16] == 14 and struct.unpack_from("<H", frmw, 34)[0] == 3
+        raw = bytes.fromhex(frames["readback_hex"])
+        for offset, (station, register, width) in zip(
+            (16, 36, 56, 72, 92), ((4096, 0x0910, 8), (4097, 0x0910, 8), (4097, 0x092C, 4),
+                                  (4098, 0x0910, 8), (4098, 0x092C, 4)), strict=True,
+        ):
+            assert raw[offset] == 4
+            address, register_word, control = struct.unpack_from("<HHH", raw, offset + 2)
+            assert (address, register_word, control & 0x7FF) == (station, register, width)
+    log = destination / "three-clock.csv"
+    receipt = destination / "three-clock-replay.json"
+    report = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", log, "--rotate-rows", 2, "--out", receipt)
+    assert report["counts"]["clock_rejections"] == 1 and report["counts"]["valid"] == 7
+    _, logged = rows(log)
+    assert [int(row["cycle_index"]) for row in logged] == [1, 3, 4, 5, 6, 7, 8]
+    assert all("Position 0 Counter" in row and "Position 2 Counter" in row and
+               not any(field.startswith("Position 1 ") for field in row) for row in logged)
+    audited = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, log)
+    assert audited["verified_rows"] == 7 and audited["verified_mapping_generations"] == 1
+    bundle = destination / "clock-bundle"
+    cli_call(cli, "bundle-group-replay", manifest, fixture, receipt, log, "--out", bundle)
+    moved = bundle.rename(destination / "moved-clock-bundle")
+    assert cli_call(cli, "verify-group-bundle", moved)["audit"]["verified_rows"] == 7
+
+    for name, offset, replacement, message in (
+        ("changed-third-difference", 102, struct.pack("<I", 2500), "clock-rejected replay cycle 1 cannot carry"),
+        ("changed-third-address", 94, struct.pack("<H", 4097), "does not match the expected clock readback"),
+    ):
+        altered = json.loads(fixture.read_bytes())
+        frames = altered["cycles"][0]["clock_frames"]
+        raw = bytearray.fromhex(frames["readback_hex"])
+        raw[offset:offset + len(replacement)] = replacement
+        frames["readback_hex"] = raw.hex()
+        invalid = destination / f"{name}.json"
+        invalid.write_text(json.dumps(altered), encoding="utf-8")
+        blocked = destination / "blocked.csv"
+        assert message in cli_call(cli, "replay-input-group", manifest, invalid, "--csv", blocked, success=False)
+        assert not blocked.exists()
+
+
 def verify_group_dc_replay(cli, destination):
     manifest = ROOT / "samples/input-group-dc.json"
     fixture = destination / "stale.json"
@@ -4359,6 +4471,9 @@ def main():
     group_dc_replay_destination = destination / "input-group-dc-replay"
     group_dc_replay_destination.mkdir()
     verify_group_dc_replay(cli, group_dc_replay_destination)
+    group_dc_three_destination = destination / "input-group-dc-three"
+    group_dc_three_destination.mkdir()
+    verify_three_station_group_dc(cli, group_dc_three_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

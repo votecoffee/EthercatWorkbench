@@ -1556,12 +1556,14 @@ mod tests {
             Self(root)
         }
 
-        fn archived_group(&self, virtual_case: Option<VirtualScenario>) -> PathBuf {
+        fn archived_group(&self, virtual_case: Option<VirtualScenario>, three_dc: bool) -> PathBuf {
             let dc = virtual_case.is_none();
             use ethercat_workbench::input_group::{
                 InputGroup, audit::Evidence, bundle, clock_rehearsal, replay,
             };
-            let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join(if dc {
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join(if three_dc {
+                "samples/input-group-dc-three.json"
+            } else if dc {
                 "samples/input-group-dc.json"
             } else {
                 "samples/input-group.json"
@@ -1655,7 +1657,7 @@ mod tests {
     #[test]
     fn grouped_review_verifies_relocated_dc_capture_and_freezes_its_source() {
         let scratch = GroupScratch::create();
-        let bundle = scratch.archived_group(None);
+        let bundle = scratch.archived_group(None, false);
         let mut panel = Panel {
             page: Page::Grouped,
             ..Default::default()
@@ -1720,7 +1722,7 @@ mod tests {
     fn grouped_review_distinguishes_legacy_faults_and_rejects_changed_csv() {
         use std::sync::atomic::AtomicBool;
         let scratch = GroupScratch::create();
-        let bundle = scratch.archived_group(Some(VirtualScenario::Faults));
+        let bundle = scratch.archived_group(Some(VirtualScenario::Faults), false);
         let task = Task::ReviewGroupBundle {
             directory: bundle.clone(),
         };
@@ -1773,7 +1775,7 @@ mod tests {
     #[test]
     fn grouped_review_shows_topology_faults_and_holds_separately() {
         let scratch = GroupScratch::create();
-        let bundle = scratch.archived_group(Some(VirtualScenario::TopologyChange));
+        let bundle = scratch.archived_group(Some(VirtualScenario::TopologyChange), false);
         let mut panel = Panel {
             page: Page::Grouped,
             ..Default::default()
@@ -1798,6 +1800,28 @@ mod tests {
             assert!(text.contains(label), "missing {label} in {text}");
         }
         assert!(!text.contains("Generation 2 · Cycle 1"));
+    }
+
+    #[test]
+    fn grouped_review_names_the_additional_rejected_clock_station() {
+        let scratch = GroupScratch::create();
+        let bundle = scratch.archived_group(None, true);
+        let mut panel = Panel {
+            page: Page::Grouped,
+            ..Default::default()
+        };
+        panel.start(Task::ReviewGroupBundle { directory: bundle });
+        wait_for_saved_job(&mut panel);
+        assert_eq!(
+            panel.controller.state(),
+            State::Complete,
+            "{:?}",
+            panel.controller.error()
+        );
+        let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+        assert!(text.contains("FRMW WKC 3/3"), "{text}");
+        assert!(text.contains("Follower 0x1002"), "{text}");
+        assert!(text.contains("Follower clock did not advance"), "{text}");
     }
 
     // Pure egui layout: no native window, desktop input, screenshot or GPU.

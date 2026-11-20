@@ -1,4 +1,4 @@
-//! Rehearse clock distribution and clock-qualified inputs on the authored two-station wire.
+//! Rehearse clock distribution and clock-qualified inputs on the authored virtual groups.
 use super::{
     InputGroup, Inspection, decode_frame_hex, preflight,
     replay::{Fixture, MAPPING_FIXTURE_SCHEMA, MODELED_UTC, RecordedCycle},
@@ -6,17 +6,16 @@ use super::{
 pub use crate::virtual_esc::GroupClockCase;
 use crate::{
     virtual_esc::{
-        DC_ACTIVATION, DC_SYNC0_CYCLE, DC_TIME, DC_TIME_DIFFERENCE, GROUP_DC, GROUP_STATIONS,
-        VirtualStats, VirtualWire,
+        DC_ACTIVATION, DC_SYNC0_CYCLE, DC_TIME, DC_TIME_DIFFERENCE, GROUP_DC, GROUP_DC_THREE,
+        GroupFixture, VirtualStats, VirtualWire,
     },
     wire::{Datagram, FPRD, Frame},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-const REFERENCE: u16 = GROUP_STATIONS[0];
-const FOLLOWER: u16 = GROUP_STATIONS[1];
-const DISTRIBUTION_WKC: u16 = GROUP_STATIONS.len() as u16;
+const MAX_SYNC0_DATAGRAMS: usize = 2 * GROUP_DC_THREE.stations.len();
+const MAX_READBACK_DATAGRAMS: usize = MAX_SYNC0_DATAGRAMS - 1;
 const MAX_CYCLES: usize = 64;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -35,13 +34,20 @@ impl ClockRecording {
         stations: &[u16],
         cycles: usize,
     ) -> Result<ClockTracker> {
-        validate(group, self.period_ns, cycles)?;
+        let fixture = validate(group, self.period_ns, cycles, self.scenario)?;
         ensure!(
-            stations == GROUP_STATIONS,
+            stations == fixture.stations,
             "DC replay requires the authored station order"
         );
-        read_sync0(&decode_frame_hex(&self.sync0_hex)?, self.period_ns)?;
-        Ok(ClockTracker::new(self.difference_limit_ns))
+        read_sync0(
+            fixture.stations,
+            &decode_frame_hex(&self.sync0_hex)?,
+            self.period_ns,
+        )?;
+        Ok(ClockTracker::new(
+            fixture.stations,
+            self.difference_limit_ns,
+        ))
     }
 
     pub(super) fn modeled_elapsed_us(&self, cycle: u64) -> u64 {
@@ -58,15 +64,17 @@ pub(super) struct ClockFrames {
 
 pub(super) struct ClockTracker {
     input_slot: u8,
-    previous: [Option<u64>; 2],
+    stations: &'static [u16],
+    previous: Vec<Option<u64>>,
     difference_limit_ns: u32,
 }
 
 impl ClockTracker {
-    fn new(difference_limit_ns: u32) -> Self {
+    fn new(stations: &'static [u16], difference_limit_ns: u32) -> Self {
         Self {
             input_slot: 3,
-            previous: [None, None],
+            stations,
+            previous: vec![None; stations.len()],
             difference_limit_ns,
         }
     }
@@ -76,18 +84,21 @@ impl ClockTracker {
     }
 
     fn distribution_request(&self) -> Frame<1> {
-        Frame::clock_request(self.input_slot - 2, REFERENCE, DC_TIME)
+        Frame::clock_request(self.input_slot - 2, self.stations[0], DC_TIME)
     }
 
-    fn readback_request(&self) -> Frame<3> {
-        Frame::new(
-            self.input_slot - 1,
-            [
-                Datagram::register(FPRD, REFERENCE, DC_TIME, 8),
-                Datagram::register(FPRD, FOLLOWER, DC_TIME, 8),
-                Datagram::register(FPRD, FOLLOWER, DC_TIME_DIFFERENCE, 4),
-            ],
-        )
+    fn readback_request(&self) -> Frame<MAX_READBACK_DATAGRAMS> {
+        let mut parts =
+            [Datagram::register(FPRD, self.stations[0], DC_TIME, 8); MAX_READBACK_DATAGRAMS];
+        let mut used = 1;
+        for &station in &self.stations[1..] {
+            parts[used..used + 2].copy_from_slice(&[
+                Datagram::register(FPRD, station, DC_TIME, 8),
+                Datagram::register(FPRD, station, DC_TIME_DIFFERENCE, 4),
+            ]);
+            used += 2;
+        }
+        Frame::with_count(self.input_slot - 1, parts, used)
     }
 
     pub(super) fn inspect_recorded(&mut self, frames: ClockFrames) -> Result<ClockCheck> {
@@ -107,14 +118,22 @@ impl ClockTracker {
             .reply(readback)
             .context("FPRD reply does not match the expected clock readback request")?;
         let result = check_clock(
+            self.stations,
             read_u64(payload),
             wkc,
-            readbacks,
-            self.previous,
+            &readbacks,
+            &self.previous,
             self.difference_limit_ns,
         );
         if result.valid {
-            self.previous = [result.reference.time_ns, result.follower.time_ns];
+            self.previous[0] = result.reference.time_ns;
+            self.previous[1] = result.follower.time_ns;
+            for (previous, follower) in self.previous[2..]
+                .iter_mut()
+                .zip(&result.additional_followers)
+            {
+                *previous = follower.follower.time_ns;
+            }
         }
         self.input_slot += 2 + u8::from(result.valid);
         Ok(result)
@@ -135,7 +154,7 @@ pub struct Report<'a> {
     scenario: GroupClockCase,
     period_ns: u32,
     difference_limit_ns: u32,
-    configured_sync0: [Sync0; 2],
+    configured_sync0: Vec<Sync0>,
     plan: Inspection<'a>,
     clock_rejections: usize,
     valid_input_cycles: usize,
@@ -166,8 +185,78 @@ pub struct ClockCheck {
     follower: ClockRead,
     pub difference: DifferenceRead,
     raw_follower_minus_reference_ns: Option<i128>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub additional_followers: Vec<FollowerCheck>,
     pub issues: Vec<&'static str>,
     pub valid: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FollowerCheck {
+    follower: ClockRead,
+    pub difference: DifferenceRead,
+    raw_follower_minus_reference_ns: Option<i128>,
+    pub issues: Vec<&'static str>,
+}
+
+impl FollowerCheck {
+    pub fn station(&self) -> u16 {
+        self.follower.station
+    }
+
+    fn new(
+        station: u16,
+        time: (&[u8], u16),
+        difference: (&[u8], u16),
+        reference: Option<u64>,
+    ) -> Self {
+        let follower = ClockRead::new(station, time);
+        let (bytes, wkc) = difference;
+        let raw = (wkc == 1).then(|| read_u32(bytes));
+        let difference = DifferenceRead {
+            wkc,
+            raw,
+            received_minus_local_ns: raw.map(|value| {
+                let magnitude = i64::from(value & 0x7fff_ffff);
+                if value & 0x8000_0000 == 0 {
+                    magnitude
+                } else {
+                    -magnitude
+                }
+            }),
+        };
+        Self {
+            raw_follower_minus_reference_ns: follower
+                .time_ns
+                .zip(reference)
+                .map(|(follower, reference)| i128::from(follower) - i128::from(reference)),
+            follower,
+            difference,
+            issues: Vec::new(),
+        }
+    }
+
+    fn read_issues(&self, issues: &mut Vec<&'static str>) {
+        if self.follower.wkc != 1 {
+            issues.push("follower_time_wkc");
+        }
+        if self.difference.wkc != 1 {
+            issues.push("difference_wkc");
+        }
+    }
+
+    fn timing_issues(&self, previous: Option<u64>, limit: u32, issues: &mut Vec<&'static str>) {
+        if self.follower.not_new(previous) {
+            issues.push("follower_time_not_new");
+        }
+        if self
+            .difference
+            .received_minus_local_ns
+            .is_some_and(|value| value.unsigned_abs() > u64::from(limit))
+        {
+            issues.push("difference_outside_limit");
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -175,6 +264,22 @@ struct ClockRead {
     station: u16,
     wkc: u16,
     time_ns: Option<u64>,
+}
+
+impl ClockRead {
+    fn new(station: u16, (data, wkc): (&[u8], u16)) -> Self {
+        Self {
+            station,
+            wkc,
+            time_ns: (wkc == 1).then(|| read_u64(data)),
+        }
+    }
+
+    fn not_new(&self, previous: Option<u64>) -> bool {
+        self.time_ns
+            .zip(previous)
+            .is_some_and(|(time, prior)| time <= prior)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -193,17 +298,26 @@ pub fn generate_replay(group: &InputGroup, options: Options) -> Result<Fixture> 
     Ok(fixture.expect("recorded rehearsal"))
 }
 
-fn validate(group: &InputGroup, period_ns: u32, cycles: usize) -> Result<()> {
-    ensure!(
-        preflight::matches_fixture(group, GROUP_DC),
-        "group clock rehearsal requires two authored CoE/DC identities with 8 TxPDO and 2 RxPDO bytes each"
-    );
+fn validate(
+    group: &InputGroup,
+    period_ns: u32,
+    cycles: usize,
+    scenario: GroupClockCase,
+) -> Result<GroupFixture> {
+    let fixture = [GROUP_DC, GROUP_DC_THREE]
+        .into_iter()
+        .find(|fixture| preflight::matches_fixture(group, *fixture))
+        .context("group clock rehearsal requires two authored CoE/DC stations with PDOs, or three with a no-PDO middle station")?;
     ensure!(period_ns > 0, "SYNC0 period must be positive");
     ensure!(
         (1..=MAX_CYCLES).contains(&cycles),
         "rehearsal requires 1–{MAX_CYCLES} cycles"
     );
-    Ok(())
+    ensure!(
+        scenario != GroupClockCase::MiddleFollowerStale || fixture.stations.len() == 3,
+        "middle-follower-stale requires the three-station DC fixture"
+    );
+    Ok(fixture)
 }
 
 fn rehearse(
@@ -211,14 +325,19 @@ fn rehearse(
     options: Options,
     record: bool,
 ) -> Result<(Report<'_>, Option<Fixture>)> {
-    validate(group, options.period_ns, options.cycles as usize)?;
-    let mut wire = VirtualWire::for_group_dc(options.scenario, options.period_ns);
+    let layout = validate(
+        group,
+        options.period_ns,
+        options.cycles as usize,
+        options.scenario,
+    )?;
+    let stations = layout.stations;
+    let mut wire = VirtualWire::for_group_dc(layout, options.scenario, options.period_ns);
     let mut plan = group.inspect(None)?;
-    let (mapping, replies) =
-        preflight::require_valid_mapping(group, &mut wire, &GROUP_STATIONS, 0)?;
+    let (mapping, replies) = preflight::require_valid_mapping(group, &mut wire, stations, 0)?;
     mapping.attach(&mut plan);
-    let sync0 = exchange(&mut wire, &sync0_request())?;
-    let configured_sync0 = read_sync0(sync0, options.period_ns)?;
+    let sync0 = exchange(&mut wire, &sync0_request(stations))?;
+    let configured_sync0 = read_sync0(stations, sync0, options.period_ns)?;
     let mut fixture = if record {
         let topology = plan
             .topology
@@ -234,14 +353,14 @@ fn rehearse(
                 sync0_hex: hex::encode(sync0),
             }),
             capture_start_utc: MODELED_UTC.into(),
-            stations: GROUP_STATIONS.to_vec(),
+            stations: stations.to_vec(),
             setup_topology: Some(vec![topology.recording(1, replies)]),
             cycles: Vec::with_capacity(options.cycles as usize),
         })
     } else {
         None
     };
-    let mut tracker = ClockTracker::new(options.difference_limit_ns);
+    let mut tracker = ClockTracker::new(stations, options.difference_limit_ns);
     let mut cycles = Vec::with_capacity(options.cycles as usize);
     for cycle_index in 1..=options.cycles {
         let index = tracker.input_slot();
@@ -255,12 +374,12 @@ fn rehearse(
 
         let mut received_hex = Vec::new();
         let input = if clock.valid {
-            let frame = group.expected_frame(index, &GROUP_STATIONS)?;
+            let frame = group.expected_frame(index, stations)?;
             let reply = exchange(&mut wire, &frame)?;
             if record {
                 received_hex.push(hex::encode(reply));
             }
-            Some(group.inspect_reply(index, &GROUP_STATIONS, reply, None)?)
+            Some(group.inspect_reply(index, stations, reply, None)?)
         } else {
             None
         };
@@ -316,135 +435,107 @@ fn exchange<'a, const N: usize>(wire: &'a mut VirtualWire, frame: &Frame<N>) -> 
     wire.receive().context("missing clock rehearsal reply")
 }
 
-fn sync0_request() -> Frame<4> {
-    Frame::new(
-        0,
-        [
-            Datagram::register(FPRD, REFERENCE, DC_ACTIVATION, 1),
-            Datagram::register(FPRD, REFERENCE, DC_SYNC0_CYCLE, 4),
-            Datagram::register(FPRD, FOLLOWER, DC_ACTIVATION, 1),
-            Datagram::register(FPRD, FOLLOWER, DC_SYNC0_CYCLE, 4),
-        ],
-    )
+fn sync0_request(stations: &[u16]) -> Frame<MAX_SYNC0_DATAGRAMS> {
+    let mut parts = [Datagram::register(FPRD, stations[0], DC_ACTIVATION, 1); MAX_SYNC0_DATAGRAMS];
+    for (&station, pair) in stations.iter().zip(parts.as_chunks_mut::<2>().0) {
+        pair.copy_from_slice(&[
+            Datagram::register(FPRD, station, DC_ACTIVATION, 1),
+            Datagram::register(FPRD, station, DC_SYNC0_CYCLE, 4),
+        ]);
+    }
+    Frame::with_count(0, parts, 2 * stations.len())
 }
 
-fn read_sync0(reply: &[u8], expected_period_ns: u32) -> Result<[Sync0; 2]> {
-    let [
-        (ref_activation, ref_awkc),
-        (ref_period, ref_pwkc),
-        (follower_activation, follower_awkc),
-        (follower_period, follower_pwkc),
-    ] = sync0_request()
+fn read_sync0(stations: &[u16], reply: &[u8], expected_period_ns: u32) -> Result<Vec<Sync0>> {
+    let parts = sync0_request(stations)
         .reply(reply)
         .context("FPRD reply does not match the expected SYNC0 register request")?;
-    ensure!(
-        [ref_awkc, ref_pwkc, follower_awkc, follower_pwkc] == [1; 4],
-        "SYNC0 register readback WKC mismatch"
-    );
-    let settings = [
-        Sync0 {
-            station: REFERENCE,
-            activation: ref_activation[0],
-            period_ns: read_u32(ref_period),
-        },
-        Sync0 {
-            station: FOLLOWER,
-            activation: follower_activation[0],
-            period_ns: read_u32(follower_period),
-        },
-    ];
-    ensure!(
-        settings
-            .iter()
-            .all(|value| value.activation == 3 && value.period_ns == expected_period_ns),
-        "SYNC0 readback does not match the authored schedule"
-    );
+    let mut settings = Vec::with_capacity(stations.len());
+    for (position, &station) in stations.iter().enumerate() {
+        let [(activation, activation_wkc), (period, period_wkc)] =
+            [parts[2 * position], parts[2 * position + 1]];
+        ensure!(
+            activation_wkc == 1 && period_wkc == 1,
+            "SYNC0 register readback WKC mismatch at {station:#06x}"
+        );
+        let read = Sync0 {
+            station,
+            activation: activation[0],
+            period_ns: read_u32(period),
+        };
+        ensure!(
+            read.activation == 3 && read.period_ns == expected_period_ns,
+            "SYNC0 readback does not match the authored schedule at {station:#06x}"
+        );
+        settings.push(read);
+    }
     Ok(settings)
 }
 
 fn check_clock(
+    stations: &[u16],
     frmw_payload_ns: u64,
     actual_distribution_wkc: u16,
-    [
-        (reference, reference_wkc),
-        (follower, follower_wkc),
-        (difference, difference_wkc),
-    ]: [(&[u8], u16); 3],
-    previous: [Option<u64>; 2],
+    readbacks: &[(&[u8], u16)],
+    previous: &[Option<u64>],
     difference_limit_ns: u32,
 ) -> ClockCheck {
-    let reference = ClockRead {
-        station: REFERENCE,
-        wkc: reference_wkc,
-        time_ns: (reference_wkc == 1).then(|| read_u64(reference)),
-    };
-    let follower = ClockRead {
-        station: FOLLOWER,
-        wkc: follower_wkc,
-        time_ns: (follower_wkc == 1).then(|| read_u64(follower)),
-    };
-    let raw = (difference_wkc == 1).then(|| read_u32(difference));
-    let difference = DifferenceRead {
-        wkc: difference_wkc,
-        raw,
-        received_minus_local_ns: raw.map(|value| {
-            let magnitude = i64::from(value & 0x7fff_ffff);
-            if value & 0x8000_0000 == 0 {
-                magnitude
-            } else {
-                -magnitude
-            }
-        }),
-    };
-
+    let reference = ClockRead::new(stations[0], readbacks[0]);
+    let first = FollowerCheck::new(stations[1], readbacks[1], readbacks[2], reference.time_ns);
+    let expected_distribution_wkc = stations.len() as u16;
     let mut issues = Vec::new();
-    if actual_distribution_wkc != DISTRIBUTION_WKC {
+    if actual_distribution_wkc != expected_distribution_wkc {
         issues.push("distribution_wkc");
     }
     if reference.wkc != 1 {
         issues.push("reference_time_wkc");
     }
-    if follower.wkc != 1 {
-        issues.push("follower_time_wkc");
-    }
-    if difference.wkc != 1 {
-        issues.push("difference_wkc");
-    }
+    first.read_issues(&mut issues);
     if reference
         .time_ns
         .is_some_and(|time| time != frmw_payload_ns)
     {
         issues.push("reference_payload_mismatch");
     }
-    for (clock, old, issue) in [
-        (&reference, previous[0], "reference_time_not_new"),
-        (&follower, previous[1], "follower_time_not_new"),
-    ] {
-        if clock
-            .time_ns
-            .zip(old)
-            .is_some_and(|(time, prior)| time <= prior)
-        {
-            issues.push(issue);
-        }
+    if reference.not_new(previous[0]) {
+        issues.push("reference_time_not_new");
     }
-    if difference
-        .received_minus_local_ns
-        .is_some_and(|value| value.unsigned_abs() > u64::from(difference_limit_ns))
+    first.timing_issues(previous[1], difference_limit_ns, &mut issues);
+
+    let mut additional_followers = Vec::new();
+    for (position, &station) in stations.iter().enumerate().skip(2) {
+        let first_datagram = 2 * position - 1;
+        let mut follower = FollowerCheck::new(
+            station,
+            readbacks[first_datagram],
+            readbacks[first_datagram + 1],
+            reference.time_ns,
+        );
+        let mut follower_issues = Vec::new();
+        follower.read_issues(&mut follower_issues);
+        follower.timing_issues(
+            previous[position],
+            difference_limit_ns,
+            &mut follower_issues,
+        );
+        follower.issues = follower_issues;
+        additional_followers.push(follower);
+    }
+    if additional_followers
+        .iter()
+        .any(|follower| !follower.issues.is_empty())
     {
-        issues.push("difference_outside_limit");
+        issues.push("additional_follower_rejected");
     }
     ClockCheck {
-        expected_distribution_wkc: DISTRIBUTION_WKC,
+        expected_distribution_wkc,
         actual_distribution_wkc,
         frmw_payload_ns,
-        raw_follower_minus_reference_ns: follower
-            .time_ns
-            .zip(reference.time_ns)
-            .map(|(follower, reference)| i128::from(follower) - i128::from(reference)),
+        raw_follower_minus_reference_ns: first.raw_follower_minus_reference_ns,
         reference,
-        follower,
-        difference,
+        follower: first.follower,
+        difference: first.difference,
+        additional_followers,
         valid: issues.is_empty(),
         issues,
     }
