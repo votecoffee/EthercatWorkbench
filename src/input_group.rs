@@ -1,6 +1,7 @@
 //! Offline planning and decoding for a byte-aligned, input-only logical read.
 pub(crate) mod fmmu;
 mod pdo_readback;
+pub mod replay;
 pub(crate) mod sync_manager;
 
 use crate::{
@@ -64,6 +65,24 @@ pub(crate) struct MappingReview {
     fmmu: fmmu::Review,
     sync_managers: Option<sync_manager::Review>,
     pdo: Option<pdo_readback::Review>,
+}
+
+impl MappingReview {
+    fn compare_stations(&mut self, stations: &[u16]) {
+        self.fmmu.compare_stations(stations);
+    }
+
+    fn valid(&self) -> bool {
+        self.fmmu.valid
+            && self.sync_managers.as_ref().is_none_or(|sync| sync.valid)
+            && self.pdo.as_ref().is_none_or(|pdo| pdo.valid)
+    }
+
+    fn attach(self, inspection: &mut Inspection<'_>) {
+        inspection.fmmu = Some(self.fmmu);
+        inspection.sync_managers = self.sync_managers;
+        inspection.pdo = self.pdo;
+    }
 }
 
 #[derive(Serialize)]
@@ -254,6 +273,21 @@ impl InputGroup {
         pdo: Option<&Path>,
         frame: Option<&Path>,
     ) -> Result<Inspection<'_>> {
+        let mapping = self.load_mapping_evidence(fmmu, sync_managers, pdo)?;
+        if let Some(frame) = frame {
+            return self.inspect_saved_frame(frame, Some(mapping));
+        }
+        let mut inspection = self.inspection(None, None);
+        mapping.attach(&mut inspection);
+        Ok(inspection)
+    }
+
+    fn load_mapping_evidence(
+        &self,
+        fmmu: &Path,
+        sync_managers: Option<&Path>,
+        pdo: Option<&Path>,
+    ) -> Result<MappingReview> {
         let fmmu = fmmu::review(fmmu, &self.bindings)?;
         let sync_managers = sync_managers
             .map(|path| sync_manager::review(path, &fmmu))
@@ -270,21 +304,11 @@ impl InputGroup {
                 )
             })
             .transpose()?;
-        if let Some(frame) = frame {
-            return self.inspect_saved_frame(
-                frame,
-                Some(MappingReview {
-                    fmmu,
-                    sync_managers,
-                    pdo,
-                }),
-            );
-        }
-        let mut inspection = self.inspection(None, None);
-        inspection.fmmu = Some(fmmu);
-        inspection.sync_managers = sync_managers;
-        inspection.pdo = pdo;
-        Ok(inspection)
+        Ok(MappingReview {
+            fmmu,
+            sync_managers,
+            pdo,
+        })
     }
 
     fn inspect_saved_frame(
@@ -298,17 +322,7 @@ impl InputGroup {
             "unsupported group frame schema {}",
             sample.schema
         );
-        let hex: String = sample
-            .reply_hex
-            .chars()
-            .filter(|c| !c.is_ascii_whitespace())
-            .take(MAX_FRAME_BYTES * 2 + 1)
-            .collect();
-        ensure!(
-            hex.len() <= MAX_FRAME_BYTES * 2,
-            "frame exceeds {MAX_FRAME_BYTES} bytes"
-        );
-        let reply = hex::decode(hex).context("group frame reply must contain hex byte pairs")?;
+        let reply = decode_frame_hex(&sample.reply_hex)?;
         self.inspect_reply(sample.index, &sample.stations, &reply, mapping)
     }
 
@@ -341,31 +355,13 @@ impl InputGroup {
             .reply(reply)
             .context("frame does not match the expected grouped LRD and ordered AL reads")?;
         let (payload, wkc) = parts[0];
-        let al_reads: Vec<_> = stations
-            .iter()
-            .zip(&parts[1..])
-            .map(|(&station, &(bytes, status_wkc))| {
-                let raw = al_readback(bytes, status_wkc);
-                AlRead {
-                    station_address: station,
-                    expected_wkc: 1,
-                    actual_wkc: status_wkc,
-                    clean_safeop: raw.is_some_and(|(status, code)| clean_safeop(status, code)),
-                    status: raw.map(|(status, code)| al_status(status, code)),
-                }
-            })
-            .collect();
+        let al_reads = decode_al_reads(stations, &parts[1..]);
         let lrd_wkc_matches = wkc == self.expected_wkc;
         let valid = lrd_wkc_matches && al_reads.iter().all(|al| al.clean_safeop);
         if let Some(review) = &mut mapping {
-            review.fmmu.compare_stations(stations);
+            review.compare_stations(stations);
         }
-        let usable = valid
-            && mapping.as_ref().is_none_or(|review| {
-                review.fmmu.valid
-                    && review.sync_managers.as_ref().is_none_or(|sync| sync.valid)
-                    && review.pdo.as_ref().is_none_or(|pdo| pdo.valid)
-            });
+        let usable = valid && mapping.as_ref().is_none_or(MappingReview::valid);
         let mut inspection = self.inspection(usable.then_some(payload), Some(wkc));
         inspection.frame = Some(FrameCheck {
             index,
@@ -374,9 +370,7 @@ impl InputGroup {
             valid,
         });
         if let Some(review) = mapping {
-            inspection.fmmu = Some(review.fmmu);
-            inspection.sync_managers = review.sync_managers;
-            inspection.pdo = review.pdo;
+            review.attach(&mut inspection);
         }
         for (device, al) in inspection.devices.iter_mut().zip(al_reads) {
             device.al = Some(al);
@@ -434,6 +428,36 @@ impl InputGroup {
             devices,
         }
     }
+}
+
+fn decode_frame_hex(text: &str) -> Result<Vec<u8>> {
+    let hex: String = text
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .take(MAX_FRAME_BYTES * 2 + 1)
+        .collect();
+    ensure!(
+        hex.len() <= MAX_FRAME_BYTES * 2,
+        "frame exceeds {MAX_FRAME_BYTES} bytes"
+    );
+    hex::decode(hex).context("group frame reply must contain hex byte pairs")
+}
+
+fn decode_al_reads(stations: &[u16], parts: &[(&[u8], u16)]) -> Vec<AlRead> {
+    stations
+        .iter()
+        .zip(parts)
+        .map(|(&station, &(bytes, status_wkc))| {
+            let raw = al_readback(bytes, status_wkc);
+            AlRead {
+                station_address: station,
+                expected_wkc: 1,
+                actual_wkc: status_wkc,
+                clean_safeop: raw.is_some_and(|(status, code)| clean_safeop(status, code)),
+                status: raw.map(|(status, code)| al_status(status, code)),
+            }
+        })
+        .collect()
 }
 
 fn validate_stations(stations: &[u16], expected: usize) -> Result<()> {

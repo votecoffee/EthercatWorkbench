@@ -2095,6 +2095,146 @@ def verify_input_group_pdo(cli, destination):
     assert "--sync-managers" in cli_call(cli, "inspect-input-group", manifest, "--pdo", sample, success=False)
 
 
+def verify_input_group_replay(cli, destination):
+    manifest = ROOT / "samples/input-group.json"
+    fixture = ROOT / "samples/input-group-replay.json"
+    options = ("--fmmu", ROOT / "samples/input-group-fmmu.json",
+               "--sync-managers", ROOT / "samples/input-group-sync-managers.json",
+               "--pdo", ROOT / "samples/input-group-pdo.json")
+    authored = json.loads(fixture.read_bytes())
+    metadata = ["capture_start_utc", "elapsed_us", "sample_index", "connection_generation", "cycle_index"]
+    selected_fields = ["Counter", "Sensor active", "Scaled counter"]
+    columns = metadata + [
+        f"Position {position} {field}" for position in range(2) for field in selected_fields
+    ]
+
+    def replay(base, *args, source=fixture, plan=manifest, success=True):
+        return cli_call(cli, "replay-input-group", plan, source, "--csv", base, *args, success=success)
+
+    def csv_records(base):
+        parts = sorted(base.parent.glob(f"{base.stem}.*.csv"))
+        if not parts:
+            parts = [base]
+        observations = []
+        for part in parts:
+            with part.open(encoding="utf-8", newline="") as stream:
+                reader = csv.DictReader(stream, strict=True)
+                assert reader.fieldnames == columns
+                for row in reader:
+                    assert set(row) == set(columns) and all(v is not None for v in row.values())
+                    observations.append(row)
+        return parts, observations
+
+    def check_rows(observations, expected):
+        assert len(observations) == len(expected)
+        for index, (row, (generation, cycle, elapsed, downstream)) in enumerate(zip(observations, expected, strict=True), 1):
+            assert row["capture_start_utc"] == authored["capture_start_utc"]
+            assert [int(row[key]) for key in metadata[1:]] == [elapsed, index, generation, cycle]
+            assert [row[key] for key in columns[5:]] == ["42", "true", "1", str(downstream), "false", "2"]
+
+    for mode, extra, expected, expected_parts in [
+        ("every", [], [(7, 1, 100, 13330), (7, 2, 1100, 13330), (7, 5, 4100, 13330),
+                       (7, 6, 5100, 13331), (8, 1, 10000, 13331), (8, 3, 12000, 13331)], 3),
+        ("change", ["--on-change"], [(7, 1, 100, 13330), (7, 6, 5100, 13331), (8, 1, 10000, 13331)], 2),
+    ]:
+        base = destination / f"{mode}.csv"
+        out = destination / f"{mode}.json"
+        result = replay(base, *options, *extra, "--rotate-rows", 2, "--out", out)
+        assert result == json.loads(out.read_bytes())
+        assert result["mode"] == mode and result["source"] == "offline_group_replay" and result["error"] is None
+        assert result["fixture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
+        assert result["plan"]["fmmu"]["valid"] and result["plan"]["sync_managers"]["valid"] and result["plan"]["pdo"]["valid"]
+        assert result["counts"] == {
+            "cycles": 9, "matched_replies": 8, "valid": 6, "unmatched_cycles": 1,
+            "wkc_mismatches": 1, "invalid_al": 2, "ignored_frames": 2,
+        }
+        assert result["capture"] == {
+            "selected": len(expected), "written": len(expected), "overruns": 0,
+            "utc_start": authored["capture_start_utc"], "parts": expected_parts,
+        }
+        assert result["receive_spacing"] == {
+            "count": 6, "p50_us": 1000, "p95_us": 2000, "p99_us": 2000, "longest_gap_us": 2000,
+        }
+        assert result["valid_receive_spacing"] == {
+            "count": 4, "p50_us": 1000, "p95_us": 3000, "p99_us": 3000, "longest_gap_us": 3000,
+        }
+        assert [c["valid"] for c in result["cycles"]] == [True, True, False, False, True, True, True, False, True]
+        assert [c["index"] for c in result["cycles"][:3]] == [254, 255, 0]
+        assert result["cycles"][2]["actual_wkc"] == 1 and result["cycles"][2]["al"][1]["status"]["code"] == 0x1e
+        assert result["cycles"][3]["actual_wkc"] is None and result["cycles"][3]["elapsed_us"] is None
+        assert result["cycles"][7]["actual_wkc"] == 2 and result["cycles"][7]["al"][1]["actual_wkc"] == 0
+        parts, observations = csv_records(base)
+        assert len(parts) == expected_parts and not base.exists()
+        check_rows(observations, expected)
+
+    plan = json.loads(manifest.read_bytes())
+    for device in plan["devices"]:
+        device["profile"] = str((manifest.parent / device["profile"]).resolve())
+    second = json.loads(Path(plan["devices"][1]["profile"]).read_bytes())
+    second["tx"][0]["log"] = False
+    modified = destination / "unselected.json"
+    modified.write_text(json.dumps(second), encoding="utf-8")
+    plan["devices"][1]["profile"] = modified.name
+    custom = destination / "plan.json"
+    custom.write_text(json.dumps(plan), encoding="utf-8")
+    masked_base = destination / "masked.csv"
+    masked = replay(masked_base, "--on-change", plan=custom)
+    assert masked["capture"]["written"] == 2 and masked["counts"]["valid"] == 6
+    with masked_base.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream, strict=True)
+        assert reader.fieldnames == [name for name in columns if name != "Position 1 Counter"]
+        assert [(r["connection_generation"], r["cycle_index"]) for r in reader] == [("7", "1"), ("8", "1")]
+
+    collision = destination / "collision.0002.csv"
+    collision.write_bytes(b"must preserve this part\n")
+    partial = replay(destination / "collision.csv", "--rotate-rows", 2, success=False)
+    assert collision.read_bytes() == b"must preserve this part\n"
+    assert partial["capture"]["written"] == 2 and partial["capture"]["selected"] == 6
+    assert "CSV replay incomplete" in partial["error"]
+    assert "already exists" in replay(destination / "no-csv.csv", "--out", destination / "every.json", success=False)
+    assert not (destination / "no-csv.csv").exists()
+
+    for name, issue in [
+        ("repeated-cycle", "increasing generation/cycle order"), ("regression", "receive time regresses"),
+        ("missing-time", "needs elapsed_us"), ("unmatched-time", "needs elapsed_us"),
+        ("trailing-candidate", "final candidate"), ("local-clock", "must use UTC"),
+    ]:
+        altered = json.loads(fixture.read_bytes())
+        if name == "repeated-cycle":
+            altered["cycles"][-1]["cycle_index"] = 2
+        elif name == "regression":
+            altered["cycles"][-1]["elapsed_us"] = 50
+        elif name == "missing-time":
+            altered["cycles"][-1]["elapsed_us"] = None
+        elif name == "unmatched-time":
+            altered["cycles"][3]["elapsed_us"] = 3100
+        elif name == "trailing-candidate":
+            altered["cycles"][-1]["received_hex"].extend(authored["cycles"][0]["received_hex"])
+        else:
+            altered["capture_start_utc"] = "2026-11-20T07:00:00-05:00"
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(altered), encoding="utf-8")
+        csv_path = destination / f"{name}.csv"
+        assert issue in replay(csv_path, source=path, success=False)
+        assert not csv_path.exists()
+
+    wrong = json.loads((ROOT / "samples/input-group-pdo.json").read_bytes())
+    wrong["devices"][1]["identity"]["revision"] = 2
+    wrong_path = destination / "wrong-pdo.json"
+    wrong_path.write_text(json.dumps(wrong), encoding="utf-8")
+    blocked = destination / "no-mapping.csv"
+    assert "saved mapping evidence failed" in replay(blocked, *options[:-1], wrong_path, success=False)
+    assert not blocked.exists()
+
+    only_unmatched = destination / "only-unmatched.json"
+    only_unmatched.write_text(json.dumps({**authored, "cycles": [authored["cycles"][3]]}), encoding="utf-8")
+    empty_base = destination / "header-only.csv"
+    no_data = replay(empty_base, source=only_unmatched)
+    assert no_data["counts"]["unmatched_cycles"] == 1 and no_data["capture"]["written"] == 0
+    assert no_data["valid_receive_spacing"]["count"] == 0 and no_data["valid_receive_spacing"]["p99_us"] is None
+    assert csv_records(empty_base) == ([empty_base], [])
+
+
 def verify_pcap(cli, destination):
     """Authored PCAP records: no capture hardware or packet transmission."""
     fixture = json.loads((ROOT / "samples/synthetic-replay.json").read_text(encoding="utf-8"))
@@ -2765,6 +2905,9 @@ def main():
     pdo_destination = destination / "input-group-pdo"
     pdo_destination.mkdir()
     verify_input_group_pdo(cli, pdo_destination)
+    replay_group_destination = destination / "input-group-replay"
+    replay_group_destination.mkdir()
+    verify_input_group_replay(cli, replay_group_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

@@ -578,3 +578,11 @@ The saved CoE and SII fixtures matched the single-device TxPDO comparator and re
 A split-channel fixture mapped each downstream SyncManager to the expected logical offset. Swapping only the physical FMMU targets preserved both coverage checks, WKC, AL, and the descriptor checks. The placement audit identified both incorrect channels and withheld all decoded inputs. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
 
 The inspector checks saved layout declarations and register evidence. Live PDO and identity readback, native GUI interaction, grouped acquisition and physical bench timing remain pending.
+
+## Version 0.55.0 grouped reply replay to CSV (2026-11-20)
+
+The authored two-device sequence contained nine cycles across two generations, including datagram index wrap, one unmatched cycle, a combined WKC/AL fault, and a missing AL reply with correct LRD WKC. Six valid cycles were written in every-valid mode and three in on-change mode. The CSV kept the original UTC anchor, elapsed receive offsets, generation and cycle indexes. Tests verified numbered parts, a header-only capture, unselected fields and preservation of an existing rotation target with an incomplete-capture receipt.
+
+The release CLI checked matched and valid-input spacing independently within each generation. It rejected incoherent cycle order, missing or regressing receive times, malformed candidate order and invalid saved mapping evidence before creating CSV. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
+
+The replay uses the saved receive clock. Live grouped acquisition, native GUI interaction and physical bench timing remain pending.

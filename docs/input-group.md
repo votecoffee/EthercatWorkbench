@@ -52,4 +52,19 @@ Use `--pdo` with `--fmmu` and `--sync-managers`. The schema 1 file lists one sta
 
 Workbench compares descriptor widths and positions against fields with PDO references. It compares the complete assignments when the profile has an explicit ESI PDO selection. Manual fields retain their manual interpretation. The audit then checks that each SyncManager's TxPDO bytes occupy the correct logical offset through the saved FMMUs. Two buffers can cover the right physical and logical ranges while landing in the wrong logical order. With `--frame`, decoding also requires `pdo.valid`.
 
-Use all saved evidence from the same configuration. The reports retain file hashes, per-field checks and per-SyncManager placements. Live device identity, PDO readback, snapshot freshness, ESC-specific buffer allocation, and physical unit swaps still require separate evidence. Live SAFEOP sessions require exactly one isolated SubDevice. Live grouped acquisition remains on the [roadmap](../ROADMAP.md).
+Use all saved evidence from the same configuration. The reports retain file hashes, per-field checks and per-SyncManager placements. Live device identity, PDO readback, snapshot freshness, ESC-specific buffer allocation, and physical unit swaps still require separate evidence.
+
+## Replay group cycles to CSV
+
+```powershell
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group.json samples/input-group-replay.json --csv .local/group.csv --out .local/group-replay.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group.json samples/input-group-replay.json --csv .local/group-changes.csv --on-change --rotate-rows 2
+```
+
+The schema 1 replay fixture supplies a UTC capture-start anchor, a fixed ordered station list and up to 4,096 cycles. Each cycle records the connection generation, cycle index, expected datagram index and up to 64 received Ethernet candidates in order. A matching reply must be last. Supply its recorded `elapsed_us`, or null when no reply matches. Matched timestamps must be nondecreasing. The replay checks the complete fixture before it opens the CSV. To apply the saved configuration checks, pass the same optional `--fmmu`, `--sync-managers` and `--pdo` files used by the inspector.
+
+The replay uses the existing bounded CSV writer. Columns follow bus order and use the profile's selected fields, prefixed by position. Every-valid logging includes unchanged values. On-change logging records the first valid row of a generation and subsequent selected-field changes. Invalid cycles do not enter the writer or its change comparison. CSV rows keep the recorded UTC anchor and elapsed receive time, their sample index, the connection generation and the cycle index. Rotation uses numbered parts and preserves existing files.
+
+The receipt records match and quality evidence by cycle, independent WKC and AL failures, ignored candidates, and selected/written rows and overruns. Receive spacing uses the saved clock, with exact nearest-rank percentiles for matched replies and valid input separately within each generation. The command replays without pacing and measures no host deadline or physical bus timing. A write failure leaves completed CSV parts and reports the incomplete capture.
+
+Live SAFEOP sessions require exactly one isolated SubDevice. Live grouped acquisition remains on the [roadmap](../ROADMAP.md).

@@ -63,6 +63,18 @@ pub struct Capture {
 
 impl Capture {
     pub fn start(path: &Path, profile: &Profile) -> Result<Self> {
+        Self::open(path, profile, None)
+    }
+
+    pub(crate) fn start_replay(
+        path: &Path,
+        profile: &Profile,
+        capture_start_utc: &str,
+    ) -> Result<Self> {
+        Self::open(path, profile, Some(capture_start_utc))
+    }
+
+    fn open(path: &Path, profile: &Profile, capture_start_utc: Option<&str>) -> Result<Self> {
         let fields: Vec<_> = profile.tx.iter().filter(|f| f.log).cloned().collect();
         ensure!(
             !fields.is_empty(),
@@ -87,7 +99,10 @@ impl Capture {
             parts: 1.into(),
         });
         let start = Instant::now();
-        let utc = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
+        let utc = capture_start_utc.map_or_else(
+            || Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true),
+            str::to_owned,
+        );
         let first = part(path, 1, profile.rotate_rows, &fields)?;
         let writer = thread::Builder::new().name("csv-writer".into()).spawn({
             let shared = shared.clone();
@@ -125,6 +140,17 @@ impl Capture {
         cycle: u64,
         data: &[u8; MAX_PAYLOAD],
     ) {
+        let elapsed_us = received.saturating_duration_since(self.start).as_micros() as u64;
+        self.submit_elapsed(elapsed_us, generation, cycle, data);
+    }
+
+    pub(crate) fn submit_elapsed(
+        &mut self,
+        elapsed_us: u64,
+        generation: u64,
+        cycle: u64,
+        data: &[u8; MAX_PAYLOAD],
+    ) {
         if self.mode == LogMode::Change
             && self.previous.as_ref().is_some_and(|previous| {
                 previous.generation == generation
@@ -138,7 +164,7 @@ impl Capture {
         }
         self.selected += 1;
         let sample = Sample {
-            elapsed_us: received.saturating_duration_since(self.start).as_micros() as u64,
+            elapsed_us,
             index: self.selected,
             generation,
             cycle,

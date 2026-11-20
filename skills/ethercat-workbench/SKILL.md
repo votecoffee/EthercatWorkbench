@@ -33,6 +33,8 @@ Add `--sync-managers FILE` with `--fmmu` to also check the physical coverage of 
 
 Add `--pdo FILE` with the FMMU and SyncManager snapshots to compare each station's saved TxPDO layout. The file requires exact declared identity and an explicit CoE or SII layout source. The audit verifies referenced fields, full assignments when the profile has an ESI PDO selection, and logical placement through the FMMUs. Manual fields remain manual. Check `pdo.valid` alongside the frame, FMMU and SyncManager results. These are saved evidence checks.
 
+Use `replay-input-group MANIFEST FIXTURE --csv NEW.csv [--out NEW.json]` to replay the authored group sequence or a supplied fixture. Use `--on-change` for selected-field changes and `--rotate-rows` for numbered parts. Preserve the supplied UTC anchor, elapsed receive offsets and generation/cycle indexes. CSV includes only valid group cycles. The receipt keeps unmatched candidates, WKC and AL quality, saved-clock spacing and writer losses. Optional saved FMMU, SyncManager and PDO checks gate the replay before it creates CSV.
+
 Use headless files/CLI by default. Desktop input, screenshots or recording need an explicit request in the current chat. Do not run the verification script's optional native GUI mode automatically.
 
 ## Desktop navigation

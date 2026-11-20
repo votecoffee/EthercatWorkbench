@@ -72,6 +72,32 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Replay saved group replies into CSV using the recorded receive times.
+    ReplayInputGroup {
+        manifest: PathBuf,
+        fixture: PathBuf,
+        /// Create a new CSV, or a numbered series when rotation is enabled.
+        #[arg(long)]
+        csv: PathBuf,
+        /// Write the first valid row per generation and subsequent selected-field changes.
+        #[arg(long)]
+        on_change: bool,
+        /// Rows per CSV part. Zero disables rotation.
+        #[arg(long, default_value_t = 0)]
+        rotate_rows: u64,
+        /// Optional saved FMMU evidence to verify before replay.
+        #[arg(long)]
+        fmmu: Option<PathBuf>,
+        /// Optional SyncManager evidence to verify before replay.
+        #[arg(long, requires = "fmmu")]
+        sync_managers: Option<PathBuf>,
+        /// Optional TxPDO evidence to verify before replay.
+        #[arg(long, requires_all = ["fmmu", "sync_managers"])]
+        pdo: Option<PathBuf>,
+        /// Save the replay receipt to a new JSON file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Read one existing Windows shared-memory input snapshot. Never opens an EtherCAT NIC.
     ReadShared {
         name: String,
@@ -418,6 +444,42 @@ fn main() -> Result<()> {
                 _ => bail!("TxPDO review requires FMMU and SyncManager evidence"),
             };
             inspection_export(&inspection, out.as_deref())
+        }
+        Command::ReplayInputGroup {
+            manifest,
+            fixture,
+            csv,
+            on_change,
+            rotate_rows,
+            fmmu,
+            sync_managers,
+            pdo,
+            out,
+        } => {
+            use ethercat_workbench::input_group::{InputGroup, replay};
+            shared_outputs(out.as_deref(), None)?;
+            let group = InputGroup::load(&manifest)?;
+            let report = replay::run(
+                &group,
+                &fixture,
+                replay::Options {
+                    csv: &csv,
+                    mode: if on_change {
+                        LogMode::Change
+                    } else {
+                        LogMode::Every
+                    },
+                    rotate_rows,
+                    fmmu: fmmu.as_deref(),
+                    sync_managers: sync_managers.as_deref(),
+                    pdo: pdo.as_deref(),
+                },
+            )?;
+            inspection_export(&report, out.as_deref())?;
+            if let Some(error) = report.error {
+                bail!("{error}");
+            }
+            Ok(())
         }
         Command::ReadShared {
             name,
