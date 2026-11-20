@@ -52,7 +52,7 @@ The match is against hashes stored in the selected comparison. When the comparis
 
 ## Bundle comparison evidence
 
-Open a comparison in **Review → Saved comparison** and expand **Source files and evidence export**. Enter the original working folder if the saved paths are relative. Enter a **New evidence folder** and choose **Export evidence bundle**. The export uses the opened comparison's SHA-256 and checks the source files again. The success message shows the completed folder and counts. To check the copies in the desktop, open the bundle's `comparison.json` and use the bundle folder as the relative-path base.
+Open a comparison in **Review → Saved comparison** and expand **Source files and evidence export**. Enter the original working folder if the saved paths are relative. Enter a **New evidence folder** and choose **Export evidence bundle**. The export uses the opened comparison's SHA-256 and checks the source files again. The success message shows the completed folder and counts.
 
 Use **Cancel file review** to stop copying. Closing the app requests cancellation and waits for the worker.
 
@@ -60,13 +60,19 @@ From the CLI, add `--base DIRECTORY` to the first command if the comparison uses
 
 ```powershell
 .\ethercat-workbench-cli.exe bundle-comparison .local/comparison.json --out .local/evidence
-.\ethercat-workbench-cli.exe check-comparison .local/evidence/comparison.json --base .local/evidence
+.\ethercat-workbench-cli.exe verify-bundle .local/evidence
 .\ethercat-workbench-cli.exe compare-runs --trial-set .local/evidence/trials.json
 ```
 
-The bundle preserves the original comparison byte for byte and gives the verified reports and CSV parts stable names under each trial folder. Use `comparison.json` with the bundle folder as `--base` to check the copies. Use `trials.json` to rerun the analysis after moving the folder. Comparisons made with report counters alone include only report files. Keep bundles with private captures under ignored `.local/`.
+The bundle preserves the original comparison byte for byte and gives the verified reports and CSV parts stable names under each trial folder. Use `trials.json` to rerun the analysis after moving the folder. Comparisons made with report counters alone include only report files. Keep bundles with private captures under ignored `.local/`.
 
 The command requires a new destination directory. If the source check fails, run `check-comparison` for each file's status. A failure during copying can leave a partial folder. Use a new destination when retrying. A completed bundle contains a readable `bundle.json` with the comparison and trial-set hashes.
+
+## Open and verify a bundle
+
+In **Review → Saved comparison**, expand **Open evidence bundle**, enter the folder that contains `bundle.json`, and choose **Verify and open bundle**. Workbench uses that folder to look up the comparison and trial evidence. On success it shows the verified report and CSV part counts and opens the saved comparison. An incomplete or changed bundle reports the failed check.
+
+Use `verify-bundle DIRECTORY` for the same check headlessly. A successful command prints the receipt, its SHA-256, and the verified report and CSV part paths and hashes. An incomplete or changed bundle returns a nonzero exit. Both checks require the schema 1 directory layout and ordinary bundle files and directories. They match bytes and references against the supplied receipt. Compare the receipt SHA-256 with a separately retained value when checking whether a copy is the same bundle.
 
 ## Inspect Ethernet PCAP
 

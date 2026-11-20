@@ -877,6 +877,39 @@ mod tests {
             std::fs::read(bundle.join("original-comparison.json")).unwrap(),
             std::fs::read(&comparison).unwrap()
         );
+        click(&mut app, &ctx, "Open evidence bundle");
+        click(&mut app, &ctx, ".local/moved-evidence");
+        let size = egui::vec2(1100.0, 840.0);
+        draw(
+            &mut app,
+            &ctx,
+            size,
+            vec![egui::Event::Text(bundle.to_string_lossy().into_owned())],
+        );
+        click(&mut app, &ctx, "Verify and open bundle");
+        assert!(app.review.is_running());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while app.review.is_running() {
+            app.refresh(&ctx);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bundle check did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let labels = draw(&mut app, &ctx, size, vec![]);
+        assert!(
+            labels
+                .iter()
+                .any(|(text, _)| text == "Evidence bundle verified"),
+            "{labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|(text, _)| text == "Saved scheduler comparison"),
+            "{labels:?}"
+        );
         for (index, slug) in ["deadline", "relative"].into_iter().enumerate() {
             let bundled_trial = bundle.join(format!("trial-{:02}", index + 1));
             let path = dir.join(format!("{slug}.run.json"));

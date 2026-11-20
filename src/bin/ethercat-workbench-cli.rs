@@ -183,6 +183,8 @@ enum Command {
         #[arg(long, value_name = "DIRECTORY")]
         out: PathBuf,
     },
+    /// Verify a portable comparison bundle in its current folder.
+    VerifyBundle { directory: PathBuf },
     /// Prepare typed RxPDO values offline; print a preview or save a new staged profile. No bus access.
     StageRx {
         profile: PathBuf,
@@ -466,6 +468,9 @@ fn main() -> Result<()> {
                 &AtomicBool::new(false),
             )?)
         }
+        Command::VerifyBundle { directory } => output(
+            &ethercat_workbench::comparison_bundle::verify(&directory, &AtomicBool::new(false))?,
+        ),
         Command::EsiList { file } => {
             let entries = esi::load(&file)?;
             let list: Vec<_> = entries.iter().enumerate().map(|(index, entry)| {

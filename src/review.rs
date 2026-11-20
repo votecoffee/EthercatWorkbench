@@ -61,6 +61,9 @@ pub enum Task {
         output: PathBuf,
         expected_sha256: String,
     },
+    VerifyBundle {
+        directory: PathBuf,
+    },
     InspectPcap {
         file: PathBuf,
         profile: Box<Profile>,
@@ -73,6 +76,13 @@ pub enum Task {
 impl Task {
     pub fn validate(&self) -> Result<()> {
         let (inputs, csv) = match self {
+            Self::VerifyBundle { directory } => {
+                ensure!(
+                    !directory.as_os_str().is_empty(),
+                    "enter an evidence bundle folder"
+                );
+                return Ok(());
+            }
             Self::InspectShared { file, decoding } => {
                 ensure!(
                     !file.as_os_str().is_empty(),
@@ -227,6 +237,9 @@ impl Task {
                     receipt,
                 })));
             }
+            Self::VerifyBundle { directory } => {
+                Outcome::VerifiedBundle(Box::new(comparison_bundle::verify(directory, stop)?))
+            }
         };
         check_cancel(Some(stop))?;
         Ok(outcome)
@@ -242,6 +255,7 @@ pub enum Outcome {
     SavedComparison(Box<benchmark::SavedComparison>),
     ComparisonFiles(Box<crate::comparison_files::CheckedComparison>),
     ComparisonBundle(Box<CompletedBundle>),
+    VerifiedBundle(Box<comparison_bundle::VerifiedBundle>),
     Pcap(Box<pcap_inspect::Report>),
 }
 

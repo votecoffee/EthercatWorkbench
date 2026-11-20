@@ -1015,6 +1015,11 @@ def verify_comparison_bundle(cli, destination, comparison_path):
     assert all(Path(entry["resolved_path"]).is_relative_to(relocated.resolve()) for entry in checked["files"])
 
     manifest = relocated / receipt["trial_set"]
+    verified = cli_call(cli, "verify-bundle", relocated)
+    assert Path(verified["directory"]) == relocated.resolve()
+    assert verified["receipt"] == receipt and verified["comparison"] == checked
+    assert verified["receipt_sha256"] == hashlib.sha256(marker_bytes).hexdigest()
+
     rows = json.loads(manifest.read_bytes())["trials"]
     assert all(not Path(row["report"]).is_absolute() for row in rows)
     assert all(not Path(row["csv"]).is_absolute() for row in rows)
@@ -1032,6 +1037,58 @@ def verify_comparison_bundle(cli, destination, comparison_path):
         assert (relative_copy / relative["original_comparison"]).read_bytes() == portable.read_bytes()
         assert cli_call(cli, "check-comparison", relative_copy / relative["portable_comparison"],
                         "--base", relative_copy)["all_match"]
+        verify_bundle_failures(cli, relocated, receipt, checked["files"])
+
+
+def verify_bundle_failures(cli, root, receipt, files):
+    marker = root / "bundle.json"
+    marker_bytes = marker.read_bytes()
+    for key in ("original_comparison", "portable_comparison", "trial_set"):
+        path = root / receipt[key]
+        original = path.read_bytes()
+        path.write_bytes(original + b"\n")
+        try:
+            assert f"{path.name} SHA-256" in cli_call(cli, "verify-bundle", root, success=False)
+        finally:
+            path.write_bytes(original)
+
+    for entry in (files[0], next(entry for entry in files if entry["csv_part"])):
+        path = Path(entry["resolved_path"])
+        original = path.read_bytes()
+        path.write_bytes(b"!" + original[1:])
+        try:
+            assert "source check found Changed" in cli_call(cli, "verify-bundle", root, success=False)
+        finally:
+            path.write_bytes(original)
+
+    partial = root.parent / "incomplete-bundle"
+    partial.mkdir()
+    assert "bundle.json" in cli_call(cli, "verify-bundle", partial, success=False)
+
+    for name, path_key, row_key in (
+        ("portable_comparison", "trials", "file"),
+        ("trial_set", "trials", "report"),
+    ):
+        path = root / receipt[name]
+        original = path.read_bytes()
+        edited = json.loads(original)
+        edited[path_key][0][row_key] = "../outside.json"
+        changed = json.dumps(edited).encode()
+        path.write_bytes(changed)
+        marker.write_text(json.dumps({**receipt, f"{name}_sha256": hashlib.sha256(changed).hexdigest()}),
+                          encoding="utf-8")
+        try:
+            assert "paths do not match the bundle layout" in cli_call(cli, "verify-bundle", root, success=False)
+        finally:
+            path.write_bytes(original)
+            marker.write_bytes(marker_bytes)
+
+    marker.write_text(json.dumps({**receipt, "csv_parts": receipt["csv_parts"] + 1}), encoding="utf-8")
+    try:
+        assert "coverage does not match" in cli_call(cli, "verify-bundle", root, success=False)
+    finally:
+        marker.write_bytes(marker_bytes)
+    assert cli_call(cli, "verify-bundle", root)["receipt"] == receipt
 
 
 def verify_trial_set_comparison(cli, destination, reports, bases):

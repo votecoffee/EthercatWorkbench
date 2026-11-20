@@ -30,6 +30,7 @@ pub struct Panel {
     comparison_path: String,
     comparison_base: String,
     comparison_bundle: String,
+    open_bundle: String,
     controller: Controller,
     export: String,
     message: String,
@@ -60,6 +61,7 @@ impl Default for Panel {
             comparison_path: String::new(),
             comparison_base: String::new(),
             comparison_bundle: String::new(),
+            open_bundle: String::new(),
             controller: Controller::default(),
             export: String::new(),
             message: String::new(),
@@ -402,7 +404,8 @@ impl Panel {
                 | Task::InspectShared { .. }
                 | Task::InspectComparison { .. }
                 | Task::CheckComparisonFiles { .. }
-                | Task::BundleComparison { .. } => &[],
+                | Task::BundleComparison { .. }
+                | Task::VerifyBundle { .. } => &[],
             };
             ui.collapsing("Inputs used", |ui| {
                 let used_csv = matches!(
@@ -447,7 +450,8 @@ impl Panel {
                 Outcome::Shared(result) => show_shared(ui, result),
                 Outcome::SavedComparison(_)
                 | Outcome::ComparisonFiles(_)
-                | Outcome::ComparisonBundle(_) => {
+                | Outcome::ComparisonBundle(_)
+                | Outcome::VerifiedBundle(_) => {
                     unreachable!("saved comparison has its own page")
                 }
             }
@@ -508,35 +512,75 @@ impl Panel {
                     });
                 }
             });
+            ui.collapsing("Open evidence bundle", |ui| {
+                ui.label("Evidence bundle folder");
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.open_bundle)
+                            .hint_text(".local/moved-evidence")
+                            .desired_width(360.0),
+                    );
+                    let directory = self.open_bundle.trim();
+                    if ui
+                        .add_enabled(
+                            !directory.is_empty(),
+                            egui::Button::new("Verify and open bundle"),
+                        )
+                        .clicked()
+                    {
+                        self.start(Task::VerifyBundle {
+                            directory: directory.into(),
+                        });
+                    }
+                });
+            });
         });
-        let (saved, check) = match self.controller.completed().map(|job| &job.outcome) {
-            Some(Outcome::SavedComparison(saved)) => (saved.as_ref(), None),
-            Some(Outcome::ComparisonFiles(result)) => (&result.saved, Some(&result.report)),
+        let (saved, check, bundle) = match self.controller.completed().map(|job| &job.outcome) {
+            Some(Outcome::SavedComparison(saved)) => (saved.as_ref(), None, None),
+            Some(Outcome::ComparisonFiles(result)) => (&result.saved, Some(&result.report), None),
+            Some(Outcome::VerifiedBundle(result)) => (
+                &result.comparison.saved,
+                Some(&result.comparison.report),
+                Some(result.as_ref()),
+            ),
             _ => return,
         };
         ui.separator();
+        if let Some(bundle) = bundle {
+            ui.strong("Evidence bundle verified");
+            ui.label(bundle.directory.display().to_string());
+            ui.label(format!(
+                "{} reports · {} CSV parts",
+                bundle.receipt.reports, bundle.receipt.csv_parts
+            ));
+            ui.collapsing("Bundle receipt hash", |ui| {
+                ui.label(format!("bundle.json SHA-256 · {}", bundle.receipt_sha256));
+            });
+        }
         ui.strong("Saved scheduler comparison");
         ui.label(saved.file.display().to_string());
         ui.label(format!("SHA-256 · {}", saved.sha256));
         let mut follow_up = None;
         ui.collapsing("Source files and evidence export", |ui| {
             ui.add_enabled_ui(enabled, |ui| {
-                ui.label("Original working folder for relative paths");
-                ui.horizontal_wrapped(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.comparison_base)
-                            .hint_text("Leave blank for absolute paths")
-                            .desired_width(360.0),
-                    );
-                    if ui.button("Check source hashes").clicked() {
-                        follow_up = Some(Task::CheckComparisonFiles {
-                            file: saved.file.clone(),
-                            base: optional_path(&self.comparison_base),
-                            expected_sha256: saved.sha256.clone(),
-                        });
-                    }
-                });
-                ui.separator();
+                if bundle.is_none() {
+                    ui.label("Original working folder for relative paths");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.comparison_base)
+                                .hint_text("Leave blank for absolute paths")
+                                .desired_width(360.0),
+                        );
+                        if ui.button("Check source hashes").clicked() {
+                            follow_up = Some(Task::CheckComparisonFiles {
+                                file: saved.file.clone(),
+                                base: optional_path(&self.comparison_base),
+                                expected_sha256: saved.sha256.clone(),
+                            });
+                        }
+                    });
+                    ui.separator();
+                }
                 ui.label("New evidence folder");
                 ui.horizontal_wrapped(|ui| {
                     ui.add(
@@ -551,7 +595,9 @@ impl Panel {
                     {
                         follow_up = Some(Task::BundleComparison {
                             file: saved.file.clone(),
-                            base: optional_path(&self.comparison_base),
+                            base: bundle
+                                .map(|bundle| bundle.directory.clone())
+                                .or_else(|| optional_path(&self.comparison_base)),
                             output: output.into(),
                             expected_sha256: saved.sha256.clone(),
                         });

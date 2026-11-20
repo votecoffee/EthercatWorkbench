@@ -490,3 +490,11 @@ Saved comparison Review groups source checks and evidence export in a collapsibl
 Formatting, Clippy, 176 locked offline Rust tests (134 library and 42 GUI), the Windows x64 MSVC release build and the full offline regression passed. The headless desktop test saved and reopened a comparison, entered the export paths and clicked Export evidence bundle. It checked the success message, exact original bytes and the rotated CSV part sequence. Worker checks rejected a changed comparison before creating a directory, retained the opened result, and verified cancellation before work and after completion. Logs and delivery receipts use the 0.44.0 prefix under ignored .local/.
 
 Native GUI review and physical bench qualification remain pending.
+
+## Version 0.45.0 verify and reopen portable evidence (2026-11-20)
+
+Desktop Review opens a bundle by its folder and displays the saved comparison after verification. The CLI command `verify-bundle` checks the same schema 1 receipt, comparison and trial-set hashes, fixed relative layout, coverage and source hashes. Changed or incomplete evidence returns an error naming the failed check. The receipt SHA-256 identifies the receipt bytes checked during that run.
+
+Formatting, Clippy, 176 locked offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. The headless desktop workflow exported, verified and opened the bundle. CLI checks verified relocated audited and report-only bundles retained from 0.44.0, then tested missing completion markers, changed comparison and trial-set bytes, same-size report and CSV changes, inconsistent coverage and paths outside the fixed layout.
+
+The first two full runs encountered timing assertions in the existing shared-memory fixture. In one run the HTTP progress check timed out during a held mutex. In the other the polling reader missed the initial valid window before the injected loss. The isolated fixture and the final full run passed. Logs and delivery receipts use the 0.45.0 prefix under ignored .local/. Native GUI review and physical bench qualification remain pending.

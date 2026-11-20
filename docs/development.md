@@ -14,6 +14,8 @@ Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supp
 
 `comparison_bundle.rs` reuses the source check, verifies hashes while copying files, and writes the portable comparison and a relative trial set. It writes the completion receipt after all other files. The desktop runs it on the review worker with the opened comparison's hash. The worker retains the opened comparison during export and publishes a completed receipt even if cancellation arrives after the export commits. Closing the app requests cancellation and waits for the export worker.
 
+`verify-bundle` and the desktop open action share the same read-only verifier. It checks the completion receipt, metadata hashes, trial rows and fixed source paths before checking file bytes. The desktop uses the checked result directly on the same Review page.
+
 `compare-runs --out` uses the CLI's create-new JSON export. Desktop **Saved comparison** reads and hashes the selected result on the existing cancellable review worker. `benchmark.rs` checks the saved structure and passes recorded values to the comparison display. Source evidence remains independently reviewable through a fresh comparison.
 
 `trial_set.rs` owns the shared trial-list JSON, bounded reads, relative-reference resolution and create-new saves. It prepares comparison tasks for desktop Review and `compare-runs --trial-set`. `gui_review.rs` confirms draft replacement and installs a fully parsed list and audit option together. The review task checks row completeness before opening evidence and freezes the paths it receives.

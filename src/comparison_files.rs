@@ -79,6 +79,14 @@ pub fn check(
         expected_comparison_sha256.is_none_or(|expected| expected == saved.sha256),
         "the comparison JSON changed; reopen it before checking source hashes"
     );
+    check_saved(saved, base, stop)
+}
+
+pub(crate) fn check_saved(
+    saved: SavedComparison,
+    base: Option<&Path>,
+    stop: &AtomicBool,
+) -> Result<CheckedComparison> {
     let base = base
         .map(std::path::absolute)
         .transpose()

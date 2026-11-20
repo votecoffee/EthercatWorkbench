@@ -50,25 +50,7 @@ impl TrialSet {
     pub fn load(path: &Path) -> Result<Self> {
         let path = std::path::absolute(path).context("resolve trial set path")?;
         let parent = path.parent().context("trial set needs a file name")?;
-        let mut bytes = Vec::new();
-        File::open(&path)
-            .with_context(|| format!("open {}", path.display()))?
-            .take(MAX_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .context("read trial set")?;
-        ensure!(
-            bytes.len() as u64 <= MAX_BYTES,
-            "trial set is larger than 2 MiB"
-        );
-        let mut set: Self =
-            serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
-                .context("parse trial set JSON")?;
-        ensure!(
-            set.schema == 1,
-            "unsupported trial set schema {}",
-            set.schema
-        );
-        check_count(set.trials.len())?;
+        let mut set = Self::parse(&Self::read_bytes(&path)?)?;
         set.trials = set
             .trials
             .iter()
@@ -96,6 +78,33 @@ impl TrialSet {
                 })
             })
             .collect::<Result<_>>()?;
+        Ok(set)
+    }
+
+    pub(crate) fn read_bytes(path: &Path) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        File::open(path)
+            .with_context(|| format!("open {}", path.display()))?
+            .take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .context("read trial set")?;
+        ensure!(
+            bytes.len() as u64 <= MAX_BYTES,
+            "trial set is larger than 2 MiB"
+        );
+        Ok(bytes)
+    }
+
+    pub(crate) fn parse(bytes: &[u8]) -> Result<Self> {
+        let set: Self =
+            serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
+                .context("parse trial set JSON")?;
+        ensure!(
+            set.schema == 1,
+            "unsupported trial set schema {}",
+            set.schema
+        );
+        check_count(set.trials.len())?;
         Ok(set)
     }
 

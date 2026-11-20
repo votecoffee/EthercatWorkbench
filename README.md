@@ -31,6 +31,8 @@ In **Review → Saved comparison**, open **Source files and evidence export** to
 
 Choose **Export evidence bundle** or use `ethercat-workbench-cli.exe bundle-comparison .local/comparison.json --out .local/evidence` to copy verified reports and audited CSV parts into a portable folder with a rerunnable trial set. [Bundle comparison evidence](docs/desktop-review.md#bundle-comparison-evidence)
 
+After moving a bundle, use **Open evidence bundle** in **Saved comparison** or run `ethercat-workbench-cli.exe verify-bundle .local/evidence`. Both check the receipt, trial order and evidence before accepting the bundle. [Open and verify a bundle](docs/desktop-review.md#open-and-verify-a-bundle)
+
 Add `--out .local/comparison.json` to either form of `compare-runs` to save the result to a new file. Open it in **Review → Saved comparison** to see recorded timing, losses, and audit status. See the [saved comparison guide](docs/desktop-review.md#open-a-saved-comparison).
 
 Run a desktop trial set headlessly with `ethercat-workbench-cli.exe compare-runs --trial-set .local/trials.json`. The CLI uses the saved report order and CSV audit option. See the [timing comparison guide](docs/benchmark-comparison.md#comparison-rules).

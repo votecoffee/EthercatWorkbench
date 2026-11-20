@@ -1,4 +1,4 @@
-//! Copy the evidence referenced by a comparison into a portable directory.
+//! Create and verify a portable directory of saved comparison evidence.
 use crate::{
     benchmark::{self, Comparison},
     capture::part_path,
@@ -7,7 +7,7 @@ use crate::{
     trial_set::{Row, TrialSet},
 };
 use anyhow::{Context, Result, bail, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
@@ -16,18 +16,187 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
-#[derive(Debug, Serialize)]
+const ORIGINAL: &str = "original-comparison.json";
+const PORTABLE: &str = "comparison.json";
+const TRIAL_SET: &str = "trials.json";
+const RECEIPT: &str = "bundle.json";
+const MAX_RECEIPT_BYTES: u64 = 16 * 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub schema: u32,
-    pub original_comparison: &'static str,
+    pub original_comparison: String,
     pub original_comparison_sha256: String,
-    pub portable_comparison: &'static str,
+    pub portable_comparison: String,
     pub portable_comparison_sha256: String,
-    pub trial_set: &'static str,
+    pub trial_set: String,
     pub trial_set_sha256: String,
     pub reports: usize,
     pub csv_parts: usize,
     pub csv_hashes_recorded: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VerifiedBundle {
+    pub directory: PathBuf,
+    pub receipt_sha256: String,
+    pub receipt: Receipt,
+    pub comparison: comparison_files::CheckedComparison,
+}
+
+pub fn verify(directory: &Path, stop: &AtomicBool) -> Result<VerifiedBundle> {
+    check_cancel(Some(stop))?;
+    let directory = std::path::absolute(directory).context("resolve bundle directory")?;
+    require_entry(&directory, true)?;
+    for name in [RECEIPT, ORIGINAL, PORTABLE, TRIAL_SET] {
+        require_entry(&directory.join(name), false)?;
+    }
+
+    let mut bytes = Vec::new();
+    File::open(directory.join(RECEIPT))?
+        .take(MAX_RECEIPT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("read bundle.json")?;
+    ensure!(
+        bytes.len() as u64 <= MAX_RECEIPT_BYTES,
+        "bundle.json exceeds 16 KiB"
+    );
+    let receipt_sha256 = benchmark::hash(&bytes);
+    let receipt: Receipt = serde_json::from_slice(&bytes).context("parse bundle.json")?;
+    ensure!(
+        receipt.schema == 1,
+        "unsupported bundle schema {}",
+        receipt.schema
+    );
+    ensure!(
+        receipt.original_comparison == ORIGINAL
+            && receipt.portable_comparison == PORTABLE
+            && receipt.trial_set == TRIAL_SET,
+        "bundle.json file names do not match schema 1"
+    );
+    let original = benchmark::read_report_bytes_with_stop(&directory.join(ORIGINAL), Some(stop))?;
+    require_hash(
+        ORIGINAL,
+        &receipt.original_comparison_sha256,
+        &benchmark::hash(&original),
+    )?;
+    let portable = benchmark::inspect_saved_comparison(&directory.join(PORTABLE), stop)?;
+    require_hash(
+        PORTABLE,
+        &receipt.portable_comparison_sha256,
+        &portable.sha256,
+    )?;
+    let set_bytes = TrialSet::read_bytes(&directory.join(TRIAL_SET))?;
+    require_hash(
+        TRIAL_SET,
+        &receipt.trial_set_sha256,
+        &benchmark::hash(&set_bytes),
+    )?;
+    let set = TrialSet::parse(&set_bytes)?;
+    verify_layout(&directory, &receipt, &portable.comparison, &set, stop)?;
+
+    let comparison = comparison_files::check_saved(portable, Some(&directory), stop)?;
+    require_matching(&comparison)?;
+    Ok(VerifiedBundle {
+        directory,
+        receipt_sha256,
+        receipt,
+        comparison,
+    })
+}
+
+fn require_hash(name: &str, expected: &str, observed: &str) -> Result<()> {
+    ensure!(
+        expected.eq_ignore_ascii_case(observed),
+        "{name} SHA-256 does not match bundle.json"
+    );
+    Ok(())
+}
+
+fn verify_layout(
+    directory: &Path,
+    receipt: &Receipt,
+    comparison: &Comparison,
+    set: &TrialSet,
+    stop: &AtomicBool,
+) -> Result<()> {
+    let audits = comparison.csv_audits.as_deref();
+    let csv_parts = audits.map_or(0, |items| items.iter().map(|audit| audit.parts.len()).sum());
+    ensure!(
+        receipt.reports == comparison.trials.len()
+            && receipt.csv_parts == csv_parts
+            && receipt.csv_hashes_recorded == audits.is_some(),
+        "bundle.json coverage does not match comparison.json"
+    );
+    ensure!(
+        set.audit_csv == receipt.csv_hashes_recorded && set.trials.len() == receipt.reports,
+        "trials.json coverage does not match comparison.json"
+    );
+    let rotate = rotation(comparison)?;
+    for (index, (trial, row)) in comparison.trials.iter().zip(&set.trials).enumerate() {
+        check_cancel(Some(stop))?;
+        let number = index + 1;
+        let expected_report = report_path(number);
+        let expected_csv = audits.map(|_| csv_base(number));
+        let row = row.input();
+        ensure!(
+            trial.file == expected_report
+                && row.report == expected_report
+                && row.csv == expected_csv,
+            "trial {number} paths do not match the bundle layout"
+        );
+        require_entry(&directory.join(trial_dir(number)), true)?;
+        require_entry(&directory.join(expected_report), false)?;
+        if let Some(audits) = audits {
+            let audit = &audits[index];
+            let csv = csv_base(number);
+            ensure!(
+                audit.report == trial.file
+                    && audit.csv_base == csv
+                    && !audit.parts.is_empty()
+                    && (rotate != 0 || audit.parts.len() == 1),
+                "trial {number} CSV audit does not match the bundle layout"
+            );
+            for (part, entry) in audit.parts.iter().enumerate() {
+                check_cancel(Some(stop))?;
+                let expected = part_path(&csv, (part + 1) as u64, rotate)?;
+                ensure!(
+                    entry.file == expected,
+                    "trial {number} CSV part {} does not match the bundle layout",
+                    part + 1
+                );
+                require_entry(&directory.join(expected), false)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_entry(path: &Path, directory: bool) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))?;
+    let kind = metadata.file_type();
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = kind.is_symlink();
+    ensure!(
+        !reparse
+            && if directory {
+                kind.is_dir()
+            } else {
+                kind.is_file()
+            },
+        "expected an ordinary {} at {}",
+        if directory { "directory" } else { "file" },
+        path.display()
+    );
+    Ok(())
 }
 
 pub fn create(
@@ -53,19 +222,7 @@ pub(crate) fn create_checked(
         Err(error) => return Err(error).context("inspect bundle destination"),
     }
     let checked = comparison_files::check(file, base, expected_sha256, stop)?;
-    if let Some(problem) = checked
-        .report
-        .files
-        .iter()
-        .find(|entry| entry.status != comparison_files::Status::Match)
-    {
-        bail!(
-            "source check found {} for trial {} at {}. Run check-comparison for the full list",
-            problem.status.label(),
-            problem.trial,
-            problem.recorded_path.display()
-        );
-    }
+    require_matching(&checked)?;
     let original = benchmark::read_report_bytes_with_stop(file, Some(stop))?;
     let original_hash = benchmark::hash(&original);
     ensure!(
@@ -75,13 +232,7 @@ pub(crate) fn create_checked(
 
     let mut comparison = checked.saved.comparison;
     let audit_csv = comparison.csv_audits.is_some();
-    let rotate = if audit_csv {
-        comparison.common_profile_settings["rotate_rows"]
-            .as_u64()
-            .context("saved comparison needs a numeric CSV rotation setting")?
-    } else {
-        0
-    };
+    let rotate = rotation(&comparison)?;
     let rows = rebase(&root, &mut comparison, rotate)?;
     let portable = json_bytes(&comparison)?;
     ensure!(
@@ -114,28 +265,55 @@ pub(crate) fn create_checked(
             )
             .with_context(|| format!("copy checked source {}", source.display()))?;
         }
-        write_new(&root.join("original-comparison.json"), &original)?;
-        write_new(&root.join("comparison.json"), &portable)?;
-        let set_path = root.join("trials.json");
+        write_new(&root.join(ORIGINAL), &original)?;
+        write_new(&root.join(PORTABLE), &portable)?;
+        let set_path = root.join(TRIAL_SET);
         TrialSet::save_new(&set_path, &rows, audit_csv)?;
         let receipt = Receipt {
             schema: 1,
-            original_comparison: "original-comparison.json",
+            original_comparison: ORIGINAL.into(),
             original_comparison_sha256: original_hash,
-            portable_comparison: "comparison.json",
+            portable_comparison: PORTABLE.into(),
             portable_comparison_sha256: benchmark::hash(&portable),
-            trial_set: "trials.json",
-            trial_set_sha256: benchmark::hash(&fs::read(set_path)?),
+            trial_set: TRIAL_SET.into(),
+            trial_set_sha256: benchmark::hash(&TrialSet::read_bytes(&set_path)?),
             reports: rows.len(),
             csv_parts: checked.report.files.len() - rows.len(),
             csv_hashes_recorded: audit_csv,
         };
         check_cancel(Some(stop))?;
         // A readable receipt is the completion marker for the folder.
-        write_new(&root.join("bundle.json"), &json_bytes(&receipt)?)?;
+        write_new(&root.join(RECEIPT), &json_bytes(&receipt)?)?;
         Ok(receipt)
     };
     write_bundle().with_context(|| format!("bundle did not complete in {}", root.display()))
+}
+
+fn require_matching(checked: &comparison_files::CheckedComparison) -> Result<()> {
+    if let Some(problem) = checked
+        .report
+        .files
+        .iter()
+        .find(|entry| entry.status != comparison_files::Status::Match)
+    {
+        bail!(
+            "source check found {} for trial {} at {}. Run check-comparison for the full list",
+            problem.status.label(),
+            problem.trial,
+            problem.recorded_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn rotation(comparison: &Comparison) -> Result<u64> {
+    if comparison.csv_audits.is_some() {
+        comparison.common_profile_settings["rotate_rows"]
+            .as_u64()
+            .context("saved comparison needs a numeric CSV rotation setting")
+    } else {
+        Ok(0)
+    }
 }
 
 fn trial_dir(number: usize) -> PathBuf {
