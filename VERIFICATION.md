@@ -474,3 +474,11 @@ Saved comparison Review and `check-comparison` check recorded report and CSV-par
 Formatting, Clippy, 176 locked offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. Worker tests cover missing sources and a changed comparison hash. CLI checks on retained 0.41.0 captures and fresh synthetic captures cover equal bytes, a same-size mutation, a length change, missing and unreadable paths, explicit relative path resolution, inconsistent audit references, report-only evidence and protected output. The first full release run stopped at an EEPROM setup timeout in the existing virtual I/O timeout case. That case passed in isolation, and the full retry passed. Both logs, the isolated case receipt and binary identities use the 0.42.0 prefix in ignored .local/. Package and extracted CLI checks are recorded in local delivery receipts.
 
 Desktop checks used headless egui and the review worker. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.43.0 portable comparison evidence (2026-11-19)
+
+The CLI creates a new directory from a saved comparison after checking all recorded source hashes. It preserves the original comparison and copies verified reports and audited CSV parts. The relative comparison and ordered trial set support checking and rerunning after relocation. A report-only comparison produces a report-only bundle.
+
+Formatting, Clippy, 176 offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. CLI checks on retained 0.42.0 captures and fresh synthetic trials covered original bytes, bundle receipt hashes, rotated CSV parts, relocation, regenerated timing summaries, bundling relative source references, report-only coverage and protection of existing destinations. Changed source evidence was rejected before the destination was created.
+
+The first full offline run reached an EEPROM setup timeout before cyclic I/O in the existing virtual SII transport-loss test. The case passed in isolation and the full retry passed. Logs, binary hashes and delivery receipts use the 0.43.0 prefix in ignored .local/. Native GUI review and physical bench qualification remain pending.

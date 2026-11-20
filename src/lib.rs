@@ -2,6 +2,7 @@ pub mod benchmark;
 pub mod capture;
 pub mod capture_audit;
 mod capture_file;
+pub mod comparison_bundle;
 pub mod comparison_files;
 pub mod esc;
 pub mod esi;

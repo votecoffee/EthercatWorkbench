@@ -41,6 +41,8 @@ Version 0.20 also retains independent [shared-memory counters](shared-input-feed
 
 Use `check-comparison FILE` or **Check source hashes** in the saved comparison view to check the files against the recorded SHA-256 values. Add `--base DIRECTORY` for relative references and `--out NEW.json` to keep a full per-file receipt. See [Check the source file hashes](desktop-review.md#check-the-source-file-hashes).
 
+Use `bundle-comparison FILE --out NEW_DIRECTORY` to archive checked evidence together with a relocated comparison and its ordered trial set. See [Bundle comparison evidence](desktop-review.md#bundle-comparison-evidence).
+
 Add `--out .local/comparison.json` to `compare-runs` in either input mode to write a new result file while retaining JSON on stdout. Existing destinations are preserved. An invalid comparison creates no output file. The desktop can reopen this JSON in **Review → Saved comparison**. See [Open a saved comparison](desktop-review.md#open-a-saved-comparison).
 
 Use **Trial set files** to save and reopen the ordered rows and CSV-audit choice. Retain the original reports and numbered CSV parts. See [Save and reopen a trial set](desktop-review.md#save-and-reopen-a-trial-set).

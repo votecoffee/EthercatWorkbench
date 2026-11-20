@@ -50,6 +50,20 @@ The check lists **Match**, **Changed**, **Missing**, **Unreadable**, or **Unreso
 
 The match is against hashes stored in the selected comparison. When the comparison recorded report counters only, the check covers the report files. Run a new comparison with CSV auditing for a fresh audit of structure, values and timing evidence.
 
+## Bundle comparison evidence
+
+After exporting a saved comparison, create an evidence folder with the CLI. Add `--base DIRECTORY` to the first command when the saved comparison has relative source paths. Use its original working folder for that option.
+
+```powershell
+.\ethercat-workbench-cli.exe bundle-comparison .local/comparison.json --out .local/evidence
+.\ethercat-workbench-cli.exe check-comparison .local/evidence/comparison.json --base .local/evidence
+.\ethercat-workbench-cli.exe compare-runs --trial-set .local/evidence/trials.json
+```
+
+The bundle preserves the original comparison byte for byte and gives the verified reports and CSV parts stable names under each trial folder. Use `comparison.json` with the bundle folder as `--base` to check the copies. Use `trials.json` to rerun the analysis after moving the folder. Comparisons made with report counters alone include only report files. Keep bundles with private captures under ignored `.local/`.
+
+The command requires a new destination directory. If the source check fails, run `check-comparison` for each file's status. A failure during copying can leave a partial folder. Use a new destination when retrying. A completed bundle contains a readable `bundle.json` with the comparison and trial-set hashes.
+
 ## Inspect Ethernet PCAP
 
 Load or edit the intended commissioning profile in **Device** and **Mappings** first. Choose **Review → Ethernet PCAP**, enter a classic Ethernet PCAP or supported PCAPNG path, its expected configured station address (decimal or `0x` hexadecimal), and a preview limit of 0–64. The default address `0x1000` is an expectation, not a value discovered from the file. Choose **Inspect PCAP with current profile**. Invalid profile/settings are rejected before a job starts. Version 0.23 supports up to 32 PCAPNG descriptors in one section. Leave **PCAPNG interface** blank for a sole interface or enter its ID (decimal or `0x`, 0–31). Multiple descriptors require an explicit selection; an ambiguity error lists IDs, link types and packet counts. Select Ethernet. A supplied interface choice on classic PCAP fails. All interfaces must use supported microsecond/nanosecond timestamps. Additional sections, generic EtherCAT dissection and VLAN decoding remain unsupported.

@@ -173,6 +173,16 @@ enum Command {
         #[arg(long, value_name = "JSON")]
         out: Option<PathBuf>,
     },
+    /// Copy a comparison and its verified sources to a new portable directory.
+    BundleComparison {
+        file: PathBuf,
+        /// Resolve relative references against this original working folder.
+        #[arg(long, value_name = "DIRECTORY")]
+        base: Option<PathBuf>,
+        /// Create this new bundle directory.
+        #[arg(long, value_name = "DIRECTORY")]
+        out: PathBuf,
+    },
     /// Prepare typed RxPDO values offline; print a preview or save a new staged profile. No bus access.
     StageRx {
         profile: PathBuf,
@@ -447,6 +457,14 @@ fn main() -> Result<()> {
                 &AtomicBool::new(false),
             )?;
             inspection_export(&checked.report, out.as_deref())
+        }
+        Command::BundleComparison { file, base, out } => {
+            output(&ethercat_workbench::comparison_bundle::create(
+                &file,
+                base.as_deref(),
+                &out,
+                &AtomicBool::new(false),
+            )?)
         }
         Command::EsiList { file } => {
             let entries = esi::load(&file)?;

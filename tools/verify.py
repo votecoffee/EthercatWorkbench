@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import struct
 import socket
@@ -974,11 +975,63 @@ def verify_comparison_file_hashes(cli, destination, comparison_path):
     assert entry["status"] == "changed" and entry["observed_sha256"] is None
     assert entry["observed_bytes"] == 0 < entry["expected_bytes"]
 
+    rejected = destination / "rejected-bundle"
+    assert "source check found" in cli_call(cli, "bundle-comparison", relative,
+                                           "--base", base, "--out", rejected, success=False)
+    assert not rejected.exists()
+
     inconsistent = destination / "inconsistent-audit-comparison.json"
     data["csv_audits"][0]["report_sha256"] = "0" * 64
     inconsistent.write_text(json.dumps(data), encoding="utf-8")
     assert "CSV audit does not match" in cli_call(cli, "check-comparison", inconsistent,
                                                   "--base", base, success=False)
+
+
+def verify_comparison_bundle(cli, destination, comparison_path):
+    original = comparison_path.read_bytes()
+    data = json.loads(original)
+    audits = data["csv_audits"]
+    root = destination / f"{comparison_path.stem}-bundle"
+    receipt = cli_call(cli, "bundle-comparison", comparison_path, "--out", root)
+    marker = root / "bundle.json"
+    marker_bytes = marker.read_bytes()
+    assert receipt == json.loads(marker_bytes) and receipt["schema"] == 1
+    assert receipt["csv_hashes_recorded"] == (audits is not None)
+    assert receipt["reports"] == len(data["trials"])
+    assert receipt["csv_parts"] == sum(len(audit["parts"]) for audit in audits or [])
+    assert (root / receipt["original_comparison"]).read_bytes() == original == comparison_path.read_bytes()
+    for key in ("original_comparison", "portable_comparison", "trial_set"):
+        assert receipt[f"{key}_sha256"] == hashlib.sha256((root / receipt[key]).read_bytes()).hexdigest()
+    assert len(list(root.rglob("*.csv"))) == receipt["csv_parts"]
+    assert "already exists" in cli_call(cli, "bundle-comparison", comparison_path, "--out", root, success=False)
+    assert marker.read_bytes() == marker_bytes
+
+    relocated = destination / f"{root.name} relocated"
+    shutil.copytree(root, relocated)
+    portable = relocated / receipt["portable_comparison"]
+    checked = cli_call(cli, "check-comparison", portable, "--base", relocated)
+    assert checked["all_match"] and checked["csv_hashes_recorded"] == receipt["csv_hashes_recorded"]
+    assert len(checked["files"]) == receipt["reports"] + receipt["csv_parts"]
+    assert all(Path(entry["resolved_path"]).is_relative_to(relocated.resolve()) for entry in checked["files"])
+
+    manifest = relocated / receipt["trial_set"]
+    rows = json.loads(manifest.read_bytes())["trials"]
+    assert all(not Path(row["report"]).is_absolute() for row in rows)
+    assert all(not Path(row["csv"]).is_absolute() for row in rows)
+    rerun = cli_call(cli, "compare-runs", "--trial-set", manifest)
+    assert rerun["schedules"] == data["schedules"]
+    assert [trial["sha256"] for trial in rerun["trials"]] == [trial["sha256"] for trial in data["trials"]]
+    if audits is None:
+        assert rerun["csv_audits"] is None
+    else:
+        def part_hashes(items):
+            return [[part["sha256"] for part in audit["parts"]] for audit in items]
+        assert part_hashes(rerun["csv_audits"]) == part_hashes(audits)
+        relative_copy = destination / "relative-source-bundle"
+        relative = cli_call(cli, "bundle-comparison", portable, "--base", relocated, "--out", relative_copy)
+        assert (relative_copy / relative["original_comparison"]).read_bytes() == portable.read_bytes()
+        assert cli_call(cli, "check-comparison", relative_copy / relative["portable_comparison"],
+                        "--base", relative_copy)["all_match"]
 
 
 def verify_trial_set_comparison(cli, destination, reports, bases):
@@ -1011,6 +1064,7 @@ def verify_trial_set_comparison(cli, destination, reports, bases):
     assert cli_call(cli, "compare-runs", *reports, "--csv", bases[0], "--csv", bases[1],
                     "--out", direct_path) == json.loads(direct_path.read_bytes()) == from_set
     verify_comparison_file_hashes(cli, destination, result_path)
+    verify_comparison_bundle(cli, destination, result_path)
     assert "cannot be used with" in cli_call(cli, "compare-runs", *reports, "--trial-set", set_path, success=False)
     assert "cannot be used with" in cli_call(cli, "compare-runs", "--trial-set", set_path, "--csv", bases[0], success=False)
 
@@ -1029,6 +1083,7 @@ def verify_trial_set_comparison(cli, destination, reports, bases):
     counter_check = cli_call(cli, "check-comparison", counter_result)
     assert counter_check["all_match"] and not counter_check["csv_hashes_recorded"]
     assert len(counter_check["files"]) == 2 and all(e["csv_part"] is None for e in counter_check["files"])
+    verify_comparison_bundle(cli, destination, counter_result)
     manifest["trials"][0]["report"] = ""
     draft.write_text(json.dumps(manifest), encoding="utf-8")
     assert "report path for row 1" in cli_call(cli, "compare-runs", "--trial-set", draft, success=False)
