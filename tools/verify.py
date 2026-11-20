@@ -1024,6 +1024,13 @@ def verify_comparison_bundle(cli, destination, comparison_path):
     assert all(not Path(row["report"]).is_absolute() for row in rows)
     assert all(not Path(row["csv"]).is_absolute() for row in rows)
     rerun = cli_call(cli, "compare-runs", "--trial-set", manifest)
+    fresh_path = destination / f"{root.name}-fresh.json"
+    fresh = cli_call(cli, "compare-runs", "--bundle", relocated, "--out", fresh_path)
+    assert fresh == rerun == json.loads(fresh_path.read_bytes())
+    assert "already exists" in cli_call(cli, "compare-runs", "--bundle", relocated,
+                                        "--out", fresh_path, success=False)
+    assert "cannot be used with" in cli_call(cli, "compare-runs", "--bundle", relocated,
+                                             "--trial-set", manifest, success=False)
     assert rerun["schedules"] == data["schedules"]
     assert [trial["sha256"] for trial in rerun["trials"]] == [trial["sha256"] for trial in data["trials"]]
     if audits is None:
@@ -1038,6 +1045,7 @@ def verify_comparison_bundle(cli, destination, comparison_path):
         assert cli_call(cli, "check-comparison", relative_copy / relative["portable_comparison"],
                         "--base", relative_copy)["all_match"]
         verify_bundle_failures(cli, relocated, receipt, checked["files"])
+        verify_bundle_comparison_rejects_changed_bytes(cli, relocated, checked["files"])
 
 
 def verify_bundle_failures(cli, root, receipt, files):
@@ -1089,6 +1097,29 @@ def verify_bundle_failures(cli, root, receipt, files):
     finally:
         marker.write_bytes(marker_bytes)
     assert cli_call(cli, "verify-bundle", root)["receipt"] == receipt
+
+
+def verify_bundle_comparison_rejects_changed_bytes(cli, root, files):
+    report = Path(files[0]["resolved_path"])
+    part = Path(next(entry for entry in files if entry["trial"] == 1 and entry["csv_part"] == 1)["resolved_path"])
+    report_bytes = report.read_bytes()
+    csv_bytes = part.read_bytes()
+    header, row, remaining = csv_bytes.split(b"\n", 2)
+    values = row.split(b",")
+    values[5] = str(int(values[5]) + 1).encode()
+    changed_csv = b"\n".join([header, b",".join(values), remaining])
+    failed_export = root.parent / "changed-bundle-result.json"
+    for path, original, changed, message in (
+        (report, report_bytes, report_bytes + b"\n", "trial 1 report changed"),
+        (part, csv_bytes, changed_csv, "trial 1 CSV part 1 changed"),
+    ):
+        path.write_bytes(changed)
+        try:
+            assert message in cli_call(cli, "compare-runs", "--bundle", root,
+                                       "--out", failed_export, success=False)
+            assert not failed_export.exists()
+        finally:
+            path.write_bytes(original)
 
 
 def verify_trial_set_comparison(cli, destination, reports, bases):

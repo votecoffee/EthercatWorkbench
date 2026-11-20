@@ -149,7 +149,7 @@ enum Command {
     VerifyPdo { profile: PathBuf, readback: PathBuf },
     /// Compare saved timing trials with matching settings except for their scheduler. No bus operations.
     CompareRuns {
-        #[arg(required_unless_present = "trial_set", num_args = 2..=32)]
+        #[arg(required_unless_present_any = ["trial_set", "bundle"], num_args = 2..=32)]
         reports: Vec<PathBuf>,
         /// Audit one CSV base per report, repeated in report order.
         #[arg(long)]
@@ -157,6 +157,9 @@ enum Command {
         /// Use the ordered report paths and audit setting from a saved trial set.
         #[arg(long, value_name = "JSON", conflicts_with_all = ["reports", "csv"])]
         trial_set: Option<PathBuf>,
+        /// Recompute from a portable bundle and match the evidence hashes.
+        #[arg(long, value_name = "DIRECTORY", conflicts_with_all = ["reports", "csv", "trial_set"])]
+        bundle: Option<PathBuf>,
         /// Save the comparison result to a new JSON file. JSON is also printed to stdout.
         #[arg(long, value_name = "JSON")]
         out: Option<PathBuf>,
@@ -429,9 +432,18 @@ fn main() -> Result<()> {
             reports,
             csv,
             trial_set,
+            bundle,
             out,
         } => {
             shared_outputs(out.as_deref(), None)?;
+            if let Some(directory) = bundle {
+                let result = ethercat_workbench::comparison_bundle::compare(
+                    &directory,
+                    None,
+                    &AtomicBool::new(false),
+                )?;
+                return inspection_export(&result, out.as_deref());
+            }
             if let Some(path) = trial_set {
                 let set = TrialSet::load(&path)
                     .with_context(|| format!("load trial set {}", path.display()))?;

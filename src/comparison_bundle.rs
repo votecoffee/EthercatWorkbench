@@ -45,7 +45,84 @@ pub struct VerifiedBundle {
     pub comparison: comparison_files::CheckedComparison,
 }
 
+struct BundleFiles {
+    directory: PathBuf,
+    receipt_sha256: String,
+    receipt: Receipt,
+    saved: benchmark::SavedComparison,
+}
+
 pub fn verify(directory: &Path, stop: &AtomicBool) -> Result<VerifiedBundle> {
+    let BundleFiles {
+        directory,
+        receipt_sha256,
+        receipt,
+        saved,
+    } = read_bundle(directory, None, stop)?;
+    let comparison = comparison_files::check_saved(saved, Some(&directory), stop)?;
+    require_matching(&comparison)?;
+    Ok(VerifiedBundle {
+        directory,
+        receipt_sha256,
+        receipt,
+        comparison,
+    })
+}
+
+pub fn compare(
+    directory: &Path,
+    expected_receipt_sha256: Option<&str>,
+    stop: &AtomicBool,
+) -> Result<Comparison> {
+    let bundle = read_bundle(directory, expected_receipt_sha256, stop)?;
+    let saved = bundle.saved.comparison;
+    let reports: Vec<_> = saved
+        .trials
+        .iter()
+        .map(|trial| bundle.directory.join(&trial.file))
+        .collect();
+    let bases: Option<Vec<_>> = saved.csv_audits.as_ref().map(|audits| {
+        audits
+            .iter()
+            .map(|audit| bundle.directory.join(&audit.csv_base))
+            .collect()
+    });
+    let result = benchmark::compare_cancelable(&reports, bases.as_deref(), stop)?;
+    for (index, (expected, fresh)) in saved.trials.iter().zip(&result.trials).enumerate() {
+        ensure!(
+            expected.sha256.eq_ignore_ascii_case(&fresh.sha256),
+            "trial {} report changed since the bundle was created",
+            index + 1
+        );
+    }
+    if let (Some(expected), Some(fresh)) = (&saved.csv_audits, &result.csv_audits) {
+        for (index, (expected, fresh)) in expected.iter().zip(fresh).enumerate() {
+            let trial = index + 1;
+            ensure!(
+                expected.parts.len() == fresh.parts.len(),
+                "trial {trial} CSV part count changed since the bundle was created"
+            );
+            for (part, (expected, fresh)) in expected.parts.iter().zip(&fresh.parts).enumerate() {
+                check_cancel(Some(stop))?;
+                ensure!(
+                    bundle.directory.join(&expected.file) == fresh.file
+                        && expected.bytes == fresh.bytes
+                        && expected.sha256.eq_ignore_ascii_case(&fresh.sha256),
+                    "trial {trial} CSV part {} changed since the bundle was created",
+                    part + 1
+                );
+            }
+        }
+    }
+    check_cancel(Some(stop))?;
+    Ok(result)
+}
+
+fn read_bundle(
+    directory: &Path,
+    expected_receipt_sha256: Option<&str>,
+    stop: &AtomicBool,
+) -> Result<BundleFiles> {
     check_cancel(Some(stop))?;
     let directory = std::path::absolute(directory).context("resolve bundle directory")?;
     require_entry(&directory, true)?;
@@ -63,6 +140,11 @@ pub fn verify(directory: &Path, stop: &AtomicBool) -> Result<VerifiedBundle> {
         "bundle.json exceeds 16 KiB"
     );
     let receipt_sha256 = benchmark::hash(&bytes);
+    ensure!(
+        expected_receipt_sha256
+            .is_none_or(|expected| expected.eq_ignore_ascii_case(&receipt_sha256)),
+        "bundle.json changed; verify and open the bundle again"
+    );
     let receipt: Receipt = serde_json::from_slice(&bytes).context("parse bundle.json")?;
     ensure!(
         receipt.schema == 1,
@@ -96,13 +178,11 @@ pub fn verify(directory: &Path, stop: &AtomicBool) -> Result<VerifiedBundle> {
     let set = TrialSet::parse(&set_bytes)?;
     verify_layout(&directory, &receipt, &portable.comparison, &set, stop)?;
 
-    let comparison = comparison_files::check_saved(portable, Some(&directory), stop)?;
-    require_matching(&comparison)?;
-    Ok(VerifiedBundle {
+    Ok(BundleFiles {
         directory,
         receipt_sha256,
         receipt,
-        comparison,
+        saved: portable,
     })
 }
 
@@ -154,6 +234,8 @@ fn verify_layout(
             ensure!(
                 audit.report == trial.file
                     && audit.csv_base == csv
+                    && audit.report_sha256.eq_ignore_ascii_case(&trial.sha256)
+                    && audit.parts.len() as u64 == trial.capture.parts
                     && !audit.parts.is_empty()
                     && (rotate != 0 || audit.parts.len() == 1),
                 "trial {number} CSV audit does not match the bundle layout"

@@ -64,6 +64,10 @@ pub enum Task {
     VerifyBundle {
         directory: PathBuf,
     },
+    CompareBundle {
+        directory: PathBuf,
+        expected_receipt_sha256: String,
+    },
     InspectPcap {
         file: PathBuf,
         profile: Box<Profile>,
@@ -76,7 +80,7 @@ pub enum Task {
 impl Task {
     pub fn validate(&self) -> Result<()> {
         let (inputs, csv) = match self {
-            Self::VerifyBundle { directory } => {
+            Self::VerifyBundle { directory } | Self::CompareBundle { directory, .. } => {
                 ensure!(
                     !directory.as_os_str().is_empty(),
                     "enter an evidence bundle folder"
@@ -240,6 +244,14 @@ impl Task {
             Self::VerifyBundle { directory } => {
                 Outcome::VerifiedBundle(Box::new(comparison_bundle::verify(directory, stop)?))
             }
+            Self::CompareBundle {
+                directory,
+                expected_receipt_sha256,
+            } => Outcome::BundleComparisonResult(Box::new(comparison_bundle::compare(
+                directory,
+                Some(expected_receipt_sha256),
+                stop,
+            )?)),
         };
         check_cancel(Some(stop))?;
         Ok(outcome)
@@ -256,6 +268,7 @@ pub enum Outcome {
     ComparisonFiles(Box<crate::comparison_files::CheckedComparison>),
     ComparisonBundle(Box<CompletedBundle>),
     VerifiedBundle(Box<comparison_bundle::VerifiedBundle>),
+    BundleComparisonResult(Box<benchmark::Comparison>),
     Pcap(Box<pcap_inspect::Report>),
 }
 
@@ -346,7 +359,10 @@ impl Controller {
             .name("saved-file-review".into())
             .spawn(move || operation(&flag))
             .context("start saved-file review worker")?;
-        if !matches!(&task, Task::BundleComparison { .. }) {
+        if !matches!(
+            &task,
+            Task::BundleComparison { .. } | Task::CompareBundle { .. }
+        ) {
             self.completed = None;
         }
         self.bundle = None;

@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.45.0** adds direct verification and reopening of a moved comparison evidence bundle. The desktop SAFEOP plan still ties acknowledgement to the reviewed settings and scoped discovery. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
+Version **0.46.0** adds direct recomparison of a verified evidence bundle from Review and the CLI. The desktop SAFEOP plan still ties acknowledgement to the reviewed settings and scoped discovery. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
 
 ## Decisions to retain
 
@@ -11,7 +11,7 @@ Version **0.45.0** adds direct verification and reopening of a moved comparison 
 | Profiles | ESI identity/revision selection, retained catalogs, manual/overridden fields, offline mode/PDO and typed Rx staging; expectations remain separate from discovered evidence | [PDO choices](pdo-selection.md), [synchronization review](esi-sync-review.md), [typed staging](output-staging.md) |
 | Timing/logging | A requested 1 ms period is a measurement target. Keep device/DC settings, host send/all-reply/valid-input spacing, capture clocks and independent losses separate. Every-valid logging includes unchanged data; on-change selection does not define valid-input timing | [Timing comparisons](benchmark-comparison.md), [CSV audits](capture-audit.md) |
 | Desktop workflow | Device, Inputs, Outputs, Logging, Mappings, Integration, Diagnostics and saved Review; persistent stop/status, locked active settings and explicit SAFEOP review | [Desktop workflows](desktop-workspace.md) |
-| Saved evidence | Audited scheduler comparisons, source hashes, portable evidence export and verified reopening | [Desktop review](desktop-review.md#bundle-comparison-evidence) |
+| Saved evidence | Audited scheduler comparisons, portable evidence export, verified reopening and bundle recomparison | [Desktop review](desktop-review.md#bundle-comparison-evidence) |
 | Host readiness | `check-runtime` and the desktop prerequisites window read Npcap file/service/policy metadata; exclusive background GUI jobs and protected export; capture access stays unprobed | [Host checks](runtime-check.md) |
 
 The portable package retains dependency notices and excludes Npcap runtime/driver files. Use the existing installation/licensing references in the [README](../README.md#install) and source review. EthernetIPWorkbench remains a read-only UX/pipeline reference, not an EtherCAT protocol specification.

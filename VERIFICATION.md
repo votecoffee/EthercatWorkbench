@@ -498,3 +498,11 @@ Desktop Review opens a bundle by its folder and displays the saved comparison af
 Formatting, Clippy, 176 locked offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. The headless desktop workflow exported, verified and opened the bundle. CLI checks verified relocated audited and report-only bundles retained from 0.44.0, then tested missing completion markers, changed comparison and trial-set bytes, same-size report and CSV changes, inconsistent coverage and paths outside the fixed layout.
 
 The first two full runs encountered timing assertions in the existing shared-memory fixture. In one run the HTTP progress check timed out during a held mutex. In the other the polling reader missed the initial valid window before the injected loss. The isolated fixture and the final full run passed. Logs and delivery receipts use the 0.45.0 prefix under ignored .local/. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.46.0 recompare portable evidence (2026-11-20)
+
+Review runs a fresh comparison from a verified evidence bundle on the existing cancellable worker. It uses the opened receipt SHA-256 and checks the report and CSV hashes from the fresh analysis before publishing the result. The CLI provides the same evidence checks with `compare-runs --bundle DIRECTORY` and supports export to a new JSON file.
+
+Formatting, Clippy, 176 locked offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. The headless desktop test rejected an edited receipt, kept the verified result available, then successfully recomputed after the receipt was restored. CLI checks on relocated audited and report-only 0.45.0 bundles and fresh fixtures covered trial-set parity, protected output, conflicting arguments, and rejection of changed report and CSV bytes that still parse.
+
+The first full offline regression hit a virtual CoE EEPROM timeout before cyclic exchange. The isolated case reached cyclic I/O and returned to INIT, and the full retry passed. The 0.46.0 logs and delivery receipts are under ignored .local/. Native GUI review and physical bench qualification remain pending.

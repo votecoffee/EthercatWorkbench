@@ -405,7 +405,8 @@ impl Panel {
                 | Task::InspectComparison { .. }
                 | Task::CheckComparisonFiles { .. }
                 | Task::BundleComparison { .. }
-                | Task::VerifyBundle { .. } => &[],
+                | Task::VerifyBundle { .. }
+                | Task::CompareBundle { .. } => &[],
             };
             ui.collapsing("Inputs used", |ui| {
                 let used_csv = matches!(
@@ -451,42 +452,52 @@ impl Panel {
                 Outcome::SavedComparison(_)
                 | Outcome::ComparisonFiles(_)
                 | Outcome::ComparisonBundle(_)
-                | Outcome::VerifiedBundle(_) => {
+                | Outcome::VerifiedBundle(_)
+                | Outcome::BundleComparisonResult(_) => {
                     unreachable!("saved comparison has its own page")
                 }
             }
-            ui.add_enabled_ui(!self.is_running() && !bus_busy, |ui| {
-                if let Task::Audit(input) = &completed.task
-                    && ui.button("Add audited capture to comparison").clicked()
-                {
-                    add_trial = Some(input.clone());
-                }
-                ui.horizontal(|ui| {
-                    ui.label("New review JSON");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.export)
-                            .hint_text(".local/review-result.json")
-                            .desired_width(360.0),
-                    );
-                    if ui
-                        .add_enabled(
-                            !self.export.trim().is_empty(),
-                            egui::Button::new("Save new result"),
-                        )
-                        .clicked()
-                    {
-                        self.message = match self.controller.save_new(Path::new(self.export.trim()))
-                        {
-                            Ok(()) => "Review result saved; source files preserved".into(),
-                            Err(error) => format!("{error:#}"),
-                        };
-                    }
-                });
-            });
+            let enabled = !self.is_running() && !bus_busy;
+            if let Task::Audit(input) = &completed.task
+                && ui
+                    .add_enabled(
+                        enabled,
+                        egui::Button::new("Add audited capture to comparison"),
+                    )
+                    .clicked()
+            {
+                add_trial = Some(input.clone());
+            }
+            self.result_export(ui, enabled);
         }
         if let Some(input) = add_trial {
             self.add_capture_trial(input);
         }
+    }
+
+    fn result_export(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("New review JSON");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.export)
+                        .hint_text(".local/review-result.json")
+                        .desired_width(360.0),
+                );
+                if ui
+                    .add_enabled(
+                        !self.export.trim().is_empty(),
+                        egui::Button::new("Save new result"),
+                    )
+                    .clicked()
+                {
+                    self.message = match self.controller.save_new(Path::new(self.export.trim())) {
+                        Ok(()) => "Review result saved".into(),
+                        Err(error) => format!("{error:#}"),
+                    };
+                }
+            });
+        });
     }
 
     fn saved_comparison_controls(&mut self, ui: &mut egui::Ui, enabled: bool) {
@@ -535,7 +546,27 @@ impl Panel {
                 });
             });
         });
-        let (saved, check, bundle) = match self.controller.completed().map(|job| &job.outcome) {
+        let completed = self.controller.completed();
+        if let Some(completed) = completed
+            && let (
+                Task::CompareBundle {
+                    directory,
+                    expected_receipt_sha256,
+                },
+                Outcome::BundleComparisonResult(result),
+            ) = (&completed.task, &completed.outcome)
+        {
+            ui.separator();
+            ui.strong("Fresh bundle comparison");
+            ui.label(directory.display().to_string());
+            ui.collapsing("Bundle receipt hash", |ui| {
+                ui.label(format!("bundle.json SHA-256 · {expected_receipt_sha256}"));
+            });
+            show_comparison(ui, result, false);
+            self.result_export(ui, enabled);
+            return;
+        }
+        let (saved, check, bundle) = match completed.map(|job| &job.outcome) {
             Some(Outcome::SavedComparison(saved)) => (saved.as_ref(), None, None),
             Some(Outcome::ComparisonFiles(result)) => (&result.saved, Some(&result.report), None),
             Some(Outcome::VerifiedBundle(result)) => (
@@ -546,6 +577,7 @@ impl Panel {
             _ => return,
         };
         ui.separator();
+        let mut follow_up = None;
         if let Some(bundle) = bundle {
             ui.strong("Evidence bundle verified");
             ui.label(bundle.directory.display().to_string());
@@ -556,11 +588,19 @@ impl Panel {
             ui.collapsing("Bundle receipt hash", |ui| {
                 ui.label(format!("bundle.json SHA-256 · {}", bundle.receipt_sha256));
             });
+            if ui
+                .add_enabled(enabled, egui::Button::new("Recompare bundled trials"))
+                .clicked()
+            {
+                follow_up = Some(Task::CompareBundle {
+                    directory: bundle.directory.clone(),
+                    expected_receipt_sha256: bundle.receipt_sha256.clone(),
+                });
+            }
         }
         ui.strong("Saved scheduler comparison");
         ui.label(saved.file.display().to_string());
         ui.label(format!("SHA-256 · {}", saved.sha256));
-        let mut follow_up = None;
         ui.collapsing("Source files and evidence export", |ui| {
             ui.add_enabled_ui(enabled, |ui| {
                 if bundle.is_none() {

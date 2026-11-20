@@ -61,7 +61,7 @@ From the CLI, add `--base DIRECTORY` to the first command if the comparison uses
 ```powershell
 .\ethercat-workbench-cli.exe bundle-comparison .local/comparison.json --out .local/evidence
 .\ethercat-workbench-cli.exe verify-bundle .local/evidence
-.\ethercat-workbench-cli.exe compare-runs --trial-set .local/evidence/trials.json
+.\ethercat-workbench-cli.exe compare-runs --bundle .local/evidence
 ```
 
 The bundle preserves the original comparison byte for byte and gives the verified reports and CSV parts stable names under each trial folder. Use `trials.json` to rerun the analysis after moving the folder. Comparisons made with report counters alone include only report files. Keep bundles with private captures under ignored `.local/`.
@@ -73,6 +73,12 @@ The command requires a new destination directory. If the source check fails, run
 In **Review → Saved comparison**, expand **Open evidence bundle**, enter the folder that contains `bundle.json`, and choose **Verify and open bundle**. Workbench uses that folder to look up the comparison and trial evidence. On success it shows the verified report and CSV part counts and opens the saved comparison. An incomplete or changed bundle reports the failed check.
 
 Use `verify-bundle DIRECTORY` for the same check headlessly. A successful command prints the receipt, its SHA-256, and the verified report and CSV part paths and hashes. An incomplete or changed bundle returns a nonzero exit. Both checks require the schema 1 directory layout and ordinary bundle files and directories. They match bytes and references against the supplied receipt. Compare the receipt SHA-256 with a separately retained value when checking whether a copy is the same bundle.
+
+## Recompare bundled trials
+
+After verifying and opening a bundle, choose **Recompare bundled trials**. Workbench uses the folder and receipt hash of the opened bundle. It rereads the archived evidence in trial order, audits the CSV when the bundle includes it, and checks that the compared files still match the recorded hashes. The trial editor keeps its current draft. Use **Save new result** to export the fresh comparison to a new JSON file. If the receipt changed, verify and open the bundle again before retrying.
+
+The equivalent headless command is `compare-runs --bundle DIRECTORY [--out NEW.json]`. It uses the receipt in the selected folder and returns an error if the evidence fails the checks. You can still use `compare-runs --trial-set DIRECTORY/trials.json` to run an ordinary comparison with the trial list.
 
 ## Inspect Ethernet PCAP
 

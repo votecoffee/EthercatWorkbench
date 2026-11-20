@@ -910,6 +910,51 @@ mod tests {
                 .any(|(text, _)| text == "Saved scheduler comparison"),
             "{labels:?}"
         );
+        let receipt = bundle.join("bundle.json");
+        let bytes = std::fs::read(&receipt).unwrap();
+        std::fs::write(&receipt, [&bytes[..], b"\n"].concat()).unwrap();
+        for expect_stale in [true, false] {
+            click(&mut app, &ctx, "Recompare bundled trials");
+            assert!(app.review.is_running());
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while app.review.is_running() {
+                app.refresh(&ctx);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "bundle comparison did not finish"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let labels = draw(&mut app, &ctx, size, vec![]);
+            if expect_stale {
+                assert!(
+                    labels
+                        .iter()
+                        .any(|(text, _)| text.starts_with("bundle.json changed")),
+                    "{labels:?}"
+                );
+                assert!(
+                    labels
+                        .iter()
+                        .any(|(text, _)| text == "Evidence bundle verified"),
+                    "{labels:?}"
+                );
+                std::fs::write(&receipt, &bytes).unwrap();
+            } else {
+                assert!(
+                    labels
+                        .iter()
+                        .any(|(text, _)| text == "Fresh bundle comparison"),
+                    "{labels:?}"
+                );
+                assert!(
+                    labels
+                        .iter()
+                        .any(|(text, _)| text.starts_with("2 compatible saved trials")),
+                    "{labels:?}"
+                );
+            }
+        }
         for (index, slug) in ["deadline", "relative"].into_iter().enumerate() {
             let bundled_trial = bundle.join(format!("trial-{:02}", index + 1));
             let path = dir.join(format!("{slug}.run.json"));
