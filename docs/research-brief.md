@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.53.0** adds [saved SyncManager register review](input-group.md#check-saved-syncmanager-registers) to compare physical input buffers with the FMMUs. Read-only [virtual discovery](esc-diagnostics.md#two-device-discovery-fixture) covers downstream timeouts. Use the [first bench session guide](bench-qualification.md) to prepare the physical worksheet and run the virtual CoE rehearsal. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
+Version **0.54.0** adds [saved TxPDO assignment review](input-group.md#check-saved-txpdo-assignments) to check descriptor order and trace each input SyncManager through the FMMUs. Read-only [virtual discovery](esc-diagnostics.md#two-device-discovery-fixture) covers downstream timeouts. Use the [first bench session guide](bench-qualification.md) to prepare the physical worksheet and run the virtual CoE rehearsal. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
 
 ## Decisions to retain
 

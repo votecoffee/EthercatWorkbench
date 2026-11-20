@@ -166,15 +166,21 @@ impl Review {
 }
 
 impl Device {
+    pub(super) fn read_mappings(
+        &self,
+    ) -> impl Iterator<Item = (usize, Range<u64>, Range<u32>)> + '_ {
+        self.slots.iter().filter_map(|slot| {
+            let mapping = slot.mapping.as_ref()?;
+            let logical = mapping.read_range().ok().flatten()?;
+            let start = u32::from(mapping.physical_start);
+            let physical = start..start + u32::from(mapping.length);
+            Some((slot.index, logical, physical))
+        })
+    }
+
     pub(super) fn physical_read_ranges(&self) -> Vec<(usize, Range<u32>)> {
-        self.slots
-            .iter()
-            .filter_map(|slot| {
-                let mapping = slot.mapping.as_ref()?;
-                mapping.read_range().ok().flatten()?;
-                let start = u32::from(mapping.physical_start);
-                Some((slot.index, start..start + u32::from(mapping.length)))
-            })
+        self.read_mappings()
+            .map(|(index, _, physical)| (index, physical))
             .collect()
     }
 }

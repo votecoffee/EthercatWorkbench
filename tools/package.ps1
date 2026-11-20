@@ -79,6 +79,7 @@ try {
         'samples/input-group-frame.json' = 'samples/input-group-frame.json'
         'samples/input-group-fmmu.json' = 'samples/input-group-fmmu.json'
         'samples/input-group-sync-managers.json' = 'samples/input-group-sync-managers.json'
+        'samples/input-group-pdo.json' = 'samples/input-group-pdo.json'
         'samples/virtual-sii.json' = 'samples/virtual-sii.json'
         'samples/virtual-dc.json' = 'samples/virtual-dc.json'
         'samples/virtual-normal.json' = 'samples/virtual-normal.json'

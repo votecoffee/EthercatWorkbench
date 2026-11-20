@@ -570,3 +570,11 @@ The virtual two-ESC test read the count and every configured SyncManager slot by
 Focused release CLI fixtures verified source hashes, split FMMU coverage, disjoint input buffers and a coalesced range spanning a gap. They also covered physical aliasing, overlapping input/output buffers, disabled and PDI-deactivated inputs, direction and mode, invalid addresses, missing or ambiguous register reads and station mismatches. A clean saved frame and valid logical FMMU check did not allow decoding with a failed physical check. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
 
 The audit compares saved first-buffer geometry. Exact PDO contents, ESC-specific backing-buffer allocation, live grouped acquisition, native GUI interaction and physical bench qualification remain pending.
+
+## Version 0.54.0 grouped TxPDO assignment and placement review (2026-11-20)
+
+The saved CoE and SII fixtures matched the single-device TxPDO comparator and returned the same typed input as the prior frame inspection. Focused CLI checks covered declared identity and station mismatches, same-size descriptor reordering, unavailable readback, wrong assignment direction and SyncManager, mismatched lengths and explicit layout source. Unreferenced manual fields remained manual.
+
+A split-channel fixture mapped each downstream SyncManager to the expected logical offset. Swapping only the physical FMMU targets preserved both coverage checks, WKC, AL, and the descriptor checks. The placement audit identified both incorrect channels and withheld all decoded inputs. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
+
+The inspector checks saved layout declarations and register evidence. Live PDO and identity readback, native GUI interaction, grouped acquisition and physical bench timing remain pending.

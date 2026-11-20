@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "devices": [
+    {
+      "station_address": 4096,
+      "identity": { "vendor": 16715776, "product": 1, "revision": 1 },
+      "tx": {
+        "mapping_source": "coe",
+        "sync_managers": [
+          {
+            "index": 3,
+            "configured_bytes": 8,
+            "pdos": [{ "index": 6656, "entries": [1610613008, 1610613249, 15, 1610613536] }]
+          }
+        ]
+      }
+    },
+    {
+      "station_address": 4097,
+      "identity": { "vendor": 16715776, "product": 2, "revision": 1 },
+      "tx": {
+        "mapping_source": "sii",
+        "sync_managers": [
+          {
+            "index": 1,
+            "configured_bytes": 8,
+            "pdos": [{ "index": 6656, "entries": [1610613008, 1610613249, 15, 1610613536] }]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1968,6 +1968,133 @@ def verify_input_group_sync_managers(cli, destination):
     assert "--fmmu" in cli_call(cli, "inspect-input-group", manifest, "--sync-managers", sample, success=False)
 
 
+def verify_input_group_pdo(cli, destination):
+    manifest = ROOT / "samples/input-group.json"
+    frame = ROOT / "samples/input-group-frame.json"
+    fmmu = ROOT / "samples/input-group-fmmu.json"
+    sm = ROOT / "samples/input-group-sync-managers.json"
+    sample = ROOT / "samples/input-group-pdo.json"
+
+    def save(name, obj):
+        path = destination / (name + ".json")
+        path.write_text(json.dumps(obj), encoding="utf-8")
+        return path
+
+    def inspect(snapshot=sample, *args, mapping=fmmu, slots=sm, plan=manifest, **kwargs):
+        return cli_call(cli, "inspect-input-group", plan, "--fmmu", mapping, "--sync-managers", slots,
+                        "--pdo", snapshot, *args, **kwargs)
+
+    baseline = cli_call(cli, "inspect-input-group", manifest, "--fmmu", fmmu, "--sync-managers", sm, "--frame", frame)
+    assert "pdo" not in baseline
+    standalone = inspect()
+    assert standalone["pdo"]["valid"] and "frame" not in standalone
+    assert all(d["input"] is None for d in standalone["devices"])
+    receipt = destination / "healthy-receipt.json"
+    checked = inspect(sample, "--frame", frame, "--out", receipt)
+    assert checked == json.loads(receipt.read_bytes())
+    assert checked["devices"] == baseline["devices"] and checked["frame"] == baseline["frame"]
+    report = checked["pdo"]
+    assert report["valid"] and report["source_sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    for position, (device, source, channel) in enumerate(zip(report["devices"], ("coe", "sii"), (3, 1), strict=True)):
+        assert device["readback"]["mapping_source"] == source and device["station_address"] == 4096 + position
+        assert device["tx"]["image_bytes"] == 8 and not device["issues"]
+        assert [field["state"] for field in device["tx"]["fields"]] == ["matched"] * 3
+        assert device["placements"] == [{
+            "sync_manager": channel, "logical_start": 8 * position, "bytes": 8,
+            "physical_range": {"start": 0x1200, "end": 0x1208}, "matches": True,
+        }]
+        rows = manifest.parent / baseline["devices"][position]["profile"]
+        single = save(f"single-{position}", {"tx": device["readback"], "rx": None})
+        assert device["tx"] == cli_call(cli, "verify-pdo", rows, single)["tx"]
+
+    def reject(snapshot, text, **options):
+        failed = inspect(snapshot, "--frame", frame, **options)
+        assert failed["frame"]["valid"] and failed["fmmu"]["valid"] and failed["sync_managers"]["valid"]
+        assert not failed["pdo"]["valid"] and all(d["input"] is None for d in failed["devices"])
+        device = failed["pdo"]["devices"][1]
+        assert any(text in reason for reason in device["issues"] + device["tx"]["errors"]), device
+        return device
+
+    for name, issue in [
+        ("reordered", "no device entry"), ("wrong-revision", "identity differs"),
+        ("wrong-station", "station address differs"), ("unavailable", "layout is unavailable"),
+        ("esi", "supply CoE or SII"), ("wrong-sm", "SM0 TxPDO bytes"),
+        ("rx-index", "outside 0x1a00"), ("wrong-sm-length", "register length 7"),
+        ("inconsistent-readback", "both a TxPDO layout and an unavailable reason"),
+    ]:
+        evidence = json.loads(sample.read_bytes())
+        device = evidence["devices"][1]
+        channel = device["tx"]["sync_managers"][0]
+        pdo = channel["pdos"][0]
+        if name == "reordered":
+            pdo["entries"][0], pdo["entries"][3] = pdo["entries"][3], pdo["entries"][0]
+        elif name == "wrong-revision":
+            device["identity"]["revision"] += 1
+        elif name == "wrong-station":
+            device["station_address"] = 4099
+        elif name == "unavailable":
+            device["tx"] = None
+            device["tx_unavailable"] = "no saved read"
+        elif name == "esi":
+            device["tx"]["mapping_source"] = "esi"
+        elif name == "wrong-sm":
+            channel["index"] = 0
+        elif name == "rx-index":
+            pdo["index"] = 0x1600
+        elif name == "wrong-sm-length":
+            channel["configured_bytes"] = 7
+        else:
+            device["tx_unavailable"] = "contradictory evidence"
+        result = reject(save(name, evidence), issue)
+        if name == "reordered":
+            assert result["tx"]["image_bytes"] == 8
+        if name == "unavailable":
+            assert result["tx"]["unavailable"] == "no saved read"
+
+    prepared_plan = json.loads(manifest.read_bytes())
+    for device in prepared_plan["devices"]:
+        device["profile"] = str((manifest.parent / device["profile"]).resolve())
+    downstream = json.loads(Path(prepared_plan["devices"][1]["profile"]).read_bytes())
+    downstream["tx"][2]["pdo_index"] = 6657
+    for key in ["pdo_index", "object_index", "subindex"]:
+        downstream["tx"][0].pop(key)
+    prepared_plan["devices"][1]["profile"] = save("split-profile", downstream).name
+    plan = save("split-plan", prepared_plan)
+    evidence = json.loads(sample.read_bytes())
+    channel = evidence["devices"][1]["tx"]["sync_managers"][0]
+    entries = channel["pdos"][0]["entries"]
+    float_entry = entries.pop()
+    channel["configured_bytes"] = 4
+    evidence["devices"][1]["tx"]["sync_managers"].append({
+        "index": 2, "configured_bytes": 4, "pdos": [{"index": 6657, "entries": [float_entry]}],
+    })
+    split_snapshot = save("split-pdo", evidence)
+    mapping = json.loads(fmmu.read_bytes())
+    mapping["devices"][1]["slots"][1]["value"][8:10] = [0, 19]
+    slots = json.loads(sm.read_bytes())
+    slots["devices"][1]["count"]["value"] = 3
+    slots["devices"][1]["slots"][1]["value"][2] = 4
+    slots["devices"][1]["slots"].append({"wkc": 1, "value": [0, 19, 4, 0, 0, 0, 1, 0]})
+    split_slots = save("split-sm", slots)
+    good = inspect(split_snapshot, "--frame", frame, mapping=save("split-fmmu", mapping), slots=split_slots, plan=plan)
+    assert good["pdo"]["valid"]
+    assert [d["input"] for d in good["devices"]] == [d["input"] for d in baseline["devices"]]
+    result = good["pdo"]["devices"][1]
+    assert [d["logical_start"] for d in result["placements"]] == [8, 12]
+    assert [field["state"] for field in result["tx"]["fields"]] == ["manual", "matched", "matched"]
+    mapping["devices"][1]["slots"][1]["value"][9] = 18
+    mapping["devices"][1]["slots"][2]["value"][9] = 19
+    swapped = reject(split_snapshot, "SM1 TxPDO bytes", mapping=save("swapped-fmmu", mapping), slots=split_slots, plan=plan)
+    assert not swapped["tx"]["errors"] and not any(p["matches"] for p in swapped["placements"])
+
+    evidence = json.loads(sample.read_bytes())
+    del evidence["devices"][1]["tx"]["mapping_source"]
+    out = destination / "malformed-export.json"
+    assert "mapping_source" in inspect(save("missing-source", evidence), "--out", out, success=False)
+    assert not out.exists()
+    assert "--sync-managers" in cli_call(cli, "inspect-input-group", manifest, "--pdo", sample, success=False)
+
+
 def verify_pcap(cli, destination):
     """Authored PCAP records: no capture hardware or packet transmission."""
     fixture = json.loads((ROOT / "samples/synthetic-replay.json").read_text(encoding="utf-8"))
@@ -2635,6 +2762,9 @@ def main():
     sm_destination = destination / "input-group-sync-managers"
     sm_destination.mkdir()
     verify_input_group_sync_managers(cli, sm_destination)
+    pdo_destination = destination / "input-group-pdo"
+    pdo_destination.mkdir()
+    verify_input_group_pdo(cli, pdo_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

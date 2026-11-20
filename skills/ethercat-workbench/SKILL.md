@@ -31,6 +31,8 @@ Add `--fmmu FILE` for a saved per-station channel count and ordered 16-byte FMMU
 
 Add `--sync-managers FILE` with `--fmmu` to also check the physical coverage of the enabled buffered input windows. Include the supported-channel count and all eight-byte slots with WKC. When also supplying a frame, check `frame.valid`, `fmmu.valid` and `sync_managers.valid`. The ranges cover each visible first buffer. Keep actual PDO assignments, snapshot freshness and ESC-specific allocation separate.
 
+Add `--pdo FILE` with the FMMU and SyncManager snapshots to compare each station's saved TxPDO layout. The file requires exact declared identity and an explicit CoE or SII layout source. The audit verifies referenced fields, full assignments when the profile has an ESI PDO selection, and logical placement through the FMMUs. Manual fields remain manual. Check `pdo.valid` alongside the frame, FMMU and SyncManager results. These are saved evidence checks.
+
 Use headless files/CLI by default. Desktop input, screenshots or recording need an explicit request in the current chat. Do not run the verification script's optional native GUI mode automatically.
 
 ## Desktop navigation

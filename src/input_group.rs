@@ -1,5 +1,6 @@
 //! Offline planning and decoding for a byte-aligned, input-only logical read.
 pub(crate) mod fmmu;
+mod pdo_readback;
 pub(crate) mod sync_manager;
 
 use crate::{
@@ -62,6 +63,7 @@ pub struct InputGroup {
 pub(crate) struct MappingReview {
     fmmu: fmmu::Review,
     sync_managers: Option<sync_manager::Review>,
+    pdo: Option<pdo_readback::Review>,
 }
 
 #[derive(Serialize)]
@@ -78,6 +80,8 @@ pub struct Inspection<'a> {
     fmmu: Option<fmmu::Review>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sync_managers: Option<sync_manager::Review>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pdo: Option<pdo_readback::Review>,
     pub(crate) devices: Vec<Device<'a>>,
 }
 
@@ -230,9 +234,41 @@ impl InputGroup {
         sync_managers: Option<&Path>,
         frame: Option<&Path>,
     ) -> Result<Inspection<'_>> {
+        self.inspect_input_evidence(fmmu, sync_managers, None, frame)
+    }
+
+    pub fn inspect_pdo_file(
+        &self,
+        fmmu: &Path,
+        sync_managers: &Path,
+        pdo: &Path,
+        frame: Option<&Path>,
+    ) -> Result<Inspection<'_>> {
+        self.inspect_input_evidence(fmmu, Some(sync_managers), Some(pdo), frame)
+    }
+
+    fn inspect_input_evidence(
+        &self,
+        fmmu: &Path,
+        sync_managers: Option<&Path>,
+        pdo: Option<&Path>,
+        frame: Option<&Path>,
+    ) -> Result<Inspection<'_>> {
         let fmmu = fmmu::review(fmmu, &self.bindings)?;
         let sync_managers = sync_managers
             .map(|path| sync_manager::review(path, &fmmu))
+            .transpose()?;
+        let pdo = pdo
+            .map(|path| {
+                pdo_readback::review(
+                    path,
+                    &self.bindings,
+                    &fmmu,
+                    sync_managers
+                        .as_ref()
+                        .context("TxPDO review needs SyncManager evidence")?,
+                )
+            })
             .transpose()?;
         if let Some(frame) = frame {
             return self.inspect_saved_frame(
@@ -240,12 +276,14 @@ impl InputGroup {
                 Some(MappingReview {
                     fmmu,
                     sync_managers,
+                    pdo,
                 }),
             );
         }
         let mut inspection = self.inspection(None, None);
         inspection.fmmu = Some(fmmu);
         inspection.sync_managers = sync_managers;
+        inspection.pdo = pdo;
         Ok(inspection)
     }
 
@@ -324,7 +362,9 @@ impl InputGroup {
         }
         let usable = valid
             && mapping.as_ref().is_none_or(|review| {
-                review.fmmu.valid && review.sync_managers.as_ref().is_none_or(|sync| sync.valid)
+                review.fmmu.valid
+                    && review.sync_managers.as_ref().is_none_or(|sync| sync.valid)
+                    && review.pdo.as_ref().is_none_or(|pdo| pdo.valid)
             });
         let mut inspection = self.inspection(usable.then_some(payload), Some(wkc));
         inspection.frame = Some(FrameCheck {
@@ -336,6 +376,7 @@ impl InputGroup {
         if let Some(review) = mapping {
             inspection.fmmu = Some(review.fmmu);
             inspection.sync_managers = review.sync_managers;
+            inspection.pdo = review.pdo;
         }
         for (device, al) in inspection.devices.iter_mut().zip(al_reads) {
             device.al = Some(al);
@@ -389,6 +430,7 @@ impl InputGroup {
             frame: None,
             fmmu: None,
             sync_managers: None,
+            pdo: None,
             devices,
         }
     }

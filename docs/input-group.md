@@ -8,6 +8,7 @@ Use the CLI to inspect the layout of one planned Logical Read (LRD) across multi
 .\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --frame samples/input-group-frame.json
 .\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --fmmu samples/input-group-fmmu.json --frame samples/input-group-frame.json
 .\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --fmmu samples/input-group-fmmu.json --sync-managers samples/input-group-sync-managers.json --frame samples/input-group-frame.json
+.\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --fmmu samples/input-group-fmmu.json --sync-managers samples/input-group-sync-managers.json --pdo samples/input-group-pdo.json --frame samples/input-group-frame.json
 ```
 
 The bundled manifest uses two authored virtual device profiles. The first occupies bytes 0–7 and the second bytes 8–15. With WKC 2, the example decodes counters 42 and 13,330, boolean values true and false, and floating-point values 1 and 2. Each device reports its raw bytes and local field offsets, widths, source labels and decoded values.
@@ -43,6 +44,12 @@ Use `--sync-managers` with `--fmmu` to check each station's physical input mappi
 
 The audit compares the physical coverage of read-enabled FMMUs with the first-buffer address ranges of enabled, buffered EtherCAT-read SyncManagers. The ranges must match exactly and cannot overlap or alias. An eligible input range cannot overlap another enabled channel's first buffer. An input disabled by its PDI fails the check. Mailbox and output channels remain visible. The report lists the FMMU slots that intersect each input buffer and keeps each raw read. [Beckhoff ESC technology reference, section 8.1](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
 
-When a frame is supplied, decoding requires `frame.valid`, `fmmu.valid` and `sync_managers.valid`. Use snapshots from the same device configuration. This check covers the declared first-buffer geometry. ESC-specific buffer allocation, live producer behavior, snapshot freshness, exact underlying PDO assignments, and swaps of physically identical devices still require separate evidence.
+When a frame is supplied, decoding requires `frame.valid`, `fmmu.valid` and `sync_managers.valid`. This check covers the declared first-buffer geometry.
 
-Live SAFEOP sessions still require exactly one isolated SubDevice. Live identity and PDO binding, register readback, topology changes and grouped cyclic logging remain on the [roadmap](../ROADMAP.md).
+## Check saved TxPDO assignments
+
+Use `--pdo` with `--fmmu` and `--sync-managers`. The schema 1 file lists one station and exact vendor, product and revision per position. Include the device's ordered TxPDO layout in `tx`, with an explicit `mapping_source` of `coe` or `sii`. Each SyncManager lists the assigned PDOs and the ordered 32-bit object, subindex and bit-width descriptors, including padding. Zero-input positions use an explicit empty layout. An unavailable layout can be recorded as `tx: null` with a `tx_unavailable` reason and leaves the audit invalid. [Beckhoff TxPDO assignment example](https://infosys.beckhoff.com/content/1033/el5042/4217274123.html)
+
+Workbench compares descriptor widths and positions against fields with PDO references. It compares the complete assignments when the profile has an explicit ESI PDO selection. Manual fields retain their manual interpretation. The audit then checks that each SyncManager's TxPDO bytes occupy the correct logical offset through the saved FMMUs. Two buffers can cover the right physical and logical ranges while landing in the wrong logical order. With `--frame`, decoding also requires `pdo.valid`.
+
+Use all saved evidence from the same configuration. The reports retain file hashes, per-field checks and per-SyncManager placements. Live device identity, PDO readback, snapshot freshness, ESC-specific buffer allocation, and physical unit swaps still require separate evidence. Live SAFEOP sessions require exactly one isolated SubDevice. Live grouped acquisition remains on the [roadmap](../ROADMAP.md).

@@ -65,6 +65,9 @@ enum Command {
         /// Check saved SyncManager registers against the FMMU physical ranges.
         #[arg(long, requires = "fmmu")]
         sync_managers: Option<PathBuf>,
+        /// Check saved TxPDO assignments, descriptor order and logical placement per station.
+        #[arg(long, requires_all = ["fmmu", "sync_managers"])]
+        pdo: Option<PathBuf>,
         /// Export inspection JSON to a new file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -393,18 +396,26 @@ fn main() -> Result<()> {
             frame,
             fmmu,
             sync_managers,
+            pdo,
             out,
         } => {
             let group = ethercat_workbench::input_group::InputGroup::load(&manifest)?;
-            let inspection = match (fmmu.as_deref(), frame.as_deref()) {
-                (Some(path), frame) => {
-                    group.inspect_mapping_files(path, sync_managers.as_deref(), frame)?
+            let inspection = match (
+                fmmu.as_deref(),
+                sync_managers.as_deref(),
+                pdo.as_deref(),
+                frame.as_deref(),
+            ) {
+                (Some(fmmu), Some(sm), Some(pdo), frame) => {
+                    group.inspect_pdo_file(fmmu, sm, pdo, frame)?
                 }
-                (None, Some(path)) => group.inspect_frame_file(path)?,
-                (None, None) => {
+                (Some(path), sm, None, frame) => group.inspect_mapping_files(path, sm, frame)?,
+                (None, None, None, Some(path)) => group.inspect_frame_file(path)?,
+                (None, None, None, None) => {
                     let payload = hex.as_deref().map(payload_hex).transpose()?;
                     group.inspect(payload.as_deref().zip(wkc))?
                 }
+                _ => bail!("TxPDO review requires FMMU and SyncManager evidence"),
             };
             inspection_export(&inspection, out.as_deref())
         }

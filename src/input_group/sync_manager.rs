@@ -30,13 +30,13 @@ pub(crate) struct Station {
 pub(super) struct Review {
     source_sha256: String,
     pub(super) valid: bool,
-    devices: Vec<Device>,
+    pub(super) devices: Vec<Device>,
 }
 
 #[derive(Serialize)]
 pub(crate) struct Device {
     position: usize,
-    station_address: u16,
+    pub(super) station_address: u16,
     fmmu_station_matches: bool,
     count: Read<u8>,
     slots: Vec<Slot>,
@@ -78,6 +78,20 @@ impl Channel {
     fn range(&self) -> Range<u32> {
         let start = u32::from(self.physical_start);
         start..start + u32::from(self.length)
+    }
+
+    fn input_channel(&self) -> bool {
+        self.enabled && self.mode == 0 && self.direction == 0
+    }
+}
+
+impl Device {
+    pub(super) fn input_buffers(&self) -> impl Iterator<Item = (usize, Range<u32>)> + '_ {
+        self.slots.iter().filter_map(|slot| {
+            let channel = slot.channel.as_ref()?;
+            (channel.input_channel() && !channel.pdi_deactivated)
+                .then(|| (slot.index, channel.range()))
+        })
     }
 }
 
@@ -159,7 +173,7 @@ pub(crate) fn check(station: Station, position: usize, fmmu: &fmmu::Device) -> D
                     if channel.enabled && !range.is_empty() {
                         enabled.push((index, range.clone()));
                     }
-                    if channel.enabled && channel.mode == 0 && channel.direction == 0 {
+                    if channel.input_channel() {
                         if channel.pdi_deactivated {
                             issues.push(format!("input SM{index} is deactivated by its PDI"));
                         } else if range.is_empty() || range.start < 0x1000 || range.end > 0x1_0000 {
