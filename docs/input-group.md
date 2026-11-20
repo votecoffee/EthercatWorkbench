@@ -111,6 +111,21 @@ Each follower must advance and stay within the supplied difference limit before 
 
 Replay and bundle audit reconstruct the independent clock checks from the saved frames. The eight-cycle stale-middle example writes seven rows, with PDO columns for positions 0 and 2. This rehearsal uses authored clocks and timestamps.
 
+## Monitor station order after the clock check
+
+```powershell
+.\ethercat-workbench-cli.exe rehearse-group-dc samples/input-group-dc-three.json --scenario topology-change
+.\ethercat-workbench-cli.exe generate-group-dc-replay samples/input-group-dc-three.json --scenario topology-change --period-ns 700000 --out .local/dc-topology-frames.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group-dc-three.json .local/dc-topology-frames.json --csv .local/dc-topology.csv --out .local/dc-topology-replay.json
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group-dc-three.json .local/dc-topology-frames.json .local/dc-topology-replay.json .local/dc-topology.csv
+```
+
+This three-station scenario defaults to eight cycles and requires at least six. Cycle two has a stale middle clock and skips the PDO request. Once the clocks pass, the input frame carries the LRD, the three fixed-address AL reads, a broadcast device count and position-based station address and alias reads. Replay compares the same-frame order and count with the setup probes around the mapping reads. [Beckhoff ESC technology reference, sections 2.2 and 2.4](https://download.beckhoff.com/download/Document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
+The clock checks pass during the modeled station swap in cycles four and five. The LRD WKC is 2 and all three AL reads show clean SAFEOP, while the position reads show the last two stations reversed. This latches the hold for the rest of the generation. From cycle six the original order is visible again and the hold stays active. The CSV contains only cycles one and three. A clock rejection has no cyclic topology observation because it skips the entire input frame.
+
+The scenario records one setup and uses schema 5. The receipt and desktop review show the clock rejection, the two order rejections and the three held cycles separately. Replay and bundle verification reconstruct those decisions from the saved frames before accepting CSV. Run a fresh setup to start a new DC rehearsal. The authored DC fixture has no reconnect sequence, and physical topology and clock qualification remain separate bench work.
+
 ## Generate a two-device replay
 
 ```powershell
@@ -125,7 +140,7 @@ Generated fixtures and replay receipts include `virtual_scenario`. The fixed UTC
 
 ## Verify saved setup topology
 
-Schema 4 fixtures and the monitored schema 5 fixture include setup topology. Each entry in `setup_topology` binds a connection generation to two raw replies, one before and one after its mapping reads. Replay requires one pair for every generation in the cycle stream, in the same order. It checks the raw datagram structure and increasing probe indexes, broadcast and per-position WKC, configured station addresses, and stability of observed addresses and aliases. Copies of one probe cannot serve as both observations.
+Schema 4 fixtures and the monitored schema 5 fixtures include setup topology. Each entry in `setup_topology` binds a connection generation to two raw replies, one before and one after its mapping reads. Replay requires one pair for every generation in the cycle stream, in the same order. It checks the raw datagram structure and increasing probe indexes, broadcast and per-position WKC, configured station addresses, and stability of observed addresses and aliases. Copies of one probe cannot serve as both observations.
 
 A missing or invalid pair stops replay before it creates the CSV. The receipt retains the rebuilt observations. Group audit requires agreement with the original fixture bytes and the rebuilt receipt, and reports `verified_topology_generations`. Portable bundle verification repeats this check using the copied fixture. The setup probes record evidence at those observations. The saved mapping snapshots and individual cyclic replies have their own checks.
 

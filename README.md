@@ -103,7 +103,7 @@ Use `inspect-virtual-group-mapping` to check station count and order before and 
 
 Use `samples/input-group-three.json` to rehearse a three-station group. Its no-PDO middle station participates in topology and AL checks without contributing input bytes. [Three-station rehearsal](docs/input-group.md#rehearse-a-group-with-a-no-pdo-station)
 
-Use `samples/input-group-dc-three.json` to verify two follower clocks in a three-station CoE/DC group. The no-PDO middle station still participates in the clock checks. [Three-station DC rehearsal](docs/input-group.md#rehearse-three-distributed-clocks)
+Use `samples/input-group-dc-three.json` to verify two follower clocks in a three-station CoE/DC group. The no-PDO middle station still participates in the clock checks. The `topology-change` scenario also checks station order in the PDO frame and holds the generation after a swap. [Three-station DC rehearsal](docs/input-group.md#rehearse-three-distributed-clocks) · [Combined clock and topology rehearsal](docs/input-group.md#monitor-station-order-after-the-clock-check)
 
 ```powershell
 .\ethercat-workbench-cli.exe nics

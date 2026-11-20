@@ -1,7 +1,10 @@
 //! Rehearse clock distribution and clock-qualified inputs on the authored virtual groups.
 use super::{
     InputGroup, Inspection, decode_frame_hex, preflight,
-    replay::{Fixture, MAPPING_FIXTURE_SCHEMA, MODELED_UTC, RecordedCycle},
+    preflight::topology::RuntimeCheck,
+    replay::{
+        Fixture, MAPPING_FIXTURE_SCHEMA, MODELED_UTC, MONITORED_FIXTURE_SCHEMA, RecordedCycle,
+    },
 };
 pub use crate::virtual_esc::GroupClockCase;
 use crate::{
@@ -17,6 +20,8 @@ use serde::{Deserialize, Serialize};
 const MAX_SYNC0_DATAGRAMS: usize = 2 * GROUP_DC_THREE.stations.len();
 const MAX_READBACK_DATAGRAMS: usize = MAX_SYNC0_DATAGRAMS - 1;
 const MAX_CYCLES: usize = 64;
+const SWAP_CYCLE: u32 = 4;
+const RESTORE_CYCLE: u32 = 6;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +33,10 @@ pub struct ClockRecording {
 }
 
 impl ClockRecording {
+    pub(super) fn monitors_topology(&self) -> bool {
+        self.scenario == GroupClockCase::TopologyChange
+    }
+
     pub(super) fn tracker(
         &self,
         group: &InputGroup,
@@ -173,6 +182,8 @@ struct Sync0 {
 struct Cycle<'a> {
     cycle_index: u32,
     clock: ClockCheck,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cyclic_topology: Option<RuntimeCheck>,
     input: Option<Inspection<'a>>,
 }
 
@@ -317,6 +328,16 @@ fn validate(
         scenario != GroupClockCase::MiddleFollowerStale || fixture.stations.len() == 3,
         "middle-follower-stale requires the three-station DC fixture"
     );
+    if scenario == GroupClockCase::TopologyChange {
+        ensure!(
+            fixture.stations.len() == 3,
+            "topology-change requires the three-station DC fixture"
+        );
+        ensure!(
+            cycles >= RESTORE_CYCLE as usize,
+            "topology-change requires at least {RESTORE_CYCLE} cycles"
+        );
+    }
     Ok(fixture)
 }
 
@@ -332,19 +353,29 @@ fn rehearse(
         options.scenario,
     )?;
     let stations = layout.stations;
-    let mut wire = VirtualWire::for_group_dc(layout, options.scenario, options.period_ns);
+    let monitored = options.scenario == GroupClockCase::TopologyChange;
+    let clock_case = if monitored {
+        GroupClockCase::MiddleFollowerStale
+    } else {
+        options.scenario
+    };
+    let mut wire = VirtualWire::for_group_dc(layout, clock_case, options.period_ns);
     let mut plan = group.inspect(None)?;
     let (mapping, replies) = preflight::require_valid_mapping(group, &mut wire, stations, 0)?;
     mapping.attach(&mut plan);
     let sync0 = exchange(&mut wire, &sync0_request(stations))?;
     let configured_sync0 = read_sync0(stations, sync0, options.period_ns)?;
+    let topology = plan
+        .topology
+        .as_ref()
+        .context("missing verified setup topology")?;
     let mut fixture = if record {
-        let topology = plan
-            .topology
-            .as_ref()
-            .context("missing verified setup topology")?;
         Some(Fixture {
-            schema: MAPPING_FIXTURE_SCHEMA,
+            schema: if monitored {
+                MONITORED_FIXTURE_SCHEMA
+            } else {
+                MAPPING_FIXTURE_SCHEMA
+            },
             virtual_scenario: None,
             virtual_dc: Some(ClockRecording {
                 scenario: options.scenario,
@@ -362,6 +393,7 @@ fn rehearse(
     };
     let mut tracker = ClockTracker::new(stations, options.difference_limit_ns);
     let mut cycles = Vec::with_capacity(options.cycles as usize);
+    let mut topology_latched = false;
     for cycle_index in 1..=options.cycles {
         let index = tracker.input_slot();
         let distribution = exchange(&mut wire, &tracker.distribution_request())?.to_vec();
@@ -372,16 +404,25 @@ fn rehearse(
             readback_hex: hex::encode(readback),
         });
 
+        if monitored && matches!(cycle_index, SWAP_CYCLE | RESTORE_CYCLE) {
+            wire.swap_group_stations();
+        }
         let mut received_hex = Vec::new();
-        let input = if clock.valid {
-            let frame = group.expected_frame(index, stations)?;
+        let (input, cyclic_topology) = if clock.valid {
+            let frame = group.cyclic_frame(index, stations, monitored)?;
             let reply = exchange(&mut wire, &frame)?;
             if record {
                 received_hex.push(hex::encode(reply));
             }
-            Some(group.inspect_reply(index, stations, reply, None)?)
+            let guard = monitored.then_some((topology, topology_latched));
+            let (input, observation) =
+                group.inspect_cyclic_reply(index, stations, reply, None, guard)?;
+            topology_latched |= observation
+                .as_ref()
+                .is_some_and(|check| !check.matches_setup);
+            (Some(input), observation)
         } else {
-            None
+            (None, None)
         };
         if let Some(fixture) = &mut fixture {
             let cycle = u64::from(cycle_index);
@@ -401,6 +442,7 @@ fn rehearse(
         cycles.push(Cycle {
             cycle_index,
             clock,
+            cyclic_topology,
             input,
         });
     }

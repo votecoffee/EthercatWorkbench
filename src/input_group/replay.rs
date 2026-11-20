@@ -206,6 +206,17 @@ pub(super) fn prepare_capture<'a>(
     check_cancel(stop)?;
     let (fixture, bytes) = read_json::<Fixture>(file, MAX_FIXTURE_BYTES)?;
     check_cancel(stop)?;
+    let monitor_topology = fixture.schema == MONITORED_FIXTURE_SCHEMA;
+    let dc_monitored = fixture
+        .virtual_dc
+        .as_ref()
+        .is_some_and(ClockRecording::monitors_topology);
+    let monitored_source =
+        dc_monitored || fixture.virtual_scenario == Some(VirtualScenario::TopologyChange);
+    ensure!(
+        !monitored_source || monitor_topology,
+        "topology-change requires a monitored group replay fixture"
+    );
     match (
         fixture.schema,
         &fixture.virtual_dc,
@@ -213,10 +224,11 @@ pub(super) fn prepare_capture<'a>(
         &fixture.setup_topology,
     ) {
         (MONITORED_FIXTURE_SCHEMA, None, Some(VirtualScenario::TopologyChange), Some(_)) => {}
-        (MONITORED_FIXTURE_SCHEMA, None, Some(VirtualScenario::TopologyChange), None) => {
+        (MONITORED_FIXTURE_SCHEMA, Some(_), None, Some(_)) if dc_monitored => {}
+        (MONITORED_FIXTURE_SCHEMA, _, _, None) if monitored_source => {
             bail!("monitored group replay requires setup topology probes")
         }
-        (MONITORED_FIXTURE_SCHEMA, ..) | (_, _, Some(VirtualScenario::TopologyChange), _) => {
+        (MONITORED_FIXTURE_SCHEMA, ..) => {
             bail!("topology-change requires a monitored group replay fixture")
         }
         (1, None, _, None) | (2, Some(_), None, None) => {}
@@ -250,7 +262,6 @@ pub(super) fn prepare_capture<'a>(
         "group replay requires 1–{MAX_CYCLES} cycles"
     );
     validate_stations(&fixture.stations, group.bindings.len())?;
-    let monitor_topology = fixture.schema == MONITORED_FIXTURE_SCHEMA;
     let setup_topology = fixture
         .setup_topology
         .as_ref()
@@ -561,7 +572,7 @@ fn prepare(
                     receipt.actual_wkc = Some(wkc);
                     receipt.al = decode_al_reads(stations, &parts[1..topology_start]);
                     if let Some(setup) = setup {
-                        let topology = setup.check_cycle(
+                        let topology = setup.topology.check_cycle(
                             &bytes[expected.datagram_offset(topology_start)..],
                             &parts[topology_start..],
                             stations,
@@ -570,9 +581,9 @@ fn prepare(
                         topology_latched |= !topology.matches_setup;
                         receipt.cyclic_topology = Some(topology);
                     }
-                    receipt.valid = !topology_latched
-                        && wkc == group.expected_wkc
-                        && receipt.al.iter().all(|al| al.clean_safeop);
+                    receipt.valid = wkc == group.expected_wkc
+                        && receipt.al.iter().all(|al| al.clean_safeop)
+                        && receipt.cyclic_topology.as_ref().is_none_or(RuntimeCheck::input_allowed);
                     if receipt.valid {
                         payload = Some(data.to_vec());
                     }

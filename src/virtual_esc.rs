@@ -325,6 +325,7 @@ pub enum GroupClockCase {
     DifferenceReadWkc,
     ReferenceRegression,
     MiddleFollowerStale,
+    TopologyChange,
 }
 
 struct GroupClock {

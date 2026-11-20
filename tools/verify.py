@@ -2299,6 +2299,82 @@ def verify_three_station_group_dc(cli, destination):
         assert not blocked.exists()
 
 
+def verify_clock_and_topology(cli, destination):
+    manifest = ROOT / "samples/input-group-dc-three.json"
+    arguments = ("--scenario", "topology-change", "--period-ns", 700_000)
+    direct = cli_call(cli, "rehearse-group-dc", manifest, *arguments, "--out", destination / "direct.json")
+    assert direct["clock_rejections"] == 1 and direct["valid_input_cycles"] == 2
+    assert len(direct["cycles"]) == 8
+    for station in direct["wire_audit"]:
+        assert station["logical_reads"] == 7 and station["dc_clock_distribution"] == 8
+        assert station["register_writes"] == station["logical_writes"] == station["physical_output_writes"] == 0
+        assert not station["state_requests"]
+
+    fixture = destination / "clock-topology.json"
+    saved = cli_call(cli, "generate-group-dc-replay", manifest, *arguments, "--out", fixture)
+    assert saved["schema"] == 5 and "virtual_scenario" not in saved
+    assert saved["virtual_dc"]["scenario"] == "topology-change"
+    assert len(saved["setup_topology"][0]["mapping_replies"]) == 24
+    assert not saved["cycles"][1]["received_hex"] and saved["cycles"][1]["elapsed_us"] is None
+    base = destination / "qualified.csv"
+    receipt = destination / "replay.json"
+    report = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", base, "--rotate-rows", 1, "--out", receipt)
+    assert report["counts"] == {
+        "cycles": 8, "matched_replies": 7, "valid": 2, "unmatched_cycles": 0, "clock_rejections": 1,
+        "topology_rejections": 2, "topology_hold_rejections": 3, "wkc_mismatches": 0, "invalid_al": 0, "ignored_frames": 0,
+    }
+    for ordinal, (raw_cycle, cycle, rehearsal) in enumerate(zip(saved["cycles"], report["cycles"], direct["cycles"], strict=True), 1):
+        assert cycle["clock"] == rehearsal["clock"]
+        assert cycle["clock"]["actual_distribution_wkc"] == 3
+        assert cycle["valid"] == (ordinal in (1, 3))
+        if ordinal == 2:
+            assert cycle["clock"]["issues"] == ["follower_time_not_new"] and rehearsal["input"] is None
+            assert "cyclic_topology" not in cycle and "cyclic_topology" not in rehearsal
+            continue
+        topology = cycle["cyclic_topology"]
+        assert cycle["clock"]["valid"] and topology == rehearsal["cyclic_topology"]
+        assert topology["matches_setup"] == (ordinal not in (4, 5))
+        assert topology["held_for_setup"] == (ordinal >= 6)
+        assert cycle["actual_wkc"] == 2 and all(al["clean_safeop"] for al in cycle["al"])
+        input_report = rehearsal["input"]
+        assert input_report["frame"]["valid"] == cycle["valid"]
+        assert all(d["input"] is None for d in input_report["devices"]) == (not cycle["valid"])
+        [raw] = [bytes.fromhex(text) for text in raw_cycle["received_hex"]]
+        assert len(raw) == 160
+        for offset, cmd in ((16, 10), (44, 4), (62, 4), (80, 4), (98, 7), (112, 1), (128, 1), (144, 1)):
+            assert raw[offset:offset + 2] == bytes([cmd, cycle["index"]])
+        assert struct.unpack_from("<H", raw, 42)[0] == 2
+        assert struct.unpack_from("<H", raw, 110)[0] == topology["count_wkc"] == 3
+        assert [struct.unpack_from("<H", raw, i)[0] for i in (122, 138, 154)] == (
+            [4096, 4098, 4097] if ordinal in (4, 5) else [4096, 4097, 4098]
+        )
+    parts, data = rows(base)
+    assert len(parts) == 2 and [int(row["cycle_index"]) for row in data] == [1, 3]
+    audit = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, base)
+    assert audit["complete"] and audit["verified_rows"] == 2
+    assert audit["verified_topology_generations"] == audit["verified_mapping_generations"] == 1
+    bundle = destination / "clock-topology-bundle"
+    cli_call(cli, "bundle-group-replay", manifest, fixture, receipt, base, "--out", bundle)
+    moved = bundle.rename(destination / "moved-clock-topology-bundle")
+    assert cli_call(cli, "verify-group-bundle", moved)["audit"]["verified_rows"] == 2
+
+    def rejected(name, mutate, message):
+        changed = json.loads(fixture.read_bytes())
+        mutate(changed)
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        blocked = destination / f"{name}.csv"
+        assert message in cli_call(cli, "replay-input-group", manifest, path, "--csv", blocked, success=False)
+        assert not blocked.exists()
+
+    rejected("downgraded", lambda data: data.update(schema=4), "requires a monitored group replay fixture")
+    rejected("setup-absent", lambda data: data.pop("setup_topology"), "requires setup topology probes")
+    rejected("second-generation", lambda data: data["cycles"][-1].update(connection_generation=2), "missing setup topology")
+    rejected("timestamp-on-stale", lambda data: data["cycles"][1].update(elapsed_us=700), "clock-rejected replay cycle 2")
+    assert "three-station DC fixture" in cli_call(cli, "rehearse-group-dc", ROOT / "samples/input-group-dc.json", *arguments, success=False)
+    assert "at least 6 cycles" in cli_call(cli, "rehearse-group-dc", manifest, *arguments, "--cycles", 5, success=False)
+
+
 def verify_group_dc_replay(cli, destination):
     manifest = ROOT / "samples/input-group-dc.json"
     fixture = destination / "stale.json"
@@ -4474,6 +4550,9 @@ def main():
     group_dc_three_destination = destination / "input-group-dc-three"
     group_dc_three_destination.mkdir()
     verify_three_station_group_dc(cli, group_dc_three_destination)
+    clock_topology_destination = destination / "group-clock-topology"
+    clock_topology_destination.mkdir()
+    verify_clock_and_topology(cli, clock_topology_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

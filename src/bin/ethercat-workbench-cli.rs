@@ -456,7 +456,12 @@ struct GroupDcArgs {
     /// Maximum absolute filtered follower time difference in nanoseconds.
     #[arg(long, default_value_t = 500)]
     difference_limit_ns: u32,
-    #[arg(long, default_value_t = 4)]
+    /// Number of modeled cycles. The topology-change scenario defaults to eight.
+    #[arg(
+        long,
+        default_value_t = 4,
+        default_value_if("scenario", "topology-change", "8")
+    )]
     cycles: u32,
     #[arg(long, value_enum, default_value = "normal")]
     scenario: ethercat_workbench::input_group::clock_rehearsal::GroupClockCase,

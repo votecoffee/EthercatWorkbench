@@ -1538,7 +1538,16 @@ mod tests {
         }
     }
 
-    use ethercat_workbench::input_group::replay::VirtualScenario;
+    use ethercat_workbench::input_group::{
+        clock_rehearsal::GroupClockCase, replay::VirtualScenario,
+    };
+
+    #[derive(Clone, Copy)]
+    enum GroupReviewFixture {
+        Inputs(VirtualScenario),
+        TwoClocks,
+        ThreeClocks(GroupClockCase),
+    }
 
     struct GroupScratch(PathBuf);
 
@@ -1556,20 +1565,24 @@ mod tests {
             Self(root)
         }
 
-        fn archived_group(&self, virtual_case: Option<VirtualScenario>, three_dc: bool) -> PathBuf {
-            let dc = virtual_case.is_none();
+        fn archived_group(&self, scenario: GroupReviewFixture) -> PathBuf {
             use ethercat_workbench::input_group::{
                 InputGroup, audit::Evidence, bundle, clock_rehearsal, replay,
             };
-            let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join(if three_dc {
-                "samples/input-group-dc-three.json"
-            } else if dc {
-                "samples/input-group-dc.json"
-            } else {
-                "samples/input-group.json"
-            });
+            let (sample, clock_case) = match scenario {
+                GroupReviewFixture::Inputs(_) => {
+                    ("samples/input-group.json", GroupClockCase::Normal)
+                }
+                GroupReviewFixture::TwoClocks => {
+                    ("samples/input-group-dc.json", GroupClockCase::FollowerStale)
+                }
+                GroupReviewFixture::ThreeClocks(case) => {
+                    ("samples/input-group-dc-three.json", case)
+                }
+            };
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join(sample);
             let group = InputGroup::load(&manifest).unwrap();
-            let generated = if let Some(scenario) = virtual_case {
+            let generated = if let GroupReviewFixture::Inputs(scenario) = scenario {
                 replay::generate_virtual(&group, scenario)
             } else {
                 clock_rehearsal::generate_replay(
@@ -1578,14 +1591,17 @@ mod tests {
                         period_ns: 700_000,
                         difference_limit_ns: 500,
                         cycles: 8,
-                        scenario: clock_rehearsal::GroupClockCase::FollowerStale,
+                        scenario: clock_case,
                     },
                 )
             }
             .unwrap();
             let fixture = self.0.join("frames.json");
             let mut fixture_json = serde_json::to_value(generated).unwrap();
-            if virtual_case == Some(VirtualScenario::Faults) {
+            if matches!(
+                scenario,
+                GroupReviewFixture::Inputs(VirtualScenario::Faults)
+            ) {
                 fixture_json["schema"] = 1.into();
                 fixture_json
                     .as_object_mut()
@@ -1657,7 +1673,7 @@ mod tests {
     #[test]
     fn grouped_review_verifies_relocated_dc_capture_and_freezes_its_source() {
         let scratch = GroupScratch::create();
-        let bundle = scratch.archived_group(None, false);
+        let bundle = scratch.archived_group(GroupReviewFixture::TwoClocks);
         let mut panel = Panel {
             page: Page::Grouped,
             ..Default::default()
@@ -1722,7 +1738,7 @@ mod tests {
     fn grouped_review_distinguishes_legacy_faults_and_rejects_changed_csv() {
         use std::sync::atomic::AtomicBool;
         let scratch = GroupScratch::create();
-        let bundle = scratch.archived_group(Some(VirtualScenario::Faults), false);
+        let bundle = scratch.archived_group(GroupReviewFixture::Inputs(VirtualScenario::Faults));
         let task = Task::ReviewGroupBundle {
             directory: bundle.clone(),
         };
@@ -1775,7 +1791,8 @@ mod tests {
     #[test]
     fn grouped_review_shows_topology_faults_and_holds_separately() {
         let scratch = GroupScratch::create();
-        let bundle = scratch.archived_group(Some(VirtualScenario::TopologyChange), false);
+        let bundle =
+            scratch.archived_group(GroupReviewFixture::Inputs(VirtualScenario::TopologyChange));
         let mut panel = Panel {
             page: Page::Grouped,
             ..Default::default()
@@ -1805,7 +1822,9 @@ mod tests {
     #[test]
     fn grouped_review_names_the_additional_rejected_clock_station() {
         let scratch = GroupScratch::create();
-        let bundle = scratch.archived_group(None, true);
+        let bundle = scratch.archived_group(GroupReviewFixture::ThreeClocks(
+            GroupClockCase::FollowerStale,
+        ));
         let mut panel = Panel {
             page: Page::Grouped,
             ..Default::default()
@@ -1822,6 +1841,39 @@ mod tests {
         assert!(text.contains("FRMW WKC 3/3"), "{text}");
         assert!(text.contains("Follower 0x1002"), "{text}");
         assert!(text.contains("Follower clock did not advance"), "{text}");
+    }
+
+    #[test]
+    fn grouped_review_shows_clock_and_topology_gates_in_one_capture() {
+        let scratch = GroupScratch::create();
+        let bundle = scratch.archived_group(GroupReviewFixture::ThreeClocks(
+            GroupClockCase::TopologyChange,
+        ));
+        let mut panel = Panel {
+            page: Page::Grouped,
+            ..Default::default()
+        };
+        panel.start(Task::ReviewGroupBundle { directory: bundle });
+        wait_for_saved_job(&mut panel);
+        assert_eq!(
+            panel.controller.state(),
+            State::Complete,
+            "{:?}",
+            panel.controller.error()
+        );
+        let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+        for label in [
+            "2 of 2 selected CSV rows verified",
+            "Clock rejections 1",
+            "Topology rejections 2",
+            "Held for fresh setup 3",
+            "Generation 1 · Cycle 2 · Clock rejected",
+            "Generation 1 · Cycle 4 · Topology rejected · LRD WKC 2/2",
+            "Generation 1 · Cycle 6 · Held for fresh setup · LRD WKC 2/2",
+            "Observed station order · 0x1000, 0x1002, 0x1001",
+        ] {
+            assert!(text.contains(label), "missing {label} in {text}");
+        }
     }
 
     // Pure egui layout: no native window, desktop input, screenshot or GPU.

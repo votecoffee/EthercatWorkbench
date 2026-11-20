@@ -704,3 +704,11 @@ The Windows release CLI verified the modeled SYNC0 activation and period at 0x10
 The stale middle clock withheld that cycle. In the same frame sequence, FRMW returned WKC 3 and the final follower passed its checks. Faults isolated to the final follower also withheld input. A 300 ns tolerance rejected the final follower's 350 ns modeled difference and a 350 ns tolerance accepted it. A relocated bundle verified seven rows from eight cycles. Changing the final follower's recorded difference or register address failed the audit. The unchanged 0.72.0 two-clock bundle also verified.
 
 Formatting, locked Clippy, 188 Rust tests and the locked Windows x64 MSVC release build passed. The headless desktop review surfaced the failing follower by station address. The first full headless regression recorded a missing MQTT shutdown publish and DISCONNECT. The complete rerun passed. This fixture models clock observations. Physical synchronization, grouped acquisition and 1 ms timing remain pending.
+
+## Version 0.74.0 combined virtual clock and topology checks (2026-11-20)
+
+The three-station topology-change fixture saved an LRD, three fixed-address AL reads, a broadcast count and three position reads in each clock-qualified input frame. A stale middle clock skipped the entire input frame on cycle two. Cycles four and five reported reversed followers with FRMW WKC 3, LRD WKC 2 and clean SAFEOP at all three stations. Restoring the original order on cycle six preserved the hold through cycle eight.
+
+The Windows release CLI and replay agreed on one clock rejection, two topology rejections and three held cycles. Two rotated CSV parts held cycles one and three, and the relocated bundle verified both rows. A changed schema, missing setup, unverified generation and input timestamp on the skipped cycle each blocked replay before CSV creation. The unchanged 0.73.0 DC bundle still verified.
+
+Formatting, locked Clippy, 189 Rust tests, the locked Windows x64 MSVC release build and the full Windows headless regression passed. Headless desktop review displayed the three distinct outcomes in the same capture. The new fixture models one connection generation. DC requalification after reconnection, native desktop acceptance and the physical bench remain open.

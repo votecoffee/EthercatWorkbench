@@ -352,6 +352,7 @@ impl InputGroup {
         self.inspect_reply(sample.index, &sample.stations, &reply, mapping)
     }
 
+    #[cfg(test)]
     pub(crate) fn expected_frame(
         &self,
         index: u8,
@@ -390,20 +391,47 @@ impl InputGroup {
         index: u8,
         stations: &[u16],
         reply: &[u8],
-        mut mapping: Option<MappingReview>,
+        mapping: Option<MappingReview>,
     ) -> Result<Inspection<'_>> {
+        self.inspect_cyclic_reply(index, stations, reply, mapping, None)
+            .map(|(inspection, _)| inspection)
+    }
+
+    fn inspect_cyclic_reply(
+        &self,
+        index: u8,
+        stations: &[u16],
+        reply: &[u8],
+        mut mapping: Option<MappingReview>,
+        guard: Option<(&preflight::topology::Check, bool)>,
+    ) -> Result<(Inspection<'_>, Option<preflight::topology::RuntimeCheck>)> {
         ensure!(
             reply.len() <= MAX_FRAME_BYTES,
             "frame exceeds {MAX_FRAME_BYTES} bytes"
         );
-        let frame = self.expected_frame(index, stations)?;
+        let frame = self.cyclic_frame(index, stations, guard.is_some())?;
         let parts = frame
             .reply(reply)
             .context("frame does not match the expected grouped LRD and ordered AL reads")?;
         let (payload, wkc) = parts[0];
-        let al_reads = decode_al_reads(stations, &parts[1..]);
+        let topology_start = 1 + stations.len();
+        let al_reads = decode_al_reads(stations, &parts[1..topology_start]);
+        let topology = guard
+            .map(|(setup, latched)| {
+                setup.check_cycle(
+                    &reply[frame.datagram_offset(topology_start)..],
+                    &parts[topology_start..],
+                    stations,
+                    latched,
+                )
+            })
+            .transpose()?;
         let lrd_wkc_matches = wkc == self.expected_wkc;
-        let valid = lrd_wkc_matches && al_reads.iter().all(|al| al.clean_safeop);
+        let valid = lrd_wkc_matches
+            && al_reads.iter().all(|al| al.clean_safeop)
+            && topology
+                .as_ref()
+                .is_none_or(preflight::topology::RuntimeCheck::input_allowed);
         if let Some(review) = &mut mapping {
             review.compare_stations(stations);
         }
@@ -421,7 +449,7 @@ impl InputGroup {
         for (device, al) in inspection.devices.iter_mut().zip(al_reads) {
             device.al = Some(al);
         }
-        Ok(inspection)
+        Ok((inspection, topology))
     }
 
     fn inspection(&self, payload: Option<&[u8]>, actual_wkc: Option<u16>) -> Inspection<'_> {

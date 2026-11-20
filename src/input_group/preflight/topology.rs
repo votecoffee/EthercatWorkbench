@@ -28,7 +28,7 @@ pub(crate) struct Recording {
 pub(in crate::input_group) struct GenerationCheck {
     pub(crate) connection_generation: u64,
     #[serde(flatten)]
-    topology: Check,
+    pub(in crate::input_group) topology: Check,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(in crate::input_group) mapping: Option<RegisterReview>,
 }
@@ -145,6 +145,10 @@ pub struct RuntimeCheck {
 }
 
 impl RuntimeCheck {
+    pub(in crate::input_group) fn input_allowed(&self) -> bool {
+        self.matches_setup && !self.held_for_setup
+    }
+
     pub fn count_wkc(&self) -> u16 {
         self.reading.count_wkc
     }
@@ -157,7 +161,7 @@ impl RuntimeCheck {
     }
 }
 
-impl GenerationCheck {
+impl Check {
     pub(in crate::input_group) fn check_cycle(
         &self,
         reply: &[u8],
@@ -166,7 +170,7 @@ impl GenerationCheck {
         latched: bool,
     ) -> Result<RuntimeCheck> {
         let reading = decode_reading(reply, parts, stations)?;
-        let matches_setup = reading == self.topology.after_mapping.reading;
+        let matches_setup = reading == self.after_mapping.reading;
         Ok(RuntimeCheck {
             reading,
             matches_setup,
