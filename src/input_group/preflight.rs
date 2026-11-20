@@ -1,4 +1,5 @@
-//! Read and verify the grouped register layout before collecting cyclic input.
+//! Read and verify the grouped station order and register layout before cyclic input.
+pub(super) mod topology;
 use super::{InputGroup, Inspection, MappingReview, fmmu, fmmu::Read, sync_manager};
 pub use crate::virtual_esc::GroupMappingScenario;
 use crate::{
@@ -28,8 +29,13 @@ pub fn inspect_virtual(group: &InputGroup, scenario: GroupMappingScenario) -> Re
     validate_virtual_group(group)?;
     let mut wire = VirtualWire::for_group_replay();
     wire.apply_group_mapping_scenario(scenario);
-    let (fmmu_snapshot, sync_manager_snapshot) = capture_registers(&mut wire)?;
-    let mapping = review(group, fmmu_snapshot.clone(), sync_manager_snapshot.clone())?;
+    let (fmmu_snapshot, sync_manager_snapshot, topology) = capture_registers(&mut wire)?;
+    let mapping = review(
+        group,
+        fmmu_snapshot.clone(),
+        sync_manager_snapshot.clone(),
+        topology,
+    )?;
     let valid = mapping.valid();
     let mut inspection = group.inspect(None)?;
     mapping.attach(&mut inspection);
@@ -66,8 +72,12 @@ pub(super) fn require_valid_mapping(
     group: &InputGroup,
     wire: &mut VirtualWire,
 ) -> Result<MappingReview> {
-    let (fmmu, sync_manager) = capture_registers(wire)?;
-    let mapping = review(group, fmmu, sync_manager)?;
+    let (fmmu, sync_manager, topology) = capture_registers(wire)?;
+    ensure!(
+        topology.valid,
+        "virtual group topology preflight failed before cyclic reads"
+    );
+    let mapping = review(group, fmmu, sync_manager, topology)?;
     ensure!(
         mapping.valid(),
         "virtual group FMMU or SyncManager preflight failed before cyclic reads"
@@ -79,6 +89,7 @@ fn review(
     group: &InputGroup,
     fmmu: fmmu::Snapshot,
     sm: sync_manager::Snapshot,
+    topology: topology::Check,
 ) -> Result<MappingReview> {
     let fmmu_hash = snapshot_hash(&fmmu)?;
     let sm_hash = snapshot_hash(&sm)?;
@@ -88,6 +99,7 @@ fn review(
         fmmu,
         sync_managers: Some(sync_managers),
         pdo: None,
+        topology: Some(topology),
     };
     mapping.compare_stations(&GROUP_STATIONS);
     Ok(mapping)
@@ -97,7 +109,9 @@ fn snapshot_hash(snapshot: &impl Serialize) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(snapshot)?)))
 }
 
-fn capture_registers(wire: &mut VirtualWire) -> Result<(fmmu::Snapshot, sync_manager::Snapshot)> {
+fn capture_registers(
+    wire: &mut VirtualWire,
+) -> Result<(fmmu::Snapshot, sync_manager::Snapshot, topology::Check)> {
     let mut fmmu = fmmu::Snapshot {
         schema: 1,
         devices: Vec::with_capacity(GROUP_STATIONS.len()),
@@ -107,6 +121,7 @@ fn capture_registers(wire: &mut VirtualWire) -> Result<(fmmu::Snapshot, sync_man
         devices: Vec::with_capacity(GROUP_STATIONS.len()),
     };
     let mut index = 0u8;
+    let before = topology::read(wire, &mut index, &GROUP_STATIONS)?;
     for station in GROUP_STATIONS {
         let (count, slots) = read_bank::<16>(
             wire,
@@ -135,7 +150,8 @@ fn capture_registers(wire: &mut VirtualWire) -> Result<(fmmu::Snapshot, sync_man
             slots,
         });
     }
-    Ok((fmmu, sm))
+    let after = topology::read(wire, &mut index, &GROUP_STATIONS)?;
+    Ok((fmmu, sm, topology::Check::new(before, after)))
 }
 
 type ChannelReads<const N: usize> = (Read<u8>, Vec<Read<[u8; N]>>);
@@ -185,6 +201,38 @@ fn read_register<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_reordered_chain_even_when_mapping_and_cyclic_wkc_match() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/input-group.json");
+        let group = InputGroup::load(&path).unwrap();
+        for scenario in [
+            GroupMappingScenario::SwappedStations,
+            GroupMappingScenario::SwapDuringReadback,
+        ] {
+            let mut wire = VirtualWire::for_group_replay();
+            wire.apply_group_mapping_scenario(scenario);
+            let Err(error) = require_valid_mapping(&group, &mut wire) else {
+                panic!("reordered chain passed the preflight");
+            };
+            assert!(error.to_string().contains("topology preflight failed"));
+            assert!(wire.chain_audits().iter().all(|esc| esc.logical_reads == 0));
+
+            let (fmmu, sync_managers, topology) = capture_registers(&mut wire).unwrap();
+            let mapping = review(&group, fmmu, sync_managers, topology).unwrap();
+            assert!(mapping.fmmu.valid);
+            assert!(mapping.sync_managers.unwrap().valid);
+
+            let frame = group.expected_frame(32, &GROUP_STATIONS).unwrap();
+            wire.send(frame.bytes()).unwrap();
+            let input = group
+                .inspect_reply(32, &GROUP_STATIONS, wire.receive().unwrap(), None)
+                .unwrap();
+            let frame = input.frame.unwrap();
+            assert!(frame.lrd_wkc_matches && frame.valid);
+        }
+    }
 
     #[test]
     fn rejects_bad_slot_before_a_matching_full_wkc_reply_can_be_used() {

@@ -180,6 +180,11 @@ pub enum GroupMappingScenario {
     PhysicalShift,
     StationMissing,
     ExcessChannels,
+    SwappedStations,
+    SwapDuringReadback,
+    ExtraStation,
+    DuplicateStation,
+    PositionWkc,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
@@ -271,6 +276,7 @@ pub(crate) struct VirtualWire {
     devices: Vec<VirtualEsc>,
     replies: VecDeque<Vec<u8>>,
     current: Option<Vec<u8>>,
+    swap_after_next_frame: bool,
 }
 
 impl VirtualWire {
@@ -323,6 +329,7 @@ impl VirtualWire {
             devices: vec![device],
             replies: VecDeque::new(),
             current: None,
+            swap_after_next_frame: false,
         }
     }
 
@@ -379,6 +386,7 @@ impl VirtualWire {
             let output_start = (models.len() * GROUP_TX_BYTES + GROUP_RX_BYTES * index) as u32;
             esc.logical_starts = (input_start, output_start);
             esc.registers[0x0010..0x0012].copy_from_slice(&GROUP_STATIONS[index].to_le_bytes());
+            esc.registers[0x0012] = 0x42 + index as u8;
             esc.registers[0x0130] = 4;
             esc.logical_counter_offset = index as u16;
             let (input_sm, output_sm, input_fmmu, output_fmmu) = if esc.model.has_coe() {
@@ -451,6 +459,18 @@ impl VirtualWire {
                 esc.registers[4] = u8::MAX;
                 esc.registers[5] = u8::MAX;
             }
+            GroupMappingScenario::SwappedStations => self.devices.swap(0, 1),
+            GroupMappingScenario::SwapDuringReadback => self.swap_after_next_frame = true,
+            GroupMappingScenario::ExtraStation => {
+                let mut extra = VirtualEsc::for_scan(VirtualModel::Coe, ScanCase::Normal);
+                let address = GROUP_STATIONS[1] + 1;
+                extra.registers[0x0010..0x0012].copy_from_slice(&address.to_le_bytes());
+                self.devices.push(extra);
+            }
+            GroupMappingScenario::DuplicateStation => {
+                esc.registers[0x0010..0x0012].copy_from_slice(&GROUP_STATIONS[0].to_le_bytes());
+            }
+            GroupMappingScenario::PositionWkc => esc.scan_case = ScanCase::CoreWkc,
         }
     }
 
@@ -493,6 +513,9 @@ impl VirtualWire {
         if !drop_reply {
             reply[6] |= 2;
             self.replies.push_back(reply);
+        }
+        if std::mem::take(&mut self.swap_after_next_frame) {
+            self.devices.swap(0, 1);
         }
         Ok(())
     }

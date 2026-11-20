@@ -99,7 +99,7 @@ Use `generate-group-dc-replay` to save the raw clock and input replies for CSV r
 
 In the desktop, open **Review → Grouped capture** to verify a portable group bundle and inspect its cycle faults and saved timing. [Grouped capture review](docs/desktop-review.md#review-a-grouped-capture-bundle)
 
-Use `inspect-virtual-group-mapping` to check register readback from the two virtual SubDevices before replay. Use `generate-group-replay` to exercise the pair with clean replies or injected faults. Use `replay-input-group` to write valid grouped inputs to CSV with the fixture's receive timestamps. Run `verify-group-replay` to check values against the saved frame sequence, or `bundle-group-replay` to export evidence for rechecking after relocation. [Grouped CSV replay](docs/input-group.md#replay-group-cycles-to-csv)
+Use `inspect-virtual-group-mapping` to check station count and order before and after register readback. Try `--scenario swapped-stations` to see a topology failure with valid mapping geometry. Use `generate-group-replay` to exercise the pair with clean replies or injected faults. Use `replay-input-group` to write valid grouped inputs to CSV with the fixture's receive timestamps. Run `verify-group-replay` to check values against the saved frame sequence, or `bundle-group-replay` to export evidence for rechecking after relocation. [Grouped CSV replay](docs/input-group.md#replay-group-cycles-to-csv)
 
 ```powershell
 .\ethercat-workbench-cli.exe nics

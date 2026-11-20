@@ -71,6 +71,7 @@ pub(crate) struct MappingReview {
     fmmu: fmmu::Review,
     sync_managers: Option<sync_manager::Review>,
     pdo: Option<pdo_readback::Review>,
+    topology: Option<preflight::topology::Check>,
 }
 
 impl MappingReview {
@@ -82,12 +83,14 @@ impl MappingReview {
         self.fmmu.valid
             && self.sync_managers.as_ref().is_none_or(|sync| sync.valid)
             && self.pdo.as_ref().is_none_or(|pdo| pdo.valid)
+            && self.topology.as_ref().is_none_or(|topology| topology.valid)
     }
 
     fn attach(self, inspection: &mut Inspection<'_>) {
         inspection.fmmu = Some(self.fmmu);
         inspection.sync_managers = self.sync_managers;
         inspection.pdo = self.pdo;
+        inspection.topology = self.topology;
     }
 }
 
@@ -107,6 +110,8 @@ pub struct Inspection<'a> {
     sync_managers: Option<sync_manager::Review>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pdo: Option<pdo_readback::Review>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topology: Option<preflight::topology::Check>,
     pub(crate) devices: Vec<Device<'a>>,
 }
 
@@ -328,6 +333,7 @@ impl InputGroup {
             fmmu,
             sync_managers,
             pdo,
+            topology: None,
         })
     }
 
@@ -445,6 +451,7 @@ impl InputGroup {
             fmmu: None,
             sync_managers: None,
             pdo: None,
+            topology: None,
             devices,
         }
     }

@@ -2123,6 +2123,7 @@ def verify_group_dc(cli, destination):
         for station in (4096, 4097)
     ]
     assert normal["plan"]["fmmu"]["valid"] and normal["plan"]["sync_managers"]["valid"]
+    assert normal["plan"]["topology"]["valid"] and normal["plan"]["topology"]["unchanged"]
     assert normal["period_ns"] == period and normal["difference_limit_ns"] == 500
     assert normal["scenario"] == "normal"
     assert normal["clock_rejections"] == 0 and normal["valid_input_cycles"] == 4
@@ -2942,6 +2943,57 @@ def verify_output_rehearsal(cli, destination):
 def verify_virtual_group_mapping(cli, destination):
     sample = ROOT / "samples"
     manifest = sample / "input-group.json"
+    def observe(snapshot, count, stations, aliases, wkcs):
+        assert snapshot["count_wkc"] == count
+        assert [row["expected_station_address"] for row in snapshot["positions"]] == [0x1000, 0x1001]
+        for position, (row, station, alias, wkc) in enumerate(zip(snapshot["positions"], stations, aliases, wkcs, strict=True)):
+            assert row["position"] == position and row["wkc"] == wkc
+            assert (row["station_address"], row["configured_alias"]) == (station, alias)
+        raw = bytes.fromhex(snapshot["reply_hex"])
+        assert raw[12:14] == b"\x88\xa4" and len(raw) == 62
+        assert raw[16:18] == bytes([7, snapshot["index"]])
+        assert struct.unpack_from("<H", raw, 28)[0] == count
+        for position, (offset, wkc) in enumerate(zip((30, 46), wkcs, strict=True)):
+            assert raw[offset:offset + 2] == bytes([1, snapshot["index"]])
+            address, register = struct.unpack_from("<HH", raw, offset + 2)
+            assert address == (count - position) % 65536 and register == 0x0010
+            got_station, got_alias, got_wkc = struct.unpack_from("<HHH", raw, offset + 10)
+            assert got_wkc == wkc
+            if wkc == 1:
+                assert got_station == stations[position] and got_alias == aliases[position]
+
+    clean = (2, (0x1000, 0x1001), (0x42, 0x43), (1, 1))
+    swapped = (2, (0x1001, 0x1000), (0x43, 0x42), (1, 1))
+    extra = (3, *clean[1:])
+    duplicate = (2, (0x1000, 0x1000), (0x42, 0x43), (1, 1))
+    position_wkc = (2, (0x1000, None), (0x42, None), (1, 2))
+    for scenario, before, after, expected_valid, geometry_valid in [
+        ("swapped-stations", swapped, swapped, (False, False), True),
+        ("swap-during-readback", clean, swapped, (True, False), True),
+        ("extra-station", extra, extra, (False, False), True),
+        ("duplicate-station", duplicate, duplicate, (False, False), False),
+        ("position-wkc", position_wkc, position_wkc, (False, False), True),
+    ]:
+        result = cli_call(cli, "inspect-virtual-group-mapping", manifest, "--scenario", scenario,
+                          "--out", destination / f"{scenario}.json")
+        assert not result["valid"] and result["scenario"] == scenario
+        inspection = result["inspection"]
+        assert inspection["fmmu"]["valid"] == inspection["sync_managers"]["valid"] == geometry_valid
+        topology = inspection["topology"]
+        assert topology["expected_count"] == 2 and not topology["valid"]
+        assert topology["unchanged"] == (before == after)
+        for key, expected, valid in zip(("before_mapping", "after_mapping"), (before, after), expected_valid, strict=True):
+            assert topology[key]["valid"] == valid
+            observe(topology[key], *expected)
+        assert topology["before_mapping"]["index"] == 0
+        assert topology["after_mapping"]["index"] > topology["before_mapping"]["index"]
+        assert len(result["wire_audit"]) == after[0]
+        for record in result["wire_audit"]:
+            assert not record["state_requests"]
+            assert all(record[key] == 0 for key in (
+                "logical_reads", "register_writes", "logical_writes", "physical_output_writes", "op_requests",
+            ))
+
     for scenario, fmmu_issue, sm_issue, count, wkc, datagrams in [
         ("clean", None, None, 2, 1, 14),
         ("logical-shift", "outside planned input", "FMMU logical layout", 2, 1, 14),
@@ -2956,6 +3008,13 @@ def verify_virtual_group_mapping(cli, destination):
         assert result["schema"] == 1 and result["source"] == "virtual_group_register_reads"
         assert result["scenario"] == scenario and result["valid"] == (scenario == "clean")
         checks = result["inspection"]
+        topology = checks["topology"]
+        assert topology["unchanged"] and topology["expected_count"] == 2
+        assert topology["valid"] == (scenario != "station-missing")
+        observations = clean if scenario != "station-missing" else (2, (0x1000, 0x1002), (0x42, 0x43), (1, 1))
+        for key in ("before_mapping", "after_mapping"):
+            assert topology[key]["valid"] == topology["valid"]
+            observe(topology[key], *observations)
         for review, issue in [(checks["fmmu"], fmmu_issue), (checks["sync_managers"], sm_issue)]:
             assert review["valid"] == (issue is None)
             assert not review["devices"][0]["issues"]
@@ -2967,7 +3026,7 @@ def verify_virtual_group_mapping(cli, destination):
         assert checks["fmmu"]["stations_match"] and all(device["input"] is None for device in checks["devices"])
         assert [record["model"] for record in result["wire_audit"]] == ["coe", "sii"]
         for record in result["wire_audit"]:
-            assert record["datagrams"] == datagrams
+            assert record["datagrams"] == datagrams + 6
             assert not record["state_requests"]
             assert all(record[key] == 0 for key in (
                 "logical_reads", "register_writes", "logical_writes", "physical_output_writes",
