@@ -3352,6 +3352,115 @@ def verify_virtual_group_pdo_readback(cli, destination):
     assert three["pdo_snapshot"]["devices"][1]["tx"] == {"mapping_source": "sii", "sync_managers": []}
 
 
+def verify_group_pdo_against_recorded_setup(cli, destination):
+    sample = ROOT / "samples"
+    manifest = sample / "input-group.json"
+    fixture = destination / "frames.json"
+    receipt = destination / "replay.json"
+    base = destination / "capture.csv"
+    readback = destination / "pdo-readback.json"
+
+    def save(name, value):
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    exported = cli_call(cli, "inspect-virtual-group-mapping", manifest, "--read-pdos", "--out", readback)
+    capture = cli_call(cli, "generate-group-replay", manifest, "--out", fixture)
+    report = cli_call(cli, "replay-input-group", manifest, fixture, "--pdo", readback, "--csv", base,
+                      "--rotate-rows", 4, "--out", receipt)
+    assert report["counts"]["valid"] == 12 and report["verified_pdo_generations"] == 2
+    proof = report["plan"]["pdo"]
+    assert proof["valid"] and proof["source_sha256"] == hashlib.sha256(readback.read_bytes()).hexdigest()
+    assert "fmmu" not in report["plan"] and "sync_managers" not in report["plan"]
+    assert all(g["mapping"]["fmmu"]["valid"] for g in report["setup_topology"])
+    assert [d["readback"]["mapping_source"] for d in proof["devices"]] == ["coe", "sii"]
+    audited = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, base, "--pdo", readback)
+    assert audited["verified_rows"] == 12 and audited["verified_pdo_generations"] == 2
+    assert "differs from the rebuilt" in cli_call(cli, "verify-group-replay", manifest, fixture, receipt, base, success=False)
+    altered_receipt = json.loads(receipt.read_bytes())
+    altered_receipt["verified_pdo_generations"] = 1
+    assert "differs from the rebuilt" in cli_call(
+        cli, "verify-group-replay", manifest, fixture, save("changed-count", altered_receipt), base,
+        "--pdo", readback, success=False,
+    )
+    bundle = destination / "bundle"
+    cli_call(cli, "bundle-group-replay", manifest, fixture, receipt, base, "--pdo", readback, "--out", bundle)
+    moved = bundle.rename(destination / "moved-bundle")
+    assert (moved / "pdo.json").read_bytes() == readback.read_bytes()
+    assert not (moved / "fmmu.json").exists() and not (moved / "sync-managers.json").exists()
+    reopened = cli_call(cli, "verify-group-bundle", moved)["audit"]
+    assert reopened["verified_pdo_generations"] == 2 and reopened["verified_rows"] == 12
+    altered_file = moved / "pdo.json"
+    original = altered_file.read_bytes()
+    changed = original.replace(b'"scenario": "clean"', b'"scenario": "other"', 1)
+    assert changed != original and len(changed) == len(original)
+    altered_file.write_bytes(changed)
+    assert "differs from the rebuilt" in cli_call(cli, "verify-group-bundle", moved, success=False)
+    altered_file.write_bytes(original)
+
+    def blocked(name, evidence, source=fixture, message=""):
+        path = destination / f"{name}.csv"
+        result = cli_call(cli, "replay-input-group", manifest, source, "--pdo", evidence, "--csv", path, success=False)
+        assert message in result, result
+        assert not path.exists()
+
+    fault = destination / "faulty-readback.json"
+    cli_call(cli, "inspect-virtual-group-mapping", manifest, "--read-pdos", "--scenario", "coe-pdo-order", "--out", fault)
+    blocked("fault", fault, message="TxPDO verification failed for generation 1")
+    unrecorded = dict(capture, schema=3)
+    unrecorded["setup_topology"] = [
+        {key: value for key, value in generation.items() if key != "mapping_replies"}
+        for generation in capture["setup_topology"]
+    ]
+    blocked("no-maps", readback, save("schema-three", unrecorded), "requires recorded FMMU and SyncManager replies")
+    blocked("legacy", readback, sample / "input-group-replay.json", "requires recorded FMMU and SyncManager replies")
+    blocked("wrong-source", save("wrong-source", dict(exported, source="unrecognized")),
+            message="expected a schema 1 virtual group PDO readback report")
+    blocked("no-snapshot", save("no-snapshot", dict(exported, pdo_snapshot=None)), message="has no PDO snapshot")
+
+    # Shift the input to SM2 in generation 2 without changing its physical coverage.
+    changed = json.loads(fixture.read_bytes())
+    replies = changed["setup_topology"][1]["mapping_replies"]
+    slots = {}
+    for index, encoded in enumerate(replies):
+        raw = bytearray.fromhex(encoded)
+        address = struct.unpack_from("<HH", raw, 18)
+        if address in ((0x1000, 0x0810), (0x1000, 0x0818)):
+            slots[address[1]] = index, raw
+    assert set(slots) == {0x0810, 0x0818}
+    lower_index, lower = slots[0x0810]
+    upper_index, upper = slots[0x0818]
+    lower[26:34], upper[26:34] = upper[26:34], lower[26:34]
+    replies[lower_index], replies[upper_index] = lower.hex(), upper.hex()
+    shifted = save("second-generation-slot", changed)
+    geometry = cli_call(cli, "replay-input-group", manifest, shifted, "--csv", destination / "geometry.csv")
+    assert geometry["counts"]["valid"] == 12
+    assert all(g["mapping"]["sync_managers"]["valid"] for g in geometry["setup_topology"])
+    blocked("shifted-slot", readback, shifted, "TxPDO verification failed for generation 2")
+
+    monitored = destination / "monitored.json"
+    cli_call(cli, "generate-group-replay", manifest, "--scenario", "topology-change", "--out", monitored)
+    snapshot = save("standalone-pdo", exported["pdo_snapshot"])
+    monitored_report = cli_call(cli, "replay-input-group", manifest, monitored, "--pdo", snapshot,
+                                "--csv", destination / "monitored.csv")
+    assert monitored_report["verified_pdo_generations"] == 2 and monitored_report["counts"]["valid"] == 6
+
+    dc_manifest = sample / "input-group-dc-three.json"
+    dc_fixture = destination / "reconnect.json"
+    cli_call(cli, "generate-group-dc-replay", dc_manifest, "--scenario", "topology-reconnect", "--out", dc_fixture)
+    coe_layout = exported["pdo_snapshot"]["devices"][0]["tx"]
+    identity = {"vendor": 16715776, "product": 3, "revision": 1}
+    dc_pdo = save("reconnect-pdo", {"schema": 1, "devices": [
+        {"station_address": 4096 + index, "identity": identity,
+         "tx": coe_layout if index != 1 else {"mapping_source": "coe", "sync_managers": []}}
+        for index in range(3)
+    ]})
+    dc_report = cli_call(cli, "replay-input-group", dc_manifest, dc_fixture, "--pdo", dc_pdo,
+                         "--csv", destination / "reconnect.csv")
+    assert dc_report["verified_pdo_generations"] == 2 and dc_report["counts"]["valid"] == 5
+
+
 def verify_virtual_group_mapping(cli, destination):
     sample = ROOT / "samples"
     manifest = sample / "input-group.json"
@@ -4747,6 +4856,9 @@ def main():
     virtual_group_pdo_destination = destination / "virtual-group-pdo"
     virtual_group_pdo_destination.mkdir()
     verify_virtual_group_pdo_readback(cli, virtual_group_pdo_destination)
+    recorded_setup_pdo_destination = destination / "recorded-setup-pdo"
+    recorded_setup_pdo_destination.mkdir()
+    verify_group_pdo_against_recorded_setup(cli, recorded_setup_pdo_destination)
     group_dc_destination = destination / "input-group-dc"
     group_dc_destination.mkdir()
     verify_group_dc(cli, group_dc_destination)

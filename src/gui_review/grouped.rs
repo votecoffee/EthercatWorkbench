@@ -159,6 +159,16 @@ impl Panel {
             } else {
                 ui.label("Raw setup mapping evidence unavailable");
             }
+            if let Some(generations) = audit.verified_pdo_generations {
+                ui.label(format!(
+                    "Saved TxPDO layout verified · {generations} {}",
+                    if generations == 1 {
+                        "generation"
+                    } else {
+                        "generations"
+                    }
+                ));
+            }
             if let Some(generations) = audit.verified_clock_setup_generations {
                 ui.label(format!(
                     "Saved SYNC0 readback verified · {generations} generations"

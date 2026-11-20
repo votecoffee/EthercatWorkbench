@@ -92,17 +92,31 @@ This option checks station order, FMMUs and SyncManagers first. It reads identit
 
 `--scenario coe-pdo-order` and `--scenario sii-pdo-order` each reorder the descriptors on one station while preserving its eight-byte image and register layout. Check `inspection.pdo` for the affected fields. The three-station sample also works with `--read-pdos`. Its middle station reports no active TxPDO buffers. The exchanges run on the in-memory wire. CoE upload requests and EEPROM read commands account for the protocol writes in `wire_audit`.
 
-To use the three snapshots with a saved frame or replay, write each JSON object to a fresh file. For example, in PowerShell 7:
+For single-frame inspection, save the FMMU and SyncManager snapshots to fresh files and pass the complete report to `--pdo`. For example, in PowerShell 7:
 
 ```powershell
 $group = Get-Content -LiteralPath .local/group-pdo-readback.json -Raw | ConvertFrom-Json
 $group.fmmu_snapshot | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8NoBOM -NoClobber .local/group-fmmu.json
 $group.sync_manager_snapshot | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8NoBOM -NoClobber .local/group-sm.json
-$group.pdo_snapshot | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8NoBOM -NoClobber .local/group-pdos.json
-.\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --frame samples/input-group-frame.json --fmmu .local/group-fmmu.json --sync-managers .local/group-sm.json --pdo .local/group-pdos.json
+.\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --frame samples/input-group-frame.json --fmmu .local/group-fmmu.json --sync-managers .local/group-sm.json --pdo .local/group-pdo-readback.json
 ```
 
-Pass the same three options when running `replay-input-group` and `verify-group-replay` to require the exported descriptors. A bad descriptor review withholds decoded frame inputs and stops replay before CSV creation. The snapshots retain the modeled scope. Native grouped mailbox and EEPROM readbacks still need live qualification.
+## Replay with one PDO evidence file
+
+Use the readback report from the preceding example with a fixture that records its setup register replies.
+
+```powershell
+.\ethercat-workbench-cli.exe generate-group-replay samples/input-group.json --out .local/group-frames.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group.json .local/group-frames.json --pdo .local/group-pdo-readback.json --csv .local/group-input.csv --out .local/group-replay.json
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group.json .local/group-frames.json .local/group-replay.json .local/group-input.csv --pdo .local/group-pdo-readback.json
+.\ethercat-workbench-cli.exe bundle-group-replay samples/input-group.json .local/group-frames.json .local/group-replay.json .local/group-input.csv --pdo .local/group-pdo-readback.json --out .local/group-bundle
+```
+
+A standalone `--pdo` accepts a schema 1 PDO snapshot or the complete virtual readback report. It requires recorded FMMU and SyncManager replies for every generation, as in fixture schemas 4 through 6. Replay rebuilds each generation's register mapping, then checks the supplied PDO descriptors and their placement against it before opening CSV. A placement mismatch names the generation and station. The receipt shows the first generation's detailed PDO review under `plan.pdo` and reports the total number of verified generations in `verified_pdo_generations`.
+
+Replay uses the typed `pdo_snapshot` inside a virtual readback report. The original transcript travels with the archived source. Audit hashes the entire supplied file and repeats the descriptor checks. The bundle copies the original file as `pdo.json`, and desktop **Review → Grouped capture → Verified source** shows the verified generation count after opening the bundle.
+
+Use all three evidence arguments when supplying separate FMMU and SyncManager snapshots. Older fixtures that lack raw setup register replies need that form. A single-frame inspection always needs both register snapshots for a PDO comparison.
 
 ## Replay clock-qualified inputs
 
@@ -227,7 +241,7 @@ Bundle audit rebuilds the topology decisions from the raw cyclic replies. Schema
 .\ethercat-workbench-cli.exe replay-input-group samples/input-group.json samples/input-group-replay.json --csv .local/group-changes.csv --on-change --rotate-rows 2
 ```
 
-A replay fixture supplies a UTC capture-start anchor, a fixed ordered station list and up to 4,096 cycles. Each cycle records the connection generation, cycle index, expected datagram index and up to 64 received Ethernet candidates in order. A matching reply must be last. Supply its recorded `elapsed_us`, or null when no reply matches. Matched timestamps must be nondecreasing. The replay checks the complete fixture before it opens the CSV. To apply the saved configuration checks, pass the same optional `--fmmu`, `--sync-managers` and `--pdo` files used by the inspector.
+A replay fixture supplies a UTC capture-start anchor, a fixed ordered station list and up to 4,096 cycles. Each cycle records the connection generation, cycle index, expected datagram index and up to 64 received Ethernet candidates in order. A matching reply must be last. Supply its recorded `elapsed_us`, or null when no reply matches. Matched timestamps must be nondecreasing. The replay checks the complete fixture before it opens the CSV. To apply the saved configuration checks, pass the same optional `--fmmu`, `--sync-managers` and `--pdo` files used by the inspector. A fixture with saved raw setup register replies also supports [a standalone PDO evidence file](#replay-with-one-pdo-evidence-file).
 
 The replay uses the existing bounded CSV writer. Columns follow bus order and use the profile's selected fields, prefixed by position. Every-valid logging includes unchanged values. On-change logging records the first valid row of a generation and subsequent selected-field changes. Invalid cycles do not enter the writer or its change comparison. CSV rows keep the recorded UTC anchor and elapsed receive time, their sample index, the connection generation and the cycle index. Rotation uses numbered parts and preserves existing files.
 

@@ -6,7 +6,7 @@ pub use virtual_capture::{VirtualScenario, generate_virtual};
 use super::{
     AlRead, InputGroup, Inspection,
     clock_rehearsal::{ClockCheck, ClockFrames, ClockRecording, ClockTracker, modeled_elapsed_us},
-    decode_al_reads, decode_frame_hex,
+    decode_al_reads, decode_frame_hex, pdo_readback,
     preflight::{
         self,
         topology::{GenerationCheck, Recording},
@@ -133,6 +133,8 @@ pub struct Report<'a> {
     stations: Vec<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) setup_topology: Option<Vec<GenerationCheck>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) verified_pdo_generations: Option<usize>,
     pub(super) plan: Inspection<'a>,
     mode: LogMode,
     rotate_rows: u64,
@@ -168,6 +170,7 @@ pub(super) struct PreparedReplay<'a> {
     pub(super) fixture_sha256: String,
     stations: Vec<u16>,
     setup_topology: Option<Vec<GenerationCheck>>,
+    verified_pdo_generations: Option<usize>,
     monitor_topology: bool,
     plan: Inspection<'a>,
     pub(super) profile: Profile,
@@ -307,7 +310,7 @@ pub(super) fn prepare_capture<'a>(
         "SyncManager review requires FMMU evidence"
     );
     let mut plan = group.inspection(None, None);
-    if let Some(fmmu) = options.fmmu {
+    let verified_pdo_generations = if let Some(fmmu) = options.fmmu {
         let mut mapping = group.load_mapping_evidence(fmmu, options.sync_managers, options.pdo)?;
         mapping.compare_stations(&fixture.stations);
         ensure!(
@@ -318,12 +321,16 @@ pub(super) fn prepare_capture<'a>(
         if let Some(setup) = &setup_topology {
             require_consistent_mapping(setup, &plan, stop)?;
         }
+        None
+    } else if let Some(pdo) = options.pdo {
+        let setup = setup_topology
+            .as_deref()
+            .context("standalone --pdo requires recorded FMMU and SyncManager replies in every setup generation")?;
+        plan.pdo = Some(review_pdo_against_setup(group, pdo, setup, stop)?);
+        Some(setup.len())
     } else {
-        ensure!(
-            options.pdo.is_none(),
-            "TxPDO review requires FMMU and SyncManager evidence"
-        );
-    }
+        None
+    };
 
     let prepared = prepare(
         group,
@@ -374,6 +381,7 @@ pub(super) fn prepare_capture<'a>(
         fixture_sha256: hex::encode(Sha256::digest(&bytes)),
         stations: fixture.stations,
         setup_topology,
+        verified_pdo_generations,
         monitor_topology,
         plan,
         profile,
@@ -424,6 +432,7 @@ impl<'a> PreparedReplay<'a> {
             fixture_sha256: self.fixture_sha256,
             stations: self.stations,
             setup_topology: self.setup_topology,
+            verified_pdo_generations: self.verified_pdo_generations,
             plan: self.plan,
             mode: self.profile.mode,
             rotate_rows: self.profile.rotate_rows,
@@ -483,6 +492,40 @@ fn verify_setup(
     }
     ensure!(probes.next().is_none(), "unmatched setup topology records");
     Ok(findings)
+}
+
+fn review_pdo_against_setup(
+    group: &InputGroup,
+    path: &Path,
+    setup: &[GenerationCheck],
+    stop: Option<&AtomicBool>,
+) -> Result<pdo_readback::Review> {
+    let (snapshot, source_sha256) = pdo_readback::load_snapshot(path)?;
+    let mut first = None;
+    for generation in setup {
+        check_cancel(stop)?;
+        let mapping = generation.mapping.as_ref().with_context(|| {
+            format!(
+                "standalone --pdo requires recorded FMMU and SyncManager replies for generation {}",
+                generation.connection_generation
+            )
+        })?;
+        let review = pdo_readback::review_snapshot(
+            snapshot.clone(),
+            source_sha256.clone(),
+            &group.bindings,
+            &mapping.fmmu,
+            &mapping.sync_managers,
+        )?;
+        review.require_valid().with_context(|| {
+            format!(
+                "TxPDO verification failed for generation {}",
+                generation.connection_generation
+            )
+        })?;
+        first.get_or_insert(review);
+    }
+    first.context("standalone --pdo requires at least one verified setup generation")
 }
 
 fn require_consistent_mapping(

@@ -1545,6 +1545,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum GroupReviewFixture {
         Inputs(VirtualScenario),
+        InputsWithPdo,
         TwoClocks,
         ThreeClocks(GroupClockCase),
     }
@@ -1570,7 +1571,7 @@ mod tests {
                 InputGroup, audit::Evidence, bundle, clock_rehearsal, replay,
             };
             let (sample, clock_case) = match scenario {
-                GroupReviewFixture::Inputs(_) => {
+                GroupReviewFixture::Inputs(_) | GroupReviewFixture::InputsWithPdo => {
                     ("samples/input-group.json", GroupClockCase::Normal)
                 }
                 GroupReviewFixture::TwoClocks => {
@@ -1582,7 +1583,14 @@ mod tests {
             };
             let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join(sample);
             let group = InputGroup::load(&manifest).unwrap();
-            let generated = if let GroupReviewFixture::Inputs(scenario) = scenario {
+            let input_scenario = match scenario {
+                GroupReviewFixture::Inputs(scenario) => Some(scenario),
+                GroupReviewFixture::InputsWithPdo => Some(VirtualScenario::Clean),
+                _ => None,
+            };
+            let pdo = matches!(scenario, GroupReviewFixture::InputsWithPdo)
+                .then(|| manifest.with_file_name("input-group-pdo.json"));
+            let generated = if let Some(scenario) = input_scenario {
                 replay::generate_virtual(&group, scenario)
             } else {
                 clock_rehearsal::generate_replay(
@@ -1623,7 +1631,7 @@ mod tests {
                     rotate_rows: 2,
                     fmmu: None,
                     sync_managers: None,
-                    pdo: None,
+                    pdo: pdo.as_deref(),
                 },
             )
             .unwrap();
@@ -1640,7 +1648,7 @@ mod tests {
                     evidence: Evidence {
                         fmmu: None,
                         sync_managers: None,
-                        pdo: None,
+                        pdo: pdo.as_deref(),
                     },
                 },
                 &bundle,
@@ -1910,6 +1918,33 @@ mod tests {
         }
         assert!(
             !text.contains("Generation 2 · Cycle 2 · Held for fresh setup"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn grouped_review_reports_pdo_checks_against_each_saved_setup() {
+        let scratch = GroupScratch::create();
+        let bundle = scratch.archived_group(GroupReviewFixture::InputsWithPdo);
+        let mut panel = Panel {
+            page: Page::Grouped,
+            ..Default::default()
+        };
+        panel.start(Task::ReviewGroupBundle { directory: bundle });
+        wait_for_saved_job(&mut panel);
+        assert_eq!(
+            panel.controller.state(),
+            State::Complete,
+            "{:?}",
+            panel.controller.error()
+        );
+        let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+        assert!(
+            text.contains("12 of 12 selected CSV rows verified"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Saved TxPDO layout verified · 2 generations"),
             "{text}"
         );
     }

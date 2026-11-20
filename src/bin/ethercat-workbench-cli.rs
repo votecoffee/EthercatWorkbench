@@ -130,8 +130,8 @@ enum Command {
         /// Optional SyncManager evidence to verify before replay.
         #[arg(long, requires = "fmmu")]
         sync_managers: Option<PathBuf>,
-        /// Optional TxPDO evidence to verify before replay.
-        #[arg(long, requires_all = ["fmmu", "sync_managers"])]
+        /// TxPDO snapshot or virtual readback report. Can use the fixture's saved mapping replies.
+        #[arg(long)]
         pdo: Option<PathBuf>,
         /// Save the replay receipt to a new JSON file.
         #[arg(long)]
@@ -149,8 +149,8 @@ enum Command {
         /// Saved SyncManager evidence used when creating the receipt.
         #[arg(long, requires = "fmmu")]
         sync_managers: Option<PathBuf>,
-        /// Saved TxPDO evidence used when creating the receipt.
-        #[arg(long, requires_all = ["fmmu", "sync_managers"])]
+        /// TxPDO snapshot or virtual readback report used when creating the receipt.
+        #[arg(long)]
         pdo: Option<PathBuf>,
         /// Export the audit and CSV part hashes to a new JSON file.
         #[arg(long)]
@@ -166,7 +166,8 @@ enum Command {
         fmmu: Option<PathBuf>,
         #[arg(long, requires = "fmmu")]
         sync_managers: Option<PathBuf>,
-        #[arg(long, requires_all = ["fmmu", "sync_managers"])]
+        /// TxPDO snapshot or virtual readback report used when creating the receipt.
+        #[arg(long)]
         pdo: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,

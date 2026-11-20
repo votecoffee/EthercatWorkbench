@@ -728,3 +728,11 @@ The Windows release CLI read the SII identity of each virtual station and captur
 The CoE and SII descriptor-order faults each preserved the eight-byte process image and passed topology, FMMU and SyncManager checks. TxPDO verification identified the affected fields. The saved-frame inspector withheld decoded input despite a valid frame, and replay stopped before creating CSV when supplied either rejected snapshot. Clean exported snapshots verified all 12 saved CSV rows.
 
 Formatting, locked Clippy, 191 Rust tests, the locked Windows x64 MSVC build and the full Windows headless regression passed. The unchanged 0.75.0 reconnect bundle also verified. The grouped readback uses the in-memory wire and seeded device state. Live grouped commissioning and physical timing remain pending.
+
+## Version 0.77.0 replay with one PDO evidence file (2026-11-20)
+
+The Windows release CLI replayed a two-generation fixture using the complete 0.76-style virtual PDO readback report and the fixture's saved register replies. It verified both generations, wrote all 12 CSV rows and archived the full readback file byte-for-byte. Reopening the relocated bundle repeated the checks. An equal-length change to the archived report and an altered verified-generation count each failed audit.
+
+Moving the CoE input from SM3 to SM2 in generation two preserved physical coverage and passed the FMMU and SyncManager checks. Standalone PDO validation identified the second generation and blocked CSV creation. A reordered PDO report, missing descriptor snapshot, wrong report source and schema 1 or 3 fixture without setup register replies also blocked the new route. The focused tests verified two-generation PDO checks in schema 4, 5 and 6. The 0.76.0 explicit-snapshot bundle and the 0.75.0 reconnect bundle still verified.
+
+Formatting, locked Clippy, 192 Rust tests, the locked Windows x64 MSVC build and the full Windows headless regression passed. The headless desktop showed both verified PDO setups in the grouped bundle. This workflow uses saved offline evidence. Live grouped readback and physical timing remain pending.

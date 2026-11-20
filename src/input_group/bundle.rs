@@ -231,7 +231,7 @@ pub(crate) fn review(directory: &Path, stop: Option<&AtomicBool>) -> Result<Revi
             && (1..=MAX_CSV_PARTS).contains(&receipt.csv.len())
             && (receipt.rotated || receipt.csv.len() == 1)
             && (receipt.sync_managers.is_none() || receipt.fmmu.is_some())
-            && (receipt.pdo.is_none() || receipt.sync_managers.is_some()),
+            && (receipt.pdo.is_none() || receipt.fmmu.is_none() || receipt.sync_managers.is_some()),
         "invalid group bundle inventory"
     );
     require_entry(&directory.join("profiles"), true)?;

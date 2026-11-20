@@ -4,7 +4,7 @@ use crate::{
     model::Identity,
     pdo::{DirectionCheck, Layout, MappingSource, Readback, SyncManager},
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{ops::Range, path::Path};
@@ -35,6 +35,17 @@ pub(super) struct TxLayout {
     pub(super) sync_managers: Vec<SyncManager>,
 }
 
+#[derive(Deserialize)]
+struct EvidenceHeader {
+    schema: u32,
+    source: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReadbackReport {
+    pdo_snapshot: Option<Snapshot>,
+}
+
 #[derive(Serialize)]
 pub(super) struct Review {
     pub(super) source_sha256: String,
@@ -62,20 +73,48 @@ struct Placement {
     matches: bool,
 }
 
+impl Review {
+    pub(super) fn require_valid(&self) -> Result<()> {
+        for device in &self.devices {
+            if let Some(issue) = device.issues.first().or_else(|| device.tx.errors.first()) {
+                bail!(
+                    "position {} at station {:#06x}: {issue}",
+                    device.position,
+                    device.station_address
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn load_snapshot(path: &Path) -> Result<(Snapshot, String)> {
+    let (header, bytes) = read_json::<EvidenceHeader>(path, MAX_FILE_BYTES)?;
+    let json = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+    let parse_context = || format!("parse {}", path.display());
+    let snapshot = if let Some(source) = header.source {
+        ensure!(
+            header.schema == 1 && source == "virtual_group_pdo_reads",
+            "expected a schema 1 virtual group PDO readback report"
+        );
+        let report: ReadbackReport = serde_json::from_slice(json).with_context(parse_context)?;
+        report
+            .pdo_snapshot
+            .context("virtual group readback report has no PDO snapshot")?
+    } else {
+        serde_json::from_slice(json).with_context(parse_context)?
+    };
+    Ok((snapshot, hex::encode(Sha256::digest(&bytes))))
+}
+
 pub(super) fn review(
     path: &Path,
     bindings: &[Binding],
     fmmu: &fmmu::Review,
     sync_managers: &sync_manager::Review,
 ) -> Result<Review> {
-    let (snapshot, bytes) = read_json::<Snapshot>(path, MAX_FILE_BYTES)?;
-    review_snapshot(
-        snapshot,
-        hex::encode(Sha256::digest(&bytes)),
-        bindings,
-        fmmu,
-        sync_managers,
-    )
+    let (snapshot, source_sha256) = load_snapshot(path)?;
+    review_snapshot(snapshot, source_sha256, bindings, fmmu, sync_managers)
 }
 
 pub(super) fn review_snapshot(
