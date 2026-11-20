@@ -64,7 +64,7 @@ pub struct Plan {
     candidate: Vec<u8>,
 }
 
-fn profile_hash(profile: &Profile) -> Result<String> {
+pub(crate) fn profile_hash(profile: &Profile) -> Result<String> {
     Ok(crate::benchmark::hash(&serde_json::to_vec(profile)?))
 }
 

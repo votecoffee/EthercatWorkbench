@@ -1,7 +1,9 @@
 pub const APRD: u8 = 0x01;
 pub const FPRD: u8 = 0x04;
+pub(crate) const FPWR: u8 = 0x05;
 pub const BRD: u8 = 0x07;
 pub const LRD: u8 = 0x0a;
+pub(crate) const LWR: u8 = 0x0b;
 
 const SOURCE: [u8; 6] = [0x10, 0x45, 0x43, 0x57, 0x42, 0x31];
 pub const CUSTOM_REPLY: [u8; 6] = [0x12, 0x45, 0x43, 0x57, 0x42, 0x31];
@@ -41,13 +43,19 @@ impl<const N: usize> Frame<N> {
     }
 
     pub(crate) fn with_count(seq: u8, parts: [Datagram; N], used: usize) -> Self {
+        for part in &parts[..used] {
+            assert!(matches!(part.command, APRD | FPRD | BRD | LRD));
+        }
+        Self::encode(seq, parts, used)
+    }
+
+    fn encode(seq: u8, parts: [Datagram; N], used: usize) -> Self {
         let mut bytes = [0; MAX_FRAME_BYTES];
         bytes[..6].fill(0xff);
         bytes[6..12].copy_from_slice(&SOURCE);
         bytes[12..14].copy_from_slice(&ETHERTYPE);
         let mut end = 16;
         for (i, p) in parts[..used].iter().enumerate() {
-            assert!(matches!(p.command, APRD | FPRD | BRD | LRD));
             bytes[end] = p.command;
             bytes[end + 1] = seq;
             bytes[end + 2..end + 6].copy_from_slice(&p.address);
@@ -82,7 +90,7 @@ impl<const N: usize> Frame<N> {
             if bytes[offset..offset + 2] != self.bytes[offset..offset + 2]
                 || bytes[offset + 4..offset + 7] != self.bytes[offset + 4..offset + 7]
                 || bytes[offset + 7] & 0x87 != self.bytes[offset + 7]
-                || (matches!(part.command, FPRD | LRD)
+                || (matches!(part.command, FPRD | FPWR | LRD | LWR)
                     && bytes[offset + 2..offset + 4] != self.bytes[offset + 2..offset + 4])
             {
                 return None;
@@ -95,6 +103,19 @@ impl<const N: usize> Frame<N> {
             offset = end + 2;
         }
         Some(result)
+    }
+}
+
+impl Frame<1> {
+    pub(crate) fn write(seq: u8, command: u8, adp: u16, ado: u16, payload: &[u8; 2]) -> Self {
+        assert!(matches!(command, FPWR | LWR));
+        let mut frame = Self::encode(
+            seq,
+            [Datagram::register(command, adp, ado, payload.len())],
+            1,
+        );
+        frame.bytes[26..28].copy_from_slice(payload);
+        frame
     }
 }
 

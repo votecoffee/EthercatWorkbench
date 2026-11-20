@@ -1,5 +1,6 @@
 mod coe;
 mod pdo_readback;
+pub mod virtual_output;
 
 use crate::wire::{APRD, BRD, Datagram, ETHERCRAB_REPLY, Frame, input_datagrams, input_reply};
 use crate::{

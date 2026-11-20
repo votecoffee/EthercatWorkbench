@@ -1,6 +1,6 @@
 //! Authored EtherCAT ESCs and in-memory transport for discovery and process data.
 use crate::model::Identity;
-use crate::wire::{APRD, BRD};
+use crate::wire::{APRD, BRD, LWR};
 use anyhow::{Result, bail, ensure};
 use clap::ValueEnum;
 use serde::Serialize;
@@ -171,6 +171,31 @@ pub enum GroupMappingScenario {
     ExcessChannels,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputRehearsalCase {
+    #[default]
+    Normal,
+    PreloadWkc,
+    OpReject,
+    WriteReplyLost,
+    InitReject,
+}
+
+#[derive(Default, Serialize)]
+pub(crate) struct OutputAudit {
+    pub(crate) preload_writes: u64,
+    pub(crate) op_writes: u64,
+    pub(crate) last_applied: Option<[u8; 2]>,
+    pub(crate) outputs_active: bool,
+}
+
+struct OutputRehearsal {
+    case: OutputRehearsalCase,
+    preload: Option<[u8; 2]>,
+    audit: OutputAudit,
+}
+
 pub(crate) struct VirtualWire {
     devices: Vec<VirtualEsc>,
     replies: VecDeque<Vec<u8>>,
@@ -180,6 +205,26 @@ pub(crate) struct VirtualWire {
 impl VirtualWire {
     pub fn new(model: VirtualModel, fault: VirtualFault) -> Self {
         Self::single(VirtualEsc::new(model, fault))
+    }
+
+    pub(crate) fn for_output_rehearsal(case: OutputRehearsalCase) -> Self {
+        let mut esc = VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
+        esc.output_rehearsal = Some(OutputRehearsal {
+            case,
+            preload: None,
+            audit: OutputAudit::default(),
+        });
+        Self::single(esc)
+    }
+
+    pub(crate) fn output_audit(&mut self) -> OutputAudit {
+        std::mem::take(
+            &mut self.devices[0]
+                .output_rehearsal
+                .as_mut()
+                .expect("rehearsal")
+                .audit,
+        )
     }
 
     pub fn single(device: VirtualEsc) -> Self {
@@ -354,6 +399,7 @@ pub(crate) struct VirtualEsc {
     model: VirtualModel,
     logical_starts: (u32, u32),
     logical_counter_offset: u16,
+    output_rehearsal: Option<OutputRehearsal>,
     clock_started: Instant,
     transport_lost: bool,
     upload: Option<Upload>,
@@ -391,6 +437,7 @@ impl VirtualEsc {
             model,
             logical_starts: (0, 8),
             logical_counter_offset: 0,
+            output_rehearsal: None,
             clock_started: Instant::now(),
             transport_lost: false,
             upload: None,
@@ -462,6 +509,7 @@ impl VirtualEsc {
                 0x01 | 0x02 => station == 0,
                 0x04 | 0x05 => station == word(&self.registers[0x0010..]),
                 0x07 | 0x08 | 0x0a => true,
+                LWR if self.output_rehearsal.is_some() => true,
                 0x0e => {
                     self.stats.dc_clock_distribution += 1;
                     bail!("virtual fixture rejects cyclic DC clock distribution")
@@ -499,6 +547,19 @@ impl VirtualEsc {
                     0x0a => {
                         let address = u32::from(station) | (u32::from(register) << 16);
                         self.logical_read(address, data)?
+                    }
+                    LWR => {
+                        let address = u32::from(station) | (u32::from(register) << 16);
+                        let written = self.logical_output(address, data);
+                        if written
+                            && word(&self.registers[0x0130..]) == 8
+                            && self.output_rehearsal.as_ref().is_some_and(|output| {
+                                output.case == OutputRehearsalCase::WriteReplyLost
+                            })
+                        {
+                            drop_reply = true;
+                        }
+                        u16::from(written)
                     }
                     _ => unreachable!(),
                 };
@@ -637,7 +698,15 @@ impl VirtualEsc {
                 }
                 if requested == 8 {
                     self.stats.op_requests += 1;
-                    bail!("virtual fixture rejects OP entry");
+                    return self.enter_rehearsal_op();
+                }
+                if requested == 1
+                    && self.output_rehearsal.as_ref().is_some_and(|output| {
+                        output.audit.outputs_active
+                            && output.case == OutputRehearsalCase::InitReject
+                    })
+                {
+                    return Ok(());
                 }
                 if requested == 1
                     && word(&self.registers[0x0130..]) & 0x0f == 4
@@ -661,6 +730,10 @@ impl VirtualEsc {
                 );
                 self.registers[0x0130..0x0132].copy_from_slice(&u16::from(requested).to_le_bytes());
                 self.registers[0x0134..0x0136].fill(0);
+                if let Some(output) = &mut self.output_rehearsal {
+                    output.audit.outputs_active = false;
+                    output.preload = None;
+                }
                 if requested == 1 {
                     self.mailbox = None;
                     self.upload = None;
@@ -679,6 +752,56 @@ impl VirtualEsc {
             _ => {}
         }
         Ok(())
+    }
+
+    fn enter_rehearsal_op(&mut self) -> Result<()> {
+        let valid = self.process_configuration_valid()
+            && word(&self.registers[0x0130..]) == 4
+            && word(&self.registers[0x0134..]) == 0;
+        let output = self
+            .output_rehearsal
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("virtual fixture rejects OP entry"))?;
+        if let Some(bytes) = output.preload
+            && valid
+            && output.case != OutputRehearsalCase::OpReject
+        {
+            self.registers[0x0130..0x0132].copy_from_slice(&8u16.to_le_bytes());
+            output.audit.outputs_active = true;
+            output.audit.last_applied = Some(bytes);
+        } else {
+            self.registers[0x0130..0x0132].copy_from_slice(&0x14u16.to_le_bytes());
+            self.registers[0x0134..0x0136].copy_from_slice(&0x19u16.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    fn logical_output(&mut self, address: u32, data: &[u8]) -> bool {
+        self.stats.logical_writes += 1;
+        if address != self.logical_starts.1 || !self.process_configuration_valid() {
+            return false;
+        }
+        let Ok(bytes) = <[u8; 2]>::try_from(data) else {
+            return false;
+        };
+        let state = word(&self.registers[0x0130..]);
+        if word(&self.registers[0x0134..]) != 0 {
+            return false;
+        }
+        let output = self.output_rehearsal.as_mut().expect("enabled for output");
+        match state {
+            4 if output.case != OutputRehearsalCase::PreloadWkc => {
+                output.preload = Some(bytes);
+                output.audit.preload_writes += 1;
+            }
+            8 if output.audit.outputs_active => {
+                output.audit.op_writes += 1;
+                output.audit.last_applied = Some(bytes);
+            }
+            _ => return false,
+        }
+        self.registers[OUTPUTS..OUTPUTS + 2].copy_from_slice(data);
+        true
     }
 
     fn process_configuration_valid(&self) -> bool {

@@ -310,6 +310,15 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Rehearse staged RxPDO output, OP and INIT using an in-memory device.
+    RehearseOutput {
+        profile: PathBuf,
+        #[arg(long, value_enum, default_value = "normal")]
+        scenario: ethercat_workbench::live::virtual_output::OutputRehearsalCase,
+        /// Save the review, including failed rehearsal outcomes, to a new JSON file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Decode an offline payload using the profile.
     Decode {
         profile: PathBuf,
@@ -867,6 +876,20 @@ fn main() -> Result<()> {
                 profile.save(&path)?;
             }
             output(plan.review())
+        }
+        Command::RehearseOutput {
+            profile,
+            scenario,
+            out,
+        } => {
+            shared_outputs(out.as_deref(), None)?;
+            let profile = Profile::load(&profile)?;
+            let report = ethercat_workbench::live::virtual_output::run(&profile, scenario)?;
+            inspection_export(&report, out.as_deref())?;
+            if let Some(error) = report.error {
+                bail!("{error}");
+            }
+            Ok(())
         }
         Command::Decode { profile, hex, rx } => {
             let profile = Profile::load(&profile)?;

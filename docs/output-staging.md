@@ -44,3 +44,24 @@ Assignments are bounded to 1–128 fields and 3,072 input bytes per value. Numer
 Only selected bits are replaced in an existing image. Padding and unrelated bytes remain intact. Simultaneous overlapping assignments are accepted when every shared bit agrees and rejected when any shared bit conflicts. Duplicate field indexes are rejected even when their requested values agree. Each prepare operation is atomic: failures do not change the source profile. Applying a stale preview also leaves the profile intact.
 
 The bundled fixture has bit fields, a signed setpoint, a big-endian float, a word-byte-swapped counter, raw bytes, an overlapping control-byte view and an F64 ratio. Its bytes and device-independent fields are authored examples, not vendor data or a physical output contract. Native GUI interaction and separately approved physical output work remain pending.
+
+## Rehearse an RxPDO write
+
+```powershell
+.\ethercat-workbench-cli.exe stage-rx samples/virtual.json --set '0=4660' --out .local/rehearsal-profile.json
+.\ethercat-workbench-cli.exe rehearse-output .local/rehearsal-profile.json --out .local/write-rehearsal.json
+```
+
+The command uses one in-memory CoE device and an explicit two-byte staged image. EtherCrab verifies the modeled identity, image sizes and PDO mapping during setup. The rehearsal requires the entire RxPDO image to match the single mapped field, then reads clean SAFEOP, preloads the two bytes with LWR, requests and confirms OP, and sends the same two bytes once more in OP. Each write expects WKC 1. INIT cleanup reads the AL state separately from the state-write acknowledgement. This is a one-shot sequence. Device-specific watchdogs and cyclic output timing require separate bench work. [Beckhoff state machine](https://infosys.beckhoff.com/content/1033/el6688/1036980875.html), [Beckhoff ESC command reference](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
+| Scenario | Evidence to check |
+| --- | --- |
+| `normal` | Both LWRs acknowledge WKC 1, the model applies the staged bytes and INIT is confirmed. |
+| `preload-wkc` | WKC 0 stops OP entry and the output exchange. |
+| `op-reject` | The state write acknowledges, but AL reports an error and the post-OP LWR is skipped. |
+| `write-reply-lost` | The post-OP LWR is attempted once. Its missing reply leaves the sender's outcome unknown. The separate model audit records application, then INIT is confirmed. |
+| `init-reject` | The INIT request acknowledges, but AL still reports OP. The model retains active outputs and the rehearsal fails. |
+
+Supply `--scenario CASE` to select a fault. Faults return a nonzero exit and still produce a JSON report when the rehearsal started. The report binds the effective profile hash and staged bytes to the PDO verification, per-step WKC and AL readback. A null step means the operation was skipped. An attempted write with null `actual_wkc` means the matching acknowledgement was unavailable. `modeled_outputs.last_applied` is historical simulation evidence and `outputs_active` is its final state. Existing report destinations and the staged profile are preserved.
+
+Physical output work requires the selected device's output meaning, safe image and watchdog behavior, a reviewed INIT or other approved stop procedure, and separate approval for the exact OP and write scope. SAFEOP output behavior depends on the device and its configuration. [Beckhoff SAFEOP conditions](https://infosys.beckhoff.com/content/1033/el6688/1036980875.html)

@@ -2323,6 +2323,79 @@ def verify_input_group_replay(cli, destination):
     assert audit(nan_base, nan_receipt, source=nan_fixture)["complete"]
 
 
+def verify_output_rehearsal(cli, destination):
+    sample = ROOT / "samples" / "virtual.json"
+    source_bytes = sample.read_bytes()
+    staged = destination / "staged.json"
+    preview = cli_call(cli, "stage-rx", sample, "--set", "0=4660", "--out", staged)
+    assert preview["after_hex"] == "3412"
+    output = staged.read_bytes()
+    supported = {
+        "normal": (True, 2, 1, 1, 1, 1, 0, None),
+        "preload-wkc": (False, 1, 0, 0, 0, None, 0, "SAFEOP preload WKC 0"),
+        "op-reject": (False, 1, 1, 1, 1, None, 0, "OP confirmation failed"),
+        "write-reply-lost": (False, 2, 1, 1, 1, None, 1, "output write outcome unknown"),
+        "init-reject": (False, 2, 1, 1, 1, 1, 0, "INIT confirmation failed"),
+    }
+    for name, (ok, attempted, preloaded, op_requests, preload_wkc, output_wkc, dropped, failure) in supported.items():
+        receipt = destination / f"{name}.json"
+        report = cli_call(cli, "rehearse-output", staged, "--scenario", name, "--out", receipt, success=ok)
+        assert report == json.loads(receipt.read_bytes())
+        assert report["schema"] == 1 and report["scope"] == "virtual_rxpdo_rehearsal"
+        assert report["scenario"] == name and report["staged_rx_hex"] == "3412"
+        assert len(report["profile_sha256"]) == 64
+        assert report["device"]["identity"] == json.loads(source_bytes)["expected_identity"]
+        assert report["pdo_verification"]["rx"]["fields"][0]["state"] == "matched"
+        sequence = report["sequence"]
+        assert sequence["safeop"]["raw"] == 4 and sequence["safeop"]["code"] == 0
+        assert sequence["preload"] == {"expected_wkc": 1, "actual_wkc": preload_wkc}
+        if op_requests:
+            assert sequence["op_request"] == {"expected_wkc": 1, "actual_wkc": 1}
+            assert sequence["op"]["raw"] == (0x14 if name == "op-reject" else 8)
+            assert sequence["op"]["code"] == (0x19 if name == "op-reject" else 0)
+        else:
+            assert sequence["op_request"] is None and sequence["op"] is None
+        if attempted == 2:
+            assert sequence["output"] == {"expected_wkc": 1, "actual_wkc": output_wkc}
+        else:
+            assert sequence["output"] is None
+        assert sequence["init_request"] == {"expected_wkc": 1, "actual_wkc": 1}
+        assert sequence["init"]["raw"] == (8 if name == "init-reject" else 1)
+        wire = report["wire"]
+        assert wire["logical_writes"] == attempted and wire["op_requests"] == op_requests
+        assert wire["physical_output_writes"] == 0 and wire["coe_downloads"] == 0
+        assert wire["dropped_replies"] == dropped
+        assert wire["state_requests"] == ([1, 2, 4, 8, 1] if op_requests else [1, 2, 4, 1])
+        model = report["modeled_outputs"]
+        assert model["preload_writes"] == preloaded and model["op_writes"] == int(attempted == 2)
+        assert model["last_applied"] == ([52, 18] if attempted == 2 else None)
+        assert model["outputs_active"] == (name == "init-reject")
+        if failure is None:
+            assert report["error"] is None
+        else:
+            assert failure in report["error"]
+    existing = destination / "normal.json"
+    saved = existing.read_bytes()
+    assert "exists" in cli_call(cli, "rehearse-output", staged, "--out", existing, success=False)
+    assert saved == existing.read_bytes()
+    blank = destination / "blank.json"
+    profile = json.loads(output)
+    profile["staged_rx_hex"] = ""
+    blank.write_text(json.dumps(profile), encoding="utf-8")
+    missing = cli_call(cli, "rehearse-output", blank, "--out", destination / "absent.json", success=False)
+    assert "stage an explicit two-byte" in missing and not (destination / "absent.json").exists()
+    manual = destination / "manual.json"
+    profile["staged_rx_hex"] = "3412"
+    for reference in ("pdo_index", "object_index", "subindex"):
+        profile["rx"][0].pop(reference)
+    manual.write_text(json.dumps(profile), encoding="utf-8")
+    refused = cli_call(cli, "rehearse-output", manual, success=False)
+    assert "fully matched RxPDO" in refused["error"]
+    assert refused["wire"]["logical_writes"] == refused["wire"]["op_requests"] == 0
+    assert refused["sequence"]["init"]["raw"] == 1
+    assert source_bytes == sample.read_bytes() and output == staged.read_bytes()
+
+
 def verify_virtual_group_mapping(cli, destination):
     sample = ROOT / "samples"
     manifest = sample / "input-group.json"
@@ -3221,6 +3294,9 @@ def main():
     staging_destination = destination / "output-staging"
     staging_destination.mkdir()
     verify_output_staging(cli, staging_destination)
+    rehearsal_destination = destination / "output-rehearsal"
+    rehearsal_destination.mkdir()
+    verify_output_rehearsal(cli, rehearsal_destination)
     pcap_destination = destination / "pcap"
     pcap_destination.mkdir()
     verify_pcap(cli, pcap_destination)
