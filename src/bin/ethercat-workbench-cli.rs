@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use ethercat_workbench::{
     esi,
     model::{LogMode, Profile, Scheduler, payload_hex},
@@ -84,19 +84,20 @@ enum Command {
     /// Rehearse clock distribution and qualify sampled inputs on two virtual DC stations.
     RehearseGroupDc {
         manifest: PathBuf,
-        /// Modeled SYNC0 period in nanoseconds.
-        #[arg(long, default_value_t = 1_000_000)]
-        period_ns: u32,
-        /// Maximum absolute filtered follower time difference in nanoseconds.
-        #[arg(long, default_value_t = 500)]
-        difference_limit_ns: u32,
-        #[arg(long, default_value_t = 4)]
-        cycles: u32,
-        #[arg(long, value_enum, default_value = "normal")]
-        scenario: ethercat_workbench::input_group::clock_rehearsal::GroupClockCase,
+        #[command(flatten)]
+        clock: GroupDcArgs,
         /// Save the clock and input evidence to a new JSON file.
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Save raw two-station virtual DC and input replies for verified CSV replay.
+    GenerateGroupDcReplay {
+        manifest: PathBuf,
+        #[command(flatten)]
+        clock: GroupDcArgs,
+        /// Save the fixture to a new JSON file.
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Generate deterministic replies from the authored two-device virtual wire.
     GenerateGroupReplay {
@@ -447,6 +448,31 @@ enum Command {
     },
 }
 
+#[derive(Args)]
+struct GroupDcArgs {
+    /// Modeled SYNC0 period in nanoseconds.
+    #[arg(long, default_value_t = 1_000_000)]
+    period_ns: u32,
+    /// Maximum absolute filtered follower time difference in nanoseconds.
+    #[arg(long, default_value_t = 500)]
+    difference_limit_ns: u32,
+    #[arg(long, default_value_t = 4)]
+    cycles: u32,
+    #[arg(long, value_enum, default_value = "normal")]
+    scenario: ethercat_workbench::input_group::clock_rehearsal::GroupClockCase,
+}
+
+impl From<GroupDcArgs> for ethercat_workbench::input_group::clock_rehearsal::Options {
+    fn from(args: GroupDcArgs) -> Self {
+        Self {
+            period_ns: args.period_ns,
+            difference_limit_ns: args.difference_limit_ns,
+            cycles: args.cycles,
+            scenario: args.scenario,
+        }
+    }
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum Backend {
     Simulate,
@@ -600,25 +626,25 @@ fn main() -> Result<()> {
         }
         Command::RehearseGroupDc {
             manifest,
-            period_ns,
-            difference_limit_ns,
-            cycles,
-            scenario,
+            clock,
             out,
         } => {
             use ethercat_workbench::input_group::{InputGroup, clock_rehearsal};
             shared_outputs(out.as_deref(), None)?;
             let group = InputGroup::load(&manifest)?;
-            let report = clock_rehearsal::run(
-                &group,
-                clock_rehearsal::Options {
-                    period_ns,
-                    difference_limit_ns,
-                    cycles,
-                    scenario,
-                },
-            )?;
+            let report = clock_rehearsal::run(&group, clock.into())?;
             inspection_export(&report, out.as_deref())
+        }
+        Command::GenerateGroupDcReplay {
+            manifest,
+            clock,
+            out,
+        } => {
+            use ethercat_workbench::input_group::{InputGroup, clock_rehearsal};
+            shared_outputs(Some(&out), None)?;
+            let group = InputGroup::load(&manifest)?;
+            let fixture = clock_rehearsal::generate_replay(&group, clock.into())?;
+            inspection_export(&fixture, Some(&out))
         }
         Command::GenerateGroupReplay {
             manifest,

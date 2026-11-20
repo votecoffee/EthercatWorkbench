@@ -1,5 +1,5 @@
 //! Produce replay candidates from an authored two-device virtual wire.
-use super::{Fixture, InputGroup, RecordedCycle};
+use super::{Fixture, InputGroup, MODELED_UTC, RecordedCycle};
 use crate::{
     input_group::preflight,
     virtual_esc::{GROUP_MODELS, GROUP_STATIONS, GroupDownstream, VirtualWire},
@@ -61,6 +61,7 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
             index,
             elapsed_us: (!dropped).then_some(u64::from(ordinal) * 1000),
             received_hex,
+            clock_frames: None,
         });
     }
     let audits = wire.chain_audits();
@@ -78,7 +79,8 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
     Ok(Fixture {
         schema: 1,
         virtual_scenario: Some(scenario),
-        capture_start_utc: "2026-01-01T00:00:00.000000Z".into(),
+        virtual_dc: None,
+        capture_start_utc: MODELED_UTC.into(),
         stations: GROUP_STATIONS.to_vec(),
         cycles,
     })

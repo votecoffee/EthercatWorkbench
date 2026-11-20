@@ -95,6 +95,8 @@ Run `ethercat-workbench-cli.exe inspect-input-group samples/input-group.json` to
 
 Run `ethercat-workbench-cli.exe rehearse-group-dc samples/input-group-dc.json` to check reference-clock distribution and follower readback on two virtual DC stations. The rehearsal collects grouped inputs only when the clock checks pass. [Two-station DC rehearsal](docs/input-group.md#rehearse-two-distributed-clocks)
 
+Use `generate-group-dc-replay` to save the raw clock and input replies for CSV replay and audit. The receipt preserves clock rejections and the resulting gaps between valid samples. [Clock-qualified CSV replay](docs/input-group.md#replay-clock-qualified-inputs)
+
 Use `inspect-virtual-group-mapping` to check register readback from the two virtual SubDevices before replay. Use `generate-group-replay` to exercise the pair with clean replies or injected faults. Use `replay-input-group` to write valid grouped inputs to CSV with the fixture's receive timestamps. Run `verify-group-replay` to check values against the saved frame sequence, or `bundle-group-replay` to export evidence for rechecking after relocation. [Grouped CSV replay](docs/input-group.md#replay-group-cycles-to-csv)
 
 ```powershell

@@ -3,7 +3,9 @@ mod virtual_capture;
 pub use virtual_capture::{VirtualScenario, generate_virtual};
 
 use super::{
-    AlRead, InputGroup, Inspection, decode_al_reads, decode_frame_hex, read_json, validate_stations,
+    AlRead, InputGroup, Inspection,
+    clock_rehearsal::{ClockCheck, ClockFrames, ClockRecording},
+    decode_al_reads, decode_frame_hex, read_json, validate_stations,
 };
 use crate::{
     capture::{Capture, CaptureStats},
@@ -19,6 +21,7 @@ use std::path::Path;
 const MAX_FIXTURE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CYCLES: usize = 4096;
 const MAX_CANDIDATES: usize = 64;
+pub(super) const MODELED_UTC: &str = "2026-01-01T00:00:00.000000Z";
 
 pub struct Options<'a> {
     pub csv: &'a Path,
@@ -32,22 +35,26 @@ pub struct Options<'a> {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixture {
-    schema: u32,
+    pub(super) schema: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    virtual_scenario: Option<VirtualScenario>,
-    capture_start_utc: String,
-    stations: Vec<u16>,
-    cycles: Vec<RecordedCycle>,
+    pub(super) virtual_scenario: Option<VirtualScenario>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) virtual_dc: Option<ClockRecording>,
+    pub(super) capture_start_utc: String,
+    pub(super) stations: Vec<u16>,
+    pub(super) cycles: Vec<RecordedCycle>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RecordedCycle {
-    connection_generation: u64,
-    cycle_index: u64,
-    index: u8,
-    elapsed_us: Option<u64>,
-    received_hex: Vec<String>,
+pub(super) struct RecordedCycle {
+    pub(super) connection_generation: u64,
+    pub(super) cycle_index: u64,
+    pub(super) index: u8,
+    pub(super) elapsed_us: Option<u64>,
+    pub(super) received_hex: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) clock_frames: Option<ClockFrames>,
 }
 
 pub(super) struct PreparedCycle {
@@ -64,6 +71,8 @@ pub(super) struct Cycle {
     actual_wkc: Option<u16>,
     al: Vec<AlRead>,
     ignored_frames: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clock: Option<ClockCheck>,
     valid: bool,
 }
 
@@ -73,6 +82,8 @@ struct Counts {
     matched_replies: usize,
     valid: usize,
     unmatched_cycles: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clock_rejections: Option<usize>,
     wkc_mismatches: usize,
     invalid_al: usize,
     ignored_frames: usize,
@@ -84,6 +95,8 @@ pub struct Report<'a> {
     source: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     virtual_scenario: Option<VirtualScenario>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    virtual_dc: Option<ClockRecording>,
     fixture_sha256: String,
     stations: Vec<u16>,
     pub(super) plan: Inspection<'a>,
@@ -100,6 +113,7 @@ pub struct Report<'a> {
 
 pub(super) struct PreparedReplay<'a> {
     virtual_scenario: Option<VirtualScenario>,
+    virtual_dc: Option<ClockRecording>,
     pub(super) utc_start: String,
     pub(super) fixture_sha256: String,
     stations: Vec<u16>,
@@ -138,11 +152,22 @@ pub(super) fn prepare_capture<'a>(
     options: &Options<'_>,
 ) -> Result<PreparedReplay<'a>> {
     let (fixture, bytes) = read_json::<Fixture>(file, MAX_FIXTURE_BYTES)?;
-    ensure!(
-        fixture.schema == 1,
-        "unsupported group replay schema {}",
-        fixture.schema
-    );
+    match (
+        fixture.schema,
+        &fixture.virtual_dc,
+        fixture.virtual_scenario,
+    ) {
+        (1, None, _) => {}
+        (2, Some(_), None) => ensure!(
+            fixture.capture_start_utc == MODELED_UTC,
+            "DC replay needs the authored UTC anchor"
+        ),
+        _ => ensure!(
+            false,
+            "unsupported group replay schema or source metadata {}",
+            fixture.schema
+        ),
+    }
     let anchor = DateTime::parse_from_rfc3339(&fixture.capture_start_utc)
         .context("invalid group replay capture-start timestamp")?;
     ensure!(
@@ -174,7 +199,12 @@ pub(super) fn prepare_capture<'a>(
         );
     }
 
-    let prepared = prepare(group, &fixture.stations, fixture.cycles)?;
+    let prepared = prepare(
+        group,
+        &fixture.stations,
+        fixture.cycles,
+        fixture.virtual_dc.as_ref(),
+    )?;
     let queue_capacity = prepared.len(); // At most one CSV row per supplied cycle.
     let profile = Profile {
         tx_bytes: group.input_bytes,
@@ -210,6 +240,7 @@ pub(super) fn prepare_capture<'a>(
     );
     Ok(PreparedReplay {
         virtual_scenario: fixture.virtual_scenario,
+        virtual_dc: fixture.virtual_dc,
         utc_start: fixture.capture_start_utc,
         fixture_sha256: hex::encode(Sha256::digest(&bytes)),
         stations: fixture.stations,
@@ -223,6 +254,7 @@ impl<'a> PreparedReplay<'a> {
     pub(super) fn into_report(self, capture: CaptureStats, error: Option<String>) -> Report<'a> {
         let mut counts = Counts {
             cycles: self.cycles.len(),
+            clock_rejections: self.virtual_dc.as_ref().map(|_| 0),
             ..Counts::default()
         };
         let mut cycles = Vec::with_capacity(self.cycles.len());
@@ -233,6 +265,8 @@ impl<'a> PreparedReplay<'a> {
                 counts.matched_replies += 1;
                 counts.wkc_mismatches += usize::from(wkc != self.plan.expected_wkc);
                 counts.invalid_al += usize::from(receipt.al.iter().any(|al| !al.clean_safeop));
+            } else if receipt.clock.as_ref().is_some_and(|clock| !clock.valid) {
+                *counts.clock_rejections.as_mut().expect("DC replay counts") += 1;
             } else {
                 counts.unmatched_cycles += 1;
             }
@@ -242,6 +276,7 @@ impl<'a> PreparedReplay<'a> {
             schema: 1,
             source: "offline_group_replay",
             virtual_scenario: self.virtual_scenario,
+            virtual_dc: self.virtual_dc,
             fixture_sha256: self.fixture_sha256,
             stations: self.stations,
             plan: self.plan,
@@ -262,7 +297,11 @@ fn prepare(
     group: &InputGroup,
     stations: &[u16],
     cycles: Vec<RecordedCycle>,
+    dc: Option<&ClockRecording>,
 ) -> Result<Vec<PreparedCycle>> {
+    let mut tracker = dc
+        .map(|dc| dc.tracker(group, stations, cycles.len()))
+        .transpose()?;
     let mut previous_cycle = (0, 0);
     let mut previous_received = None;
     cycles
@@ -280,6 +319,23 @@ fn prepare(
                 cycle.received_hex.len() <= MAX_CANDIDATES,
                 "too many frame candidates in replay cycle {label}"
             );
+            let clock = match (&mut tracker, cycle.clock_frames) {
+                (Some(tracker), Some(frames)) => {
+                    ensure!(
+                        order == (1, label as u64) && cycle.index == tracker.input_slot(),
+                        "DC replay cycle {label} does not match the authored generation or frame order"
+                    );
+                    let clock = tracker.inspect_recorded(frames)
+                        .with_context(|| format!("DC replay cycle {label}"))?;
+                    ensure!(
+                        clock.valid || (cycle.received_hex.is_empty() && cycle.elapsed_us.is_none()),
+                        "clock-rejected replay cycle {label} cannot carry an input reply or timestamp"
+                    );
+                    Some(clock)
+                }
+                (None, None) => None,
+                _ => anyhow::bail!("unexpected or missing DC frames in replay cycle {label}"),
+            };
             let expected = group.expected_frame(cycle.index, stations)?;
             let mut receipt = Cycle {
                 connection_generation: order.0,
@@ -289,6 +345,7 @@ fn prepare(
                 actual_wkc: None,
                 al: Vec::new(),
                 ignored_frames: 0,
+                clock,
                 valid: false,
             };
             let mut payload = None;
@@ -317,6 +374,10 @@ fn prepare(
                 "replay cycle {label} needs elapsed_us exactly when a reply matches"
             );
             if let Some(received) = receipt.elapsed_us {
+                ensure!(
+                    dc.is_none_or(|dc| received == dc.modeled_elapsed_us(order.1)),
+                    "replay cycle {label} timestamp differs from the authored SYNC0 schedule"
+                );
                 ensure!(
                     previous_received.is_none_or(|previous| received >= previous),
                     "recorded receive time regresses in replay cycle {label}"

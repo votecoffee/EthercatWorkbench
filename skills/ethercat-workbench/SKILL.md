@@ -44,6 +44,8 @@ Use `inspect-virtual-group-mapping samples/input-group.json [--scenario SCENARIO
 
 Use `rehearse-group-dc samples/input-group-dc.json [--period-ns N] [--difference-limit-ns N] [--cycles N] [--scenario CASE] [--out NEW.json]` to verify distribution and per-station clock readback before collecting grouped input on two virtual DC stations. Review `clock_rejections`, `valid_input_cycles` and per-cycle `clock.issues`. The period advances authored fixture time. See `docs/input-group.md`.
 
+Use `generate-group-dc-replay samples/input-group-dc.json [--scenario CASE] [--period-ns N] [--difference-limit-ns N] [--cycles N] --out NEW.json` to save raw clock and input replies. Run `replay-input-group`, `verify-group-replay` and optionally `bundle-group-replay` with that fixture and manifest. Check `counts.clock_rejections`, each cycle's `clock.issues` and spacing. Clock-rejected cycles never reach CSV. See `docs/input-group.md`.
+
 Use `generate-group-replay samples/input-group.json --scenario clean|faults --out NEW.json` to produce replies from the two in-memory devices. Replay, audit and bundle the generated fixture with the same commands. The `virtual_scenario` marker and scheduled timestamps identify the virtual evidence.
 
 Use `bundle-group-replay MANIFEST FIXTURE RECEIPT CSV_BASE --out NEW_DIRECTORY` with the same mapping options to archive the specifically audited inputs. `verify-group-bundle DIRECTORY [--out NEW.json]` uses bundle-local copies and reruns the audit, including after relocation. Read the completion and row counts. Original manifest and receipt bytes retain the supplied path strings.

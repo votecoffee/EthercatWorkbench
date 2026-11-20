@@ -24,7 +24,7 @@ Acknowledgement binds the full effective profile, run duration, normalized CSV d
 
 ## Choose the evidence and target
 
-Use [offline input groups](input-group.md) to review ordered profiles, check saved register and TxPDO assignment evidence, read back the two-device virtual mapping, generate replies, replay replies to CSV and export audited evidence for relocation. Use the [two-station DC rehearsal](input-group.md#rehearse-two-distributed-clocks) to check distribution WKC, follower time difference and which modeled cycles qualify for input. Physical cyclic setup still requires one SubDevice.
+Use [offline input groups](input-group.md) to review ordered profiles, check saved register and TxPDO assignment evidence, read back the two-device virtual mapping, generate replies, replay replies to CSV and export audited evidence for relocation. Use the [two-station DC rehearsal](input-group.md#rehearse-two-distributed-clocks) to check distribution WKC, follower time difference and which modeled cycles qualify for input. [Clock-qualified CSV replay](input-group.md#replay-clock-qualified-inputs) rebuilds those decisions from saved raw replies and audits the resulting rows. Physical cyclic setup still requires one SubDevice.
 
 Use `samples/synthetic.json` for generated inputs, the matching `samples/virtual*.json` for the selected in-memory ESC model, and `samples/synthetic-replay.json` for authored raw-frame replay. They provide no physical device evidence. Put vendor ESI files, selected-NIC profiles, raw captures and receipts in ignored `.local/`.
 

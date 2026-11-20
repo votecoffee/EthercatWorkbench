@@ -2186,6 +2186,131 @@ def verify_group_dc(cli, destination):
     assert not invalid.exists()
 
 
+def verify_group_dc_replay(cli, destination):
+    manifest = ROOT / "samples/input-group-dc.json"
+    fixture = destination / "stale.json"
+    authored = cli_call(cli, "generate-group-dc-replay", manifest, "--period-ns", 700_000,
+                        "--cycles", 8, "--scenario", "follower-stale", "--out", fixture)
+    assert json.loads(fixture.read_bytes()) == authored and authored["schema"] == 2
+    policy = authored["virtual_dc"]
+    assert (policy["scenario"], policy["period_ns"], policy["difference_limit_ns"]) == ("follower-stale", 700_000, 500)
+    assert bytes.fromhex(policy["sync0_hex"])[12:14] == b"\x88\xa4"
+    rejected = authored["cycles"][1]
+    assert rejected["elapsed_us"] is None and not rejected["received_hex"]
+    assert all(set(c["clock_frames"]) == {"distribution_hex", "readback_hex"} for c in authored["cycles"])
+    before = fixture.read_bytes()
+    assert "exists" in cli_call(cli, "generate-group-dc-replay", manifest, "--out", fixture, success=False)
+    assert fixture.read_bytes() == before
+
+    def run(base, receipt, source=fixture, *args, success=True):
+        return cli_call(cli, "replay-input-group", manifest, source, "--csv", base, "--out", receipt,
+                        *args, success=success)
+
+    def audit(base, receipt, source=fixture, *, success=True):
+        return cli_call(cli, "verify-group-replay", manifest, source, receipt, base, success=success)
+
+    base = destination / "every.csv"
+    receipt = destination / "every.json"
+    report = run(base, receipt, fixture, "--rotate-rows", 2)
+    assert report["virtual_dc"] == policy
+    assert report["fixture_sha256"] == hashlib.sha256(before).hexdigest()
+    assert report["counts"]["valid"] == report["counts"]["matched_replies"] == 7
+    assert report["counts"]["unmatched_cycles"] == 0 and report["counts"]["clock_rejections"] == 1
+    assert report["counts"]["wkc_mismatches"] == 0 and report["counts"]["invalid_al"] == 0
+    bad = report["cycles"][1]
+    assert bad["clock"]["actual_distribution_wkc"] == 2 and bad["clock"]["issues"] == ["follower_time_not_new"]
+    assert not bad["valid"] and bad["actual_wkc"] is None
+    assert report["valid_receive_spacing"] == report["receive_spacing"] == {
+        "count": 6, "p50_us": 700, "p95_us": 1400, "p99_us": 1400, "longest_gap_us": 1400,
+    }
+    parts, actual = rows(base)
+    expected = [1, 3, 4, 5, 6, 7, 8]
+    assert len(parts) == 4
+    for sample, (row, cycle) in enumerate(zip(actual, expected, strict=True), 1):
+        assert row["capture_start_utc"] == authored["capture_start_utc"]
+        keys = ["sample_index", "connection_generation", "cycle_index", "elapsed_us"]
+        assert [int(row[key]) for key in keys] == [sample, 1, cycle, (cycle - 1) * 700]
+        step = (sample - 1) // 4
+        for position in (0, 1):
+            value = step + position
+            assert row[f"Position {position} Counter"] == str(value)
+            assert row[f"Position {position} Sensor active"] == ("true" if value % 2 else "false")
+            assert float(row[f"Position {position} Scaled counter"]) == value / 4
+    checked = audit(base, receipt)
+    assert checked["complete"] and checked["expected_rows"] == checked["verified_rows"] == 7
+
+    change_base = destination / "change.csv"
+    change_receipt = destination / "change.json"
+    change = run(change_base, change_receipt, fixture, "--on-change")
+    assert change["valid_receive_spacing"] == report["valid_receive_spacing"]
+    with change_base.open(encoding="utf-8", newline="") as stream:
+        changed = list(csv.DictReader(stream, strict=True))
+    assert [int(row["cycle_index"]) for row in changed] == [1, 6]
+    assert audit(change_base, change_receipt)["verified_rows"] == 2
+
+    bundle = destination / "saved-group"
+    cli_call(cli, "bundle-group-replay", manifest, fixture, receipt, base, "--out", bundle)
+    relocated = bundle.with_name("relocated-group")
+    bundle.rename(relocated)
+    bundled = cli_call(cli, "verify-group-bundle", relocated)
+    assert bundled["audit"]["verified_rows"] == 7
+
+    empty = destination / "no-accepted-cycles.json"
+    cli_call(cli, "generate-group-dc-replay", manifest, "--difference-limit-ns", 249,
+             "--cycles", 1, "--out", empty)
+    empty_base = destination / "empty.csv"
+    empty_receipt = destination / "empty.json"
+    empty_report = run(empty_base, empty_receipt, empty)
+    assert empty_report["counts"]["clock_rejections"] == 1 and empty_report["counts"]["unmatched_cycles"] == 0
+    assert audit(empty_base, empty_receipt, empty)["verified_rows"] == 0
+
+    def edit_source(name, mutate):
+        data = json.loads(before)
+        mutate(data)
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def no_pdo_reply(data):
+        data["cycles"][2]["received_hex"] = []
+        data["cycles"][2]["elapsed_us"] = None
+
+    missing = edit_source("unanswered-input", no_pdo_reply)
+    missing_base = destination / "missing.csv"
+    missing_receipt = destination / "missing-receipt.json"
+    result = run(missing_base, missing_receipt, missing)
+    assert result["counts"]["unmatched_cycles"] == 1 and result["counts"]["clock_rejections"] == 1
+    assert result["cycles"][2]["clock"]["valid"] and result["cycles"][2]["actual_wkc"] is None
+    assert audit(missing_base, missing_receipt, missing)["verified_rows"] == 6
+
+    def wrong_index(data):
+        cycle = data["cycles"][2]
+        raw = bytearray.fromhex(cycle["clock_frames"]["readback_hex"])
+        raw[17] ^= 1
+        cycle["clock_frames"]["readback_hex"] = raw.hex()
+
+    for name, mutate, message in [
+        ("wrong-readback", wrong_index, "does not match the expected clock readback"),
+        ("clock-omitted", lambda d: d["cycles"][1].pop("clock_frames"), "missing DC frames"),
+        ("clock-downgrade", lambda d: d.update(schema=1), "unsupported group replay schema"),
+        ("clock-setup-mismatch", lambda d: d["virtual_dc"].update(period_ns=500_000), "authored schedule"),
+        ("clock-rejection-with-pdo", lambda d: d["cycles"][1].update(received_hex=d["cycles"][2]["received_hex"]),
+         "clock-rejected replay cycle 2"),
+        ("shifted-clock", lambda d: d["cycles"][2].update(elapsed_us=1401), "authored SYNC0 schedule"),
+    ]:
+        invalid = edit_source(name, mutate)
+        unavailable = destination / "unavailable.csv"
+        absent_receipt = destination / "unavailable.json"
+        assert message in run(unavailable, absent_receipt, invalid, success=False)
+        assert not unavailable.exists() and not absent_receipt.exists()
+
+    amended = destination / "amended-receipt.json"
+    report["cycles"][1]["clock"]["valid"] = True
+    amended.write_text(json.dumps(report), encoding="utf-8")
+    assert "differs from the rebuilt" in audit(base, amended, success=False)
+    assert "fixture SHA-256 differs" in audit(base, receipt, missing, success=False)
+
+
 def verify_input_group_replay(cli, destination):
     manifest = ROOT / "samples/input-group.json"
     fixture = ROOT / "samples/input-group-replay.json"
@@ -3808,6 +3933,9 @@ def main():
     group_dc_destination = destination / "input-group-dc"
     group_dc_destination.mkdir()
     verify_group_dc(cli, group_dc_destination)
+    group_dc_replay_destination = destination / "input-group-dc-replay"
+    group_dc_replay_destination.mkdir()
+    verify_group_dc_replay(cli, group_dc_replay_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

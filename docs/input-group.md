@@ -80,6 +80,20 @@ A cycle needs FRMW WKC 2, WKC 1 for each fixed-address read, a reference readbac
 
 `follower-wkc`, `follower-stale`, `follower-offset`, `difference-read-wkc` and `reference-regression` inject a fault on cycle two. Diagnostic runs still return a report. Check `clock_rejections`, `valid_input_cycles` and each cycle's `clock.issues`. A clock failure leaves `input` null and skips the LRD. Set `--cycles` from 1 to 64. The default 1,000,000 ns SYNC0 period advances authored time without pacing the host. The virtual wire audit records FRMW distribution separately from configuration, state requests and PDO writes. Physical DC initialization, propagation compensation, phase convergence and measured frame intervals require bench evidence.
 
+## Replay clock-qualified inputs
+
+```powershell
+.\ethercat-workbench-cli.exe generate-group-dc-replay samples/input-group-dc.json --scenario follower-stale --period-ns 700000 --cycles 8 --out .local/dc-frames.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group-dc.json .local/dc-frames.json --csv .local/dc.csv --out .local/dc-replay.json
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group-dc.json .local/dc-frames.json .local/dc-replay.json .local/dc.csv
+```
+
+The generator uses the same clock and mapping checks as `rehearse-group-dc`. It saves a schema 2 fixture for the two authored CoE/DC stations, with raw SYNC0 readback, the declared difference limit, and the FRMW and FPRD replies for each cycle. The fixture contains any matched grouped input reply. Replay checks the setup and raw clock frames, then reevaluates the gate in cycle order before opening the CSV. It rejects a fixture that attaches input bytes or an input timestamp to a cycle whose clocks fail.
+
+Inspect `counts.clock_rejections` and each cycle's `clock.issues` in the replay receipt. An unanswered LRD after accepted clock checks counts under `unmatched_cycles`. When an LRD matches, its own input WKC and AL still determine whether it can reach the writer. In the example, the follower returns full WKC with a stale time in cycle two. Every-valid mode logs seven rows, with a 1,400 µs gap between the first two samples. The CSV keeps the original cycle indexes and consecutive sample indexes. `--on-change` writes cycles one and six for this example. Writer mode and rotation do not change the spacing statistics.
+
+The generator derives elapsed microseconds from the modeled cycle index and SYNC0 period. The raw clock differences and saved elapsed times describe an authored offline run. Use the same schema 2 fixture for `verify-group-replay` and `bundle-group-replay`. The audit rebuilds the clock decisions from the raw frames and checks the CSV rows, including when reopening a moved bundle. Ordinary schema 1 replay fixtures still work.
+
 ## Generate a two-device replay
 
 ```powershell

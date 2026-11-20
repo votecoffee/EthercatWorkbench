@@ -245,7 +245,7 @@ pub struct DcProgramWrite {
     wkc: u16,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, serde::Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GroupClockCase {
     #[default]

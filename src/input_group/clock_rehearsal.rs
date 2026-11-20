@@ -1,5 +1,8 @@
 //! Rehearse clock distribution and clock-qualified inputs on the authored two-station wire.
-use super::{InputGroup, Inspection, preflight};
+use super::{
+    InputGroup, Inspection, decode_frame_hex, preflight,
+    replay::{Fixture, MODELED_UTC, RecordedCycle},
+};
 pub use crate::virtual_esc::GroupClockCase;
 use crate::{
     virtual_esc::{
@@ -9,11 +12,114 @@ use crate::{
     wire::{Datagram, FPRD, Frame},
 };
 use anyhow::{Context, Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const REFERENCE: u16 = GROUP_STATIONS[0];
 const FOLLOWER: u16 = GROUP_STATIONS[1];
 const DISTRIBUTION_WKC: u16 = GROUP_STATIONS.len() as u16;
+const MAX_CYCLES: usize = 64;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ClockRecording {
+    scenario: GroupClockCase,
+    period_ns: u32,
+    difference_limit_ns: u32,
+    sync0_hex: String,
+}
+
+impl ClockRecording {
+    pub(super) fn tracker(
+        &self,
+        group: &InputGroup,
+        stations: &[u16],
+        cycles: usize,
+    ) -> Result<ClockTracker> {
+        validate(group, self.period_ns, cycles)?;
+        ensure!(
+            stations == GROUP_STATIONS,
+            "DC replay requires the authored station order"
+        );
+        read_sync0(&decode_frame_hex(&self.sync0_hex)?, self.period_ns)?;
+        Ok(ClockTracker::new(self.difference_limit_ns))
+    }
+
+    pub(super) fn modeled_elapsed_us(&self, cycle: u64) -> u64 {
+        (cycle - 1) * u64::from(self.period_ns) / 1_000
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ClockFrames {
+    distribution_hex: String,
+    readback_hex: String,
+}
+
+pub(super) struct ClockTracker {
+    input_slot: u8,
+    previous: [Option<u64>; 2],
+    difference_limit_ns: u32,
+}
+
+impl ClockTracker {
+    fn new(difference_limit_ns: u32) -> Self {
+        Self {
+            input_slot: 3,
+            previous: [None, None],
+            difference_limit_ns,
+        }
+    }
+
+    pub(super) fn input_slot(&self) -> u8 {
+        self.input_slot
+    }
+
+    fn distribution_request(&self) -> Frame<1> {
+        Frame::clock_request(self.input_slot - 2, REFERENCE, DC_TIME)
+    }
+
+    fn readback_request(&self) -> Frame<3> {
+        Frame::new(
+            self.input_slot - 1,
+            [
+                Datagram::register(FPRD, REFERENCE, DC_TIME, 8),
+                Datagram::register(FPRD, FOLLOWER, DC_TIME, 8),
+                Datagram::register(FPRD, FOLLOWER, DC_TIME_DIFFERENCE, 4),
+            ],
+        )
+    }
+
+    pub(super) fn inspect_recorded(&mut self, frames: ClockFrames) -> Result<ClockCheck> {
+        self.inspect(
+            &decode_frame_hex(&frames.distribution_hex)?,
+            &decode_frame_hex(&frames.readback_hex)?,
+        )
+    }
+
+    fn inspect(&mut self, distribution: &[u8], readback: &[u8]) -> Result<ClockCheck> {
+        let [(payload, wkc)] = self
+            .distribution_request()
+            .reply(distribution)
+            .context("FRMW reply does not match the expected clock distribution request")?;
+        let readbacks = self
+            .readback_request()
+            .reply(readback)
+            .context("FPRD reply does not match the expected clock readback request")?;
+        let result = check_clock(
+            read_u64(payload),
+            wkc,
+            readbacks,
+            self.previous,
+            self.difference_limit_ns,
+        );
+        if result.valid {
+            self.previous = [result.reference.time_ns, result.follower.time_ns];
+        }
+        self.input_slot += 2 + u8::from(result.valid);
+        Ok(result)
+    }
+}
 
 pub struct Options {
     pub period_ns: u32,
@@ -52,7 +158,7 @@ struct Cycle<'a> {
 }
 
 #[derive(Serialize)]
-struct ClockCheck {
+pub(super) struct ClockCheck {
     expected_distribution_wkc: u16,
     actual_distribution_wkc: u16,
     frmw_payload_ns: u64,
@@ -61,7 +167,7 @@ struct ClockCheck {
     difference: DifferenceRead,
     raw_follower_minus_reference_ns: Option<i128>,
     issues: Vec<&'static str>,
-    valid: bool,
+    pub(super) valid: bool,
 }
 
 #[derive(Serialize)]
@@ -79,55 +185,89 @@ struct DifferenceRead {
 }
 
 pub fn run(group: &InputGroup, options: Options) -> Result<Report<'_>> {
+    Ok(rehearse(group, options, false)?.0)
+}
+
+pub fn generate_replay(group: &InputGroup, options: Options) -> Result<Fixture> {
+    let (_, fixture) = rehearse(group, options, true)?;
+    Ok(fixture.expect("recorded rehearsal"))
+}
+
+fn validate(group: &InputGroup, period_ns: u32, cycles: usize) -> Result<()> {
     ensure!(
         preflight::matches_fixture(group, GROUP_DC_MODELS),
         "group clock rehearsal requires two authored CoE/DC identities with 8 TxPDO and 2 RxPDO bytes each"
     );
-    ensure!(options.period_ns > 0, "SYNC0 period must be positive");
+    ensure!(period_ns > 0, "SYNC0 period must be positive");
     ensure!(
-        (1..=64).contains(&options.cycles),
-        "rehearsal requires 1–64 cycles"
+        (1..=MAX_CYCLES).contains(&cycles),
+        "rehearsal requires 1–{MAX_CYCLES} cycles"
     );
+    Ok(())
+}
 
+fn rehearse(
+    group: &InputGroup,
+    options: Options,
+    record: bool,
+) -> Result<(Report<'_>, Option<Fixture>)> {
+    validate(group, options.period_ns, options.cycles as usize)?;
     let mut wire = VirtualWire::for_group_dc(options.scenario, options.period_ns);
     let mut plan = group.inspect(None)?;
     preflight::require_valid_mapping(group, &mut wire)?.attach(&mut plan);
-    let configured_sync0 = read_sync0(&mut wire, options.period_ns)?;
-    let mut index = 0;
-    let mut previous = [None, None];
+    let sync0 = exchange(&mut wire, &sync0_request())?;
+    let configured_sync0 = read_sync0(sync0, options.period_ns)?;
+    let mut fixture = record.then(|| Fixture {
+        schema: 2,
+        virtual_scenario: None,
+        virtual_dc: Some(ClockRecording {
+            scenario: options.scenario,
+            period_ns: options.period_ns,
+            difference_limit_ns: options.difference_limit_ns,
+            sync0_hex: hex::encode(sync0),
+        }),
+        capture_start_utc: MODELED_UTC.into(),
+        stations: GROUP_STATIONS.to_vec(),
+        cycles: Vec::with_capacity(options.cycles as usize),
+    });
+    let mut tracker = ClockTracker::new(options.difference_limit_ns);
     let mut cycles = Vec::with_capacity(options.cycles as usize);
     for cycle_index in 1..=options.cycles {
-        index += 1;
-        let distribute = Frame::clock_request(index, REFERENCE, DC_TIME);
-        let [(payload, distribution_wkc)] = exchange(&mut wire, &distribute)?;
-        let frmw_payload_ns = read_u64(payload);
+        let index = tracker.input_slot();
+        let distribution = exchange(&mut wire, &tracker.distribution_request())?.to_vec();
+        let readback = exchange(&mut wire, &tracker.readback_request())?;
+        let clock = tracker.inspect(&distribution, readback)?;
+        let clock_frames = record.then(|| ClockFrames {
+            distribution_hex: hex::encode(&distribution),
+            readback_hex: hex::encode(readback),
+        });
 
-        index += 1;
-        let readback = Frame::new(
-            index,
-            [
-                Datagram::register(FPRD, REFERENCE, DC_TIME, 8),
-                Datagram::register(FPRD, FOLLOWER, DC_TIME, 8),
-                Datagram::register(FPRD, FOLLOWER, DC_TIME_DIFFERENCE, 4),
-            ],
-        );
-        let clock = check_clock(
-            frmw_payload_ns,
-            distribution_wkc,
-            exchange(&mut wire, &readback)?,
-            previous,
-            options.difference_limit_ns,
-        );
+        let mut received_hex = Vec::new();
         let input = if clock.valid {
-            previous = [clock.reference.time_ns, clock.follower.time_ns];
-            index += 1;
             let frame = group.expected_frame(index, &GROUP_STATIONS)?;
-            wire.send(frame.bytes())?;
-            let reply = wire.receive().context("missing grouped input reply")?;
+            let reply = exchange(&mut wire, &frame)?;
+            if record {
+                received_hex.push(hex::encode(reply));
+            }
             Some(group.inspect_reply(index, &GROUP_STATIONS, reply, None)?)
         } else {
             None
         };
+        if let Some(fixture) = &mut fixture {
+            let cycle = u64::from(cycle_index);
+            let policy = fixture
+                .virtual_dc
+                .as_ref()
+                .expect("recorded clock settings");
+            fixture.cycles.push(RecordedCycle {
+                connection_generation: 1,
+                cycle_index: cycle,
+                index,
+                elapsed_us: input.as_ref().map(|_| policy.modeled_elapsed_us(cycle)),
+                received_hex,
+                clock_frames,
+            });
+        }
         cycles.push(Cycle {
             cycle_index,
             clock,
@@ -135,7 +275,7 @@ pub fn run(group: &InputGroup, options: Options) -> Result<Report<'_>> {
         });
     }
 
-    Ok(Report {
+    let report = Report {
         schema: 1,
         source: "virtual_group_dc_rehearsal",
         scenario: options.scenario,
@@ -156,21 +296,17 @@ pub fn run(group: &InputGroup, options: Options) -> Result<Report<'_>> {
             .count(),
         cycles,
         wire_audit: wire.chain_audits(),
-    })
+    };
+    Ok((report, fixture))
 }
 
-fn exchange<'a, const N: usize>(
-    wire: &'a mut VirtualWire,
-    frame: &Frame<N>,
-) -> Result<[(&'a [u8], u16); N]> {
+fn exchange<'a, const N: usize>(wire: &'a mut VirtualWire, frame: &Frame<N>) -> Result<&'a [u8]> {
     wire.send(frame.bytes())?;
-    frame
-        .reply(wire.receive().context("missing clock rehearsal reply")?)
-        .context("clock rehearsal reply does not match its request")
+    wire.receive().context("missing clock rehearsal reply")
 }
 
-fn read_sync0(wire: &mut VirtualWire, expected_period_ns: u32) -> Result<[Sync0; 2]> {
-    let request = Frame::new(
+fn sync0_request() -> Frame<4> {
+    Frame::new(
         0,
         [
             Datagram::register(FPRD, REFERENCE, DC_ACTIVATION, 1),
@@ -178,13 +314,18 @@ fn read_sync0(wire: &mut VirtualWire, expected_period_ns: u32) -> Result<[Sync0;
             Datagram::register(FPRD, FOLLOWER, DC_ACTIVATION, 1),
             Datagram::register(FPRD, FOLLOWER, DC_SYNC0_CYCLE, 4),
         ],
-    );
+    )
+}
+
+fn read_sync0(reply: &[u8], expected_period_ns: u32) -> Result<[Sync0; 2]> {
     let [
         (ref_activation, ref_awkc),
         (ref_period, ref_pwkc),
         (follower_activation, follower_awkc),
         (follower_period, follower_pwkc),
-    ] = exchange(wire, &request)?;
+    ] = sync0_request()
+        .reply(reply)
+        .context("FPRD reply does not match the expected SYNC0 register request")?;
     ensure!(
         [ref_awkc, ref_pwkc, follower_awkc, follower_pwkc] == [1; 4],
         "SYNC0 register readback WKC mismatch"
