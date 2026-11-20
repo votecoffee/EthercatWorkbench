@@ -507,7 +507,10 @@ mod tests {
     }
 
     fn click(app: &mut App, ctx: &egui::Context, label: &str) {
-        let size = egui::vec2(1100.0, 840.0);
+        click_at_size(app, ctx, label, egui::vec2(1100.0, 840.0));
+    }
+
+    fn click_at_size(app: &mut App, ctx: &egui::Context, label: &str, size: egui::Vec2) {
         draw(app, ctx, size, vec![]);
         let text = draw(app, ctx, size, vec![]);
         let pos = text
@@ -812,7 +815,70 @@ mod tests {
                 .any(|(s, _)| s.starts_with("2 compatible saved trials")),
             "{labels:?}"
         );
-        for slug in ["deadline", "relative"] {
+        let comparison = dir.join("comparison.json");
+        let bundle = dir.join("evidence");
+        for (hint, path, action) in [
+            (".local/review-result.json", &comparison, "Save new result"),
+            (".local/comparison.json", &comparison, "Open comparison"),
+            (".local/evidence", &bundle, "Export evidence bundle"),
+        ] {
+            let size = if action == "Save new result" {
+                egui::vec2(1100.0, 1400.0)
+            } else {
+                egui::vec2(1100.0, 840.0)
+            };
+            if action == "Open comparison" {
+                click(&mut app, &ctx, "Saved comparison");
+            }
+            if action == "Export evidence bundle" {
+                click(&mut app, &ctx, "Source files and evidence export");
+                click(&mut app, &ctx, "Leave blank for absolute paths");
+                draw(
+                    &mut app,
+                    &ctx,
+                    egui::vec2(1100.0, 840.0),
+                    vec![egui::Event::Text(
+                        std::env::current_dir()
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned(),
+                    )],
+                );
+            }
+            click_at_size(&mut app, &ctx, hint, size);
+            draw(
+                &mut app,
+                &ctx,
+                size,
+                vec![egui::Event::Text(path.to_string_lossy().into_owned())],
+            );
+            click_at_size(&mut app, &ctx, action, size);
+            if action != "Save new result" {
+                assert!(app.review.is_running(), "{action} did not start");
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while app.review.is_running() {
+                app.refresh(&ctx);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{action} did not finish"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let labels = draw(&mut app, &ctx, egui::vec2(1100.0, 840.0), vec![]);
+        assert!(
+            labels
+                .iter()
+                .any(|(text, _)| text == "Evidence bundle saved"),
+            "{labels:?}"
+        );
+        assert_eq!(
+            std::fs::read(bundle.join("original-comparison.json")).unwrap(),
+            std::fs::read(&comparison).unwrap()
+        );
+        for (index, slug) in ["deadline", "relative"].into_iter().enumerate() {
+            let bundled_trial = bundle.join(format!("trial-{:02}", index + 1));
             let path = dir.join(format!("{slug}.run.json"));
             let report: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -820,9 +886,23 @@ mod tests {
             assert!(parts >= 2);
             for index in 1..=parts {
                 std::fs::remove_file(dir.join(format!("{slug}.{index:04}.csv"))).unwrap();
+                std::fs::remove_file(bundled_trial.join(format!("capture.{index:04}.csv")))
+                    .unwrap();
             }
             std::fs::remove_file(path).unwrap();
+            std::fs::remove_file(bundled_trial.join("run.json")).unwrap();
+            std::fs::remove_dir(bundled_trial).unwrap();
         }
+        for name in [
+            "original-comparison.json",
+            "comparison.json",
+            "trials.json",
+            "bundle.json",
+        ] {
+            std::fs::remove_file(bundle.join(name)).unwrap();
+        }
+        std::fs::remove_dir(bundle).unwrap();
+        std::fs::remove_file(comparison).unwrap();
         std::fs::remove_dir(dir).unwrap();
     }
 

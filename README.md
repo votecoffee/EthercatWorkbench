@@ -27,9 +27,9 @@ cargo build --locked --release --target x86_64-pc-windows-msvc
 
 ## Usage
 
-Use **Review → Saved comparison → Check source hashes** or `ethercat-workbench-cli.exe check-comparison .local/comparison.json` to compare current source files against the saved report and CSV-part hashes. See the [comparison evidence check](docs/desktop-review.md#check-the-source-file-hashes).
+In **Review → Saved comparison**, open **Source files and evidence export** to check recorded hashes or export an evidence bundle. The CLI offers the same check with `ethercat-workbench-cli.exe check-comparison .local/comparison.json`. See the [comparison evidence check](docs/desktop-review.md#check-the-source-file-hashes).
 
-Use `ethercat-workbench-cli.exe bundle-comparison .local/comparison.json --out .local/evidence` to copy verified reports and audited CSV parts into a portable folder with a rerunnable trial set. [Bundle comparison evidence](docs/desktop-review.md#bundle-comparison-evidence)
+Choose **Export evidence bundle** or use `ethercat-workbench-cli.exe bundle-comparison .local/comparison.json --out .local/evidence` to copy verified reports and audited CSV parts into a portable folder with a rerunnable trial set. [Bundle comparison evidence](docs/desktop-review.md#bundle-comparison-evidence)
 
 Add `--out .local/comparison.json` to either form of `compare-runs` to save the result to a new file. Open it in **Review → Saved comparison** to see recorded timing, losses, and audit status. See the [saved comparison guide](docs/desktop-review.md#open-a-saved-comparison).
 

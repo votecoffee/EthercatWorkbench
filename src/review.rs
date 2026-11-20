@@ -1,5 +1,8 @@
 //! Background saved-file review, shared with the desktop without owning any bus state.
-use crate::{benchmark, capture_audit, model::Profile, pcap_inspect, shared_memory::reader};
+use crate::{
+    benchmark, capture_audit, comparison_bundle, model::Profile, pcap_inspect,
+    shared_memory::reader,
+};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{
@@ -52,6 +55,12 @@ pub enum Task {
         base: Option<PathBuf>,
         expected_sha256: String,
     },
+    BundleComparison {
+        file: PathBuf,
+        base: Option<PathBuf>,
+        output: PathBuf,
+        expected_sha256: String,
+    },
     InspectPcap {
         file: PathBuf,
         profile: Box<Profile>,
@@ -94,11 +103,16 @@ impl Task {
                 return pcap_inspect::validate_settings(profile, *station, *preview_limit);
             }
             Self::Audit(input) => (std::slice::from_ref(input), true),
-            Self::InspectComparison { file } | Self::CheckComparisonFiles { file, .. } => {
+            Self::InspectComparison { file }
+            | Self::CheckComparisonFiles { file, .. }
+            | Self::BundleComparison { file, .. } => {
                 ensure!(
                     !file.as_os_str().is_empty(),
                     "enter a saved comparison JSON path"
                 );
+                if let Self::BundleComparison { output, .. } = self {
+                    ensure!(!output.as_os_str().is_empty(), "enter a new bundle folder");
+                }
                 return Ok(());
             }
             Self::Compare { inputs, audit_csv } => {
@@ -193,6 +207,26 @@ impl Task {
                 Some(expected_sha256),
                 stop,
             )?)),
+            Self::BundleComparison {
+                file,
+                base,
+                output,
+                expected_sha256,
+            } => {
+                let directory = std::path::absolute(output).context("resolve bundle directory")?;
+                let receipt = comparison_bundle::create_checked(
+                    file,
+                    base.as_deref(),
+                    &directory,
+                    Some(expected_sha256),
+                    stop,
+                )?;
+                // The receipt is committed at this point, including if cancellation arrives late.
+                return Ok(Outcome::ComparisonBundle(Box::new(CompletedBundle {
+                    directory,
+                    receipt,
+                })));
+            }
         };
         check_cancel(Some(stop))?;
         Ok(outcome)
@@ -207,6 +241,7 @@ pub enum Outcome {
     Comparison(Box<benchmark::Comparison>),
     SavedComparison(Box<benchmark::SavedComparison>),
     ComparisonFiles(Box<crate::comparison_files::CheckedComparison>),
+    ComparisonBundle(Box<CompletedBundle>),
     Pcap(Box<pcap_inspect::Report>),
 }
 
@@ -237,6 +272,11 @@ pub struct Completed {
     pub task: Task,
     pub outcome: Outcome,
 }
+#[derive(Debug, Serialize)]
+pub struct CompletedBundle {
+    pub directory: PathBuf,
+    pub receipt: comparison_bundle::Receipt,
+}
 struct Job {
     task: Task,
     stop: Arc<AtomicBool>,
@@ -247,6 +287,7 @@ struct Job {
 pub struct Controller {
     job: Option<Job>,
     completed: Option<Completed>,
+    bundle: Option<Box<CompletedBundle>>,
     error: Option<String>,
     state: State,
 }
@@ -255,11 +296,19 @@ impl Controller {
     pub fn is_running(&self) -> bool {
         self.job.is_some()
     }
+    pub fn is_bundling(&self) -> bool {
+        self.job
+            .as_ref()
+            .is_some_and(|job| matches!(&job.task, Task::BundleComparison { .. }))
+    }
     pub fn state(&self) -> State {
         self.state
     }
     pub fn completed(&self) -> Option<&Completed> {
         self.completed.as_ref()
+    }
+    pub fn bundle(&self) -> Option<&CompletedBundle> {
+        self.bundle.as_deref()
     }
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
@@ -283,8 +332,11 @@ impl Controller {
             .name("saved-file-review".into())
             .spawn(move || operation(&flag))
             .context("start saved-file review worker")?;
+        if !matches!(&task, Task::BundleComparison { .. }) {
+            self.completed = None;
+        }
+        self.bundle = None;
         self.job = Some(Job { task, stop, worker });
-        self.completed = None;
         self.error = None;
         self.state = State::Running;
         Ok(())
@@ -306,12 +358,12 @@ impl Controller {
             return;
         }
         let job = self.job.take().expect("finished job");
-        let result = job.worker.join();
-        if job.stop.load(Relaxed) {
-            self.state = State::Cancelled;
-            return;
-        }
-        match result {
+        match job.worker.join() {
+            Ok(Ok(Outcome::ComparisonBundle(bundle))) => {
+                self.bundle = Some(bundle);
+                self.state = State::Complete;
+            }
+            _ if job.stop.load(Relaxed) => self.state = State::Cancelled,
             Ok(Ok(outcome)) => {
                 self.completed = Some(Completed {
                     task: job.task,
@@ -359,7 +411,7 @@ impl Controller {
 
 impl Drop for Controller {
     fn drop(&mut self) {
-        // Jobs only read source files. Closing the window does not wait on a blocked file system.
+        // The normal close path waits for evidence export to finish or cancel.
         if let Some(job) = &self.job {
             job.stop.store(true, Relaxed);
         }
@@ -1059,6 +1111,77 @@ mod tests {
         let export = fixture.0.join("comparison.json");
         controller.save_new(&export).unwrap();
         let bytes = std::fs::read(&export).unwrap();
+        controller
+            .start(Task::InspectComparison {
+                file: export.clone(),
+            })
+            .unwrap();
+        finish(&mut controller);
+        let output = fixture.0.join("bundle");
+        let bundle = Task::BundleComparison {
+            file: export.clone(),
+            base: None,
+            output: output.clone(),
+            expected_sha256: benchmark::hash(&bytes),
+        };
+
+        // A stale opened comparison cannot start a copy, even if it still parses.
+        std::fs::write(&export, [&bytes[..], b"\n"].concat()).unwrap();
+        controller.start(bundle.clone()).unwrap();
+        assert!(controller.is_bundling() && controller.completed().is_some());
+        finish(&mut controller);
+        assert_eq!(controller.state(), State::Failed);
+        assert!(
+            controller
+                .error()
+                .unwrap()
+                .contains("comparison JSON changed")
+        );
+        assert!(controller.completed().is_some() && !output.exists());
+        std::fs::write(&export, &bytes).unwrap();
+        assert!(bundle.execute(&AtomicBool::new(true)).is_err());
+        assert!(!output.exists());
+
+        controller.start(bundle).unwrap();
+        let end = Instant::now() + Duration::from_secs(5);
+        while !controller.job.as_ref().unwrap().worker.is_finished() && Instant::now() < end {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(controller.job.as_ref().unwrap().worker.is_finished());
+        controller.cancel();
+        finish(&mut controller);
+        assert_eq!(
+            controller.state(),
+            State::Complete,
+            "{:?}",
+            controller.error()
+        );
+        let completed = controller.bundle().unwrap();
+        assert_eq!(completed.directory, std::path::absolute(&output).unwrap());
+        assert_eq!(completed.receipt.reports, 2);
+        assert_eq!(completed.receipt.csv_parts, 2);
+        assert!(controller.completed().is_some());
+        assert_eq!(
+            std::fs::read(output.join("original-comparison.json")).unwrap(),
+            bytes
+        );
+        assert!(output.join("bundle.json").is_file());
+        for trial in ["trial-01", "trial-02"] {
+            let directory = output.join(trial);
+            std::fs::remove_file(directory.join("run.json")).unwrap();
+            std::fs::remove_file(directory.join("capture.csv")).unwrap();
+            std::fs::remove_dir(directory).unwrap();
+        }
+        for name in [
+            "original-comparison.json",
+            "comparison.json",
+            "trials.json",
+            "bundle.json",
+        ] {
+            std::fs::remove_file(output.join(name)).unwrap();
+        }
+        std::fs::remove_dir(output).unwrap();
+
         for index in 0..2 {
             std::fs::remove_file(fixture.0.join(format!("trial-{index}.json"))).unwrap();
             std::fs::remove_file(fixture.0.join(format!("trial-{index}.csv"))).unwrap();

@@ -36,13 +36,23 @@ pub fn create(
     output: &Path,
     stop: &AtomicBool,
 ) -> Result<Receipt> {
+    create_checked(file, base, output, None, stop)
+}
+
+pub(crate) fn create_checked(
+    file: &Path,
+    base: Option<&Path>,
+    output: &Path,
+    expected_sha256: Option<&str>,
+    stop: &AtomicBool,
+) -> Result<Receipt> {
     let root = std::path::absolute(output).context("resolve bundle directory")?;
     match fs::symlink_metadata(&root) {
         Ok(_) => bail!("bundle destination already exists: {}", root.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).context("inspect bundle destination"),
     }
-    let checked = comparison_files::check(file, base, None, stop)?;
+    let checked = comparison_files::check(file, base, expected_sha256, stop)?;
     if let Some(problem) = checked
         .report
         .files

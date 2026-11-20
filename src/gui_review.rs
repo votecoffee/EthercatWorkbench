@@ -29,6 +29,7 @@ pub struct Panel {
     pending_trial_set: Option<PathBuf>,
     comparison_path: String,
     comparison_base: String,
+    comparison_bundle: String,
     controller: Controller,
     export: String,
     message: String,
@@ -58,6 +59,7 @@ impl Default for Panel {
             pending_trial_set: None,
             comparison_path: String::new(),
             comparison_base: String::new(),
+            comparison_bundle: String::new(),
             controller: Controller::default(),
             export: String::new(),
             message: String::new(),
@@ -211,6 +213,9 @@ impl Panel {
     }
     pub fn is_running(&self) -> bool {
         self.controller.is_running()
+    }
+    pub fn is_bundling(&self) -> bool {
+        self.controller.is_bundling()
     }
     pub fn cancel(&mut self) {
         self.controller.cancel();
@@ -396,7 +401,8 @@ impl Panel {
                 Task::InspectPcap { .. }
                 | Task::InspectShared { .. }
                 | Task::InspectComparison { .. }
-                | Task::CheckComparisonFiles { .. } => &[],
+                | Task::CheckComparisonFiles { .. }
+                | Task::BundleComparison { .. } => &[],
             };
             ui.collapsing("Inputs used", |ui| {
                 let used_csv = matches!(
@@ -439,7 +445,9 @@ impl Panel {
                 Outcome::Comparison(result) => show_comparison(ui, result, false),
                 Outcome::Pcap(result) => show_pcap(ui, result),
                 Outcome::Shared(result) => show_shared(ui, result),
-                Outcome::SavedComparison(_) | Outcome::ComparisonFiles(_) => {
+                Outcome::SavedComparison(_)
+                | Outcome::ComparisonFiles(_)
+                | Outcome::ComparisonBundle(_) => {
                     unreachable!("saved comparison has its own page")
                 }
             }
@@ -510,29 +518,77 @@ impl Panel {
         ui.strong("Saved scheduler comparison");
         ui.label(saved.file.display().to_string());
         ui.label(format!("SHA-256 · {}", saved.sha256));
-        let mut check_task = None;
-        ui.add_enabled_ui(enabled, |ui| {
-            ui.horizontal_wrapped(|ui| {
+        let mut follow_up = None;
+        ui.collapsing("Source files and evidence export", |ui| {
+            ui.add_enabled_ui(enabled, |ui| {
                 ui.label("Original working folder for relative paths");
-                ui.add(egui::TextEdit::singleline(&mut self.comparison_base).desired_width(360.0));
-                if ui.button("Check source hashes").clicked() {
-                    let base = self.comparison_base.trim();
-                    check_task = Some(Task::CheckComparisonFiles {
-                        file: saved.file.clone(),
-                        base: (!base.is_empty()).then(|| PathBuf::from(base)),
-                        expected_sha256: saved.sha256.clone(),
-                    });
-                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.comparison_base)
+                            .hint_text("Leave blank for absolute paths")
+                            .desired_width(360.0),
+                    );
+                    if ui.button("Check source hashes").clicked() {
+                        follow_up = Some(Task::CheckComparisonFiles {
+                            file: saved.file.clone(),
+                            base: optional_path(&self.comparison_base),
+                            expected_sha256: saved.sha256.clone(),
+                        });
+                    }
+                });
+                ui.separator();
+                ui.label("New evidence folder");
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.comparison_bundle)
+                            .hint_text(".local/evidence")
+                            .desired_width(360.0),
+                    );
+                    let output = self.comparison_bundle.trim();
+                    if ui
+                        .add_enabled(!output.is_empty(), egui::Button::new("Export evidence bundle"))
+                        .clicked()
+                    {
+                        follow_up = Some(Task::BundleComparison {
+                            file: saved.file.clone(),
+                            base: optional_path(&self.comparison_base),
+                            output: output.into(),
+                            expected_sha256: saved.sha256.clone(),
+                        });
+                    }
+                });
             });
+            if saved.comparison.csv_audits.is_some() {
+                ui.label("Includes verified reports, audited CSV parts and a rerunnable trial set.");
+            } else {
+                ui.label("Includes verified reports and a rerunnable trial set. This comparison recorded report hashes only.");
+            }
+            ui.label("Use a folder that does not exist yet. An interrupted export can leave a partial folder.");
         });
+        if self.is_bundling() {
+            ui.label("Exporting comparison evidence…");
+        }
+        if let Some(bundle) = self.controller.bundle() {
+            ui.strong("Evidence bundle saved");
+            ui.label(bundle.directory.display().to_string());
+            ui.label(format!(
+                "{} reports · {} CSV parts · comparison.json and trials.json",
+                bundle.receipt.reports, bundle.receipt.csv_parts
+            ));
+        }
         if let Some(check) = check {
             show_source_check(ui, check);
         }
         show_comparison(ui, &saved.comparison, true);
-        if let Some(task) = check_task {
+        if let Some(task) = follow_up {
             self.start(task);
         }
     }
+}
+
+fn optional_path(text: &str) -> Option<PathBuf> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| PathBuf::from(text))
 }
 
 fn show_source_check(ui: &mut egui::Ui, report: &SourceCheck) {

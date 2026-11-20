@@ -250,7 +250,11 @@ impl App {
         if self.session.is_some() || self.scan.is_some() {
             ctx.request_repaint_after(Duration::from_millis(80));
         }
-        if self.deferred_close && self.session.is_none() && !self.host_check.is_running() {
+        if self.deferred_close
+            && self.session.is_none()
+            && !self.host_check.is_running()
+            && !self.review.is_bundling()
+        {
             self.deferred_close = false;
             self.request_profile_action(ctx, ProfileAction::Close);
         }
@@ -261,9 +265,12 @@ impl App {
         if self.profile_editor.close_confirmed {
             return;
         }
-        if self.session.is_some() || self.host_check.is_running() {
+        if self.session.is_some() || self.host_check.is_running() || self.review.is_bundling() {
             if self.host_check.is_running() {
                 self.message = "Finishing host metadata work before closing…".into();
+            }
+            if self.review.is_bundling() {
+                self.message = "Stopping evidence export before closing…".into();
             }
             if let Some(session) = &self.session {
                 session.stop.store(true, Relaxed);

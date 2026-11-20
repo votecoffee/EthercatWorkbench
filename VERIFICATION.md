@@ -482,3 +482,11 @@ The CLI creates a new directory from a saved comparison after checking all recor
 Formatting, Clippy, 176 offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. CLI checks on retained 0.42.0 captures and fresh synthetic trials covered original bytes, bundle receipt hashes, rotated CSV parts, relocation, regenerated timing summaries, bundling relative source references, report-only coverage and protection of existing destinations. Changed source evidence was rejected before the destination was created.
 
 The first full offline run reached an EEPROM setup timeout before cyclic I/O in the existing virtual SII transport-loss test. The case passed in isolation and the full retry passed. Logs, binary hashes and delivery receipts use the 0.43.0 prefix in ignored .local/. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.44.0 desktop comparison evidence export (2026-11-19)
+
+Saved comparison Review groups source checks and evidence export in a collapsible section. Export uses the opened comparison hash, the supplied relative-path base and the new folder entered at startup. The worker retains the saved result so it stays available during export and after a failed export. A committed bundle keeps its success receipt if a cancellation arrives late. App close requests cancellation and waits for the export worker.
+
+Formatting, Clippy, 176 locked offline Rust tests (134 library and 42 GUI), the Windows x64 MSVC release build and the full offline regression passed. The headless desktop test saved and reopened a comparison, entered the export paths and clicked Export evidence bundle. It checked the success message, exact original bytes and the rotated CSV part sequence. Worker checks rejected a changed comparison before creating a directory, retained the opened result, and verified cancellation before work and after completion. Logs and delivery receipts use the 0.44.0 prefix under ignored .local/.
+
+Native GUI review and physical bench qualification remain pending.

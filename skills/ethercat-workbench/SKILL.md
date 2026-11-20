@@ -25,9 +25,9 @@ Use headless files/CLI by default. Desktop input, screenshots or recording need 
 
 ## Desktop navigation
 
-Use **Saved comparison → Check source hashes** or `check-comparison FILE [--base DIRECTORY] [--out NEW.json]` to match source bytes to saved hashes. Use the original working folder for relative paths. CLI success means the check completed. Read `all_match`, each file status and `csv_hashes_recorded` for the outcome and coverage. A new comparison performs a fresh audit.
+In **Saved comparison**, expand **Source files and evidence export** and choose **Check source hashes**, or use `check-comparison FILE [--base DIRECTORY] [--out NEW.json]` to match source bytes to saved hashes. Use the original working folder for relative paths. CLI success means the check completed. Read `all_match`, each file status and `csv_hashes_recorded` for the outcome and coverage. A new comparison performs a fresh audit.
 
-Use `bundle-comparison FILE [--base DIRECTORY] --out NEW_DIRECTORY` to copy verified evidence, retaining the original comparison. A readable `bundle.json` marks completion. Run `check-comparison DIRECTORY/comparison.json --base DIRECTORY` to verify the copies or `compare-runs --trial-set DIRECTORY/trials.json` to rerun the comparison after moving the folder.
+In the same section, enter a new folder and choose **Export evidence bundle**, or use `bundle-comparison FILE [--base DIRECTORY] --out NEW_DIRECTORY`. Both copy verified evidence and retain the original comparison. A readable `bundle.json` marks completion. Open `DIRECTORY/comparison.json` with the bundle folder as the base, or use `check-comparison DIRECTORY/comparison.json --base DIRECTORY` to verify the copies. Use `compare-runs --trial-set DIRECTORY/trials.json` to rerun the comparison after moving the folder.
 
 Add `--out NEW.json` to `compare-runs` to save its JSON result. **Review → Saved comparison** opens desktop or CLI exports and identifies the saved bytes by SHA-256. Treat its values and audit status as recorded evidence. Run a fresh comparison to check the original files again.
 

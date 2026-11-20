@@ -44,7 +44,7 @@ Choose **Review → Saved comparison** and enter a comparison JSON path. The vie
 
 ## Check the source file hashes
 
-Open a result in **Saved comparison**, then choose **Check source hashes**. The app checks the reports and the CSV parts listed by the comparison. When the result uses relative paths, enter the original working folder in the field beside the button. Absolute paths are checked as recorded. Opening the comparison only reads its JSON. The separate check binds to the SHA-256 of the opened result, so reopen it if the result file has changed.
+Open a result in **Saved comparison**, expand **Source files and evidence export**, and choose **Check source hashes**. The app checks the reports and the CSV parts listed by the comparison. When the result uses relative paths, enter the original working folder in the field beside the button. Absolute paths are checked as recorded. Opening the comparison only reads its JSON. The separate check binds to the SHA-256 of the opened result, so reopen it if the result file has changed.
 
 The check lists **Match**, **Changed**, **Missing**, **Unreadable**, or **Unresolved** per file. A changed CSV length is enough to flag the file. Files of the recorded length are hashed in chunks. The desktop shows up to 64 paths with exceptions first. For a full list, run `ethercat-workbench-cli.exe check-comparison .local/comparison.json --base . --out .local/source-check.json` from the comparison's original working folder. Omit `--base` for absolute references. The command prints JSON, including `all_match` and `csv_hashes_recorded`. A completed check returns success even when some entries differ. Use `all_match` to test the recorded paths in scripts, and `csv_hashes_recorded` to tell whether that covers CSV parts.
 
@@ -52,7 +52,11 @@ The match is against hashes stored in the selected comparison. When the comparis
 
 ## Bundle comparison evidence
 
-After exporting a saved comparison, create an evidence folder with the CLI. Add `--base DIRECTORY` to the first command when the saved comparison has relative source paths. Use its original working folder for that option.
+Open a comparison in **Review → Saved comparison** and expand **Source files and evidence export**. Enter the original working folder if the saved paths are relative. Enter a **New evidence folder** and choose **Export evidence bundle**. The export uses the opened comparison's SHA-256 and checks the source files again. The success message shows the completed folder and counts. To check the copies in the desktop, open the bundle's `comparison.json` and use the bundle folder as the relative-path base.
+
+Use **Cancel file review** to stop copying. Closing the app requests cancellation and waits for the worker.
+
+From the CLI, add `--base DIRECTORY` to the first command if the comparison uses relative source paths. Use its original working folder for that option.
 
 ```powershell
 .\ethercat-workbench-cli.exe bundle-comparison .local/comparison.json --out .local/evidence
