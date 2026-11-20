@@ -7,6 +7,7 @@ Use the CLI to inspect the layout of one planned Logical Read (LRD) across multi
 .\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --hex "2a 00 01 00 00 00 80 3f 12 34 00 00 00 00 00 40" --wkc 2 --out .local/group-decode.json
 .\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --frame samples/input-group-frame.json
 .\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --fmmu samples/input-group-fmmu.json --frame samples/input-group-frame.json
+.\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --fmmu samples/input-group-fmmu.json --sync-managers samples/input-group-sync-managers.json --frame samples/input-group-frame.json
 ```
 
 The bundled manifest uses two authored virtual device profiles. The first occupies bytes 0–7 and the second bytes 8–15. With WKC 2, the example decodes counters 42 and 13,330, boolean values true and false, and floating-point values 1 and 2. Each device reports its raw bytes and local field offsets, widths, source labels and decoded values.
@@ -34,6 +35,14 @@ Use `--fmmu` to check the configured logical input ranges. Copy the schema 1 sam
 
 The check requires WKC 1 for the count and every declared slot. Each station's active read-enabled mappings must cover its entire planned byte slice without gaps, overlap or extra ranges. Multiple adjacent mappings are supported. Disabled and write-only mappings remain visible and contribute no input bytes. A position with no TxPDO bytes must have no active read mapping. For input mappings, logical start bit, logical stop bit and physical start bit must be 0, 7 and 0, respectively. The check reports each physical start and rejects address overflow. [Beckhoff FMMU technology reference, section 7](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
 
-With `--frame`, the inspector also compares station addresses in order. It decodes the frame only if both `frame.valid` and `fmmu.valid` are true. A structurally readable snapshot with coverage or WKC issues can still be exported as diagnostics. The report hashes the supplied FMMU JSON bytes and retains the per-slot reads. Use evidence from the same device configuration. These saved files do not establish the age of a snapshot, validate physical SyncManager or PDO assignments, or distinguish identical units swapped on the bus.
+With `--frame`, the inspector also compares station addresses in order. It requires `frame.valid` and `fmmu.valid` before decoding. A structurally readable snapshot with coverage or WKC issues can still be exported as diagnostics. The report hashes the supplied FMMU JSON bytes and retains the per-slot reads.
 
-Live SAFEOP sessions still require exactly one isolated SubDevice. Live identity and PDO binding, configured FMMU readback, topology changes and grouped cyclic logging remain on the [roadmap](../ROADMAP.md).
+## Check saved SyncManager registers
+
+Use `--sync-managers` with `--fmmu` to check each station's physical input mapping. Use the same station order and record the supported-channel count from `0x0005` and every eight-byte channel starting at `0x0800`. The schema 1 sample keeps the raw bytes and actual WKC for each read. WKC 1 is required for the count and each reported slot. [Beckhoff ESC register reference, sections 2.5 and 2.48](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec2_registers_3i0.pdf)
+
+The audit compares the physical coverage of read-enabled FMMUs with the first-buffer address ranges of enabled, buffered EtherCAT-read SyncManagers. The ranges must match exactly and cannot overlap or alias. An eligible input range cannot overlap another enabled channel's first buffer. An input disabled by its PDI fails the check. Mailbox and output channels remain visible. The report lists the FMMU slots that intersect each input buffer and keeps each raw read. [Beckhoff ESC technology reference, section 8.1](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
+When a frame is supplied, decoding requires `frame.valid`, `fmmu.valid` and `sync_managers.valid`. Use snapshots from the same device configuration. This check covers the declared first-buffer geometry. ESC-specific buffer allocation, live producer behavior, snapshot freshness, exact underlying PDO assignments, and swaps of physically identical devices still require separate evidence.
+
+Live SAFEOP sessions still require exactly one isolated SubDevice. Live identity and PDO binding, register readback, topology changes and grouped cyclic logging remain on the [roadmap](../ROADMAP.md).

@@ -948,7 +948,7 @@ mod tests {
 
     #[test]
     fn grouped_lrd_and_al_reads_gate_scope_to_one_matching_reply() {
-        use crate::input_group::{InputGroup, fmmu};
+        use crate::input_group::{InputGroup, fmmu, sync_manager};
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/input-group.json");
         let group = InputGroup::load(&path).unwrap();
@@ -1041,8 +1041,50 @@ mod tests {
             let start = plan.devices[position].offset.unwrap() as u64;
             fmmu::check(evidence, position, Some(start..start + 8))
         };
-        assert!(review_fmmu(&mut wire, 0).issues.is_empty());
-        assert!(review_fmmu(&mut wire, 1).issues.is_empty());
+        let review_sync_managers = |wire: &mut VirtualWire, position: usize| {
+            let station_address = stations[position];
+            let request = Frame::new(0, [Datagram::register(FPRD, station_address, 0x0005, 1)]);
+            wire.send(request.bytes()).unwrap();
+            let [(count, wkc)] = request.reply(wire.receive().unwrap()).unwrap();
+            let count = fmmu::Read {
+                wkc,
+                value: count[0],
+            };
+            let slots = (0..count.value)
+                .map(|slot| {
+                    let address = 0x0800 + u16::from(slot) * 8;
+                    let request = Frame::new(
+                        slot,
+                        [Datagram::register(FPRD, station_address, address, 8)],
+                    );
+                    wire.send(request.bytes()).unwrap();
+                    let [(bytes, wkc)] = request.reply(wire.receive().unwrap()).unwrap();
+                    fmmu::Read {
+                        wkc,
+                        value: bytes.try_into().unwrap(),
+                    }
+                })
+                .collect();
+            let evidence = sync_manager::Station {
+                station_address,
+                count,
+                slots,
+            };
+            let fmmu = review_fmmu(wire, position);
+            assert!(fmmu.issues.is_empty());
+            sync_manager::check(evidence, position, &fmmu)
+        };
+        assert!(review_sync_managers(&mut wire, 0).issues.is_empty());
+        assert!(review_sync_managers(&mut wire, 1).issues.is_empty());
+        wire.devices[1].registers[0x0618] = 1; // Shift only the SII device's physical input start.
+        let wrong_physical = review_sync_managers(&mut wire, 1);
+        assert!(
+            wrong_physical
+                .issues
+                .iter()
+                .any(|issue| issue.contains("physical coverage differs"))
+        );
+        wire.devices[1].registers[0x0618] = 0;
         let decoded = exchange(&mut wire, 1);
         assert!(decoded.frame.unwrap().valid);
         assert!(

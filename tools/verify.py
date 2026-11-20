@@ -1855,6 +1855,119 @@ def verify_input_group_fmmu(cli, destination):
     assert all(device["input"] is None for device in dirty_report["devices"])
 
 
+def verify_input_group_sync_managers(cli, destination):
+    manifest = ROOT / "samples/input-group.json"
+    frame = ROOT / "samples/input-group-frame.json"
+    fmmu = ROOT / "samples/input-group-fmmu.json"
+    sample = ROOT / "samples/input-group-sync-managers.json"
+
+    def inspect(sync=sample, mapped=fmmu, *args, **kwargs):
+        return cli_call(cli, "inspect-input-group", manifest, "--fmmu", mapped,
+                        "--sync-managers", sync, *args, **kwargs)
+
+    def save(name, value):
+        path = destination / (name + ".json")
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    previous = cli_call(cli, "inspect-input-group", manifest, "--fmmu", fmmu, "--frame", frame)
+    assert "sync_managers" not in previous
+    standalone = inspect()
+    assert standalone["sync_managers"]["valid"] and standalone["fmmu"]["valid"]
+    assert "frame" not in standalone and all(d["input"] is None for d in standalone["devices"])
+    checked = inspect(sample, fmmu, "--frame", frame, "--out", destination / "healthy-receipt.json")
+    assert checked == json.loads((destination / "healthy-receipt.json").read_bytes())
+    assert checked["devices"] == previous["devices"] and checked["frame"] == previous["frame"]
+    report = checked["sync_managers"]
+    assert report["valid"] and report["source_sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    for index, device in enumerate(report["devices"]):
+        assert device["station_address"] == 4096 + index and device["fmmu_station_matches"]
+        assert device["fmmu_physical_ranges"] == device["input_buffer_ranges"] == [
+            {"start": 0x1200, "end": 0x1208}
+        ]
+        aliases = [slot["covering_fmmu_slots"] for slot in device["slots"]]
+        assert aliases == ([[], [], [], [0]] if index == 0 else [[], [1, 2]])
+
+    def reject(path, text, mapping=fmmu, frame_path=frame, fmmu_valid=True):
+        review = inspect(path, mapping, "--frame", frame_path)
+        assert review["frame"]["valid"] and review["fmmu"]["valid"] == fmmu_valid
+        assert not review["sync_managers"]["valid"]
+        assert all(d["input"] is None for d in review["devices"])
+        downstream = review["sync_managers"]["devices"][1]
+        assert any(text in issue for issue in downstream["issues"]), downstream
+        return downstream
+
+    for name, slot, offset, values, issue in [
+        ("short-input", 1, 2, [7], "coverage differs"),
+        ("disabled", 1, 6, [0], "coverage differs"),
+        ("pdi-disabled", 1, 7, [1], "deactivated by its PDI"),
+        ("mailbox", 1, 4, [2], "coverage differs"),
+        ("wrong-direction", 1, 4, [4], "coverage differs"),
+        ("reserved-mode", 1, 4, [3], "coverage differs"),
+        ("register-space", 1, 0, [0, 1], "invalid physical range"),
+        ("overflow", 1, 0, [255, 255], "invalid physical range"),
+        ("overlaps-output", 0, 0, [1, 18], "overlaps enabled SM0"),
+    ]:
+        evidence = json.loads(sample.read_bytes())
+        raw = evidence["devices"][1]["slots"][slot]["value"]
+        raw[offset:offset + len(values)] = values
+        reject(save(name, evidence), issue)
+
+    for name, field, changes, issue in [
+        ("count-wkc", "count", {"wkc": 0}, "count WKC 0"),
+        ("missing-slot", "count", {"value": 3}, "reports 3 SyncManager slots"),
+        ("count-limit", "count", {"value": 17}, "count 17 exceeds 16"),
+        ("ambiguous-slot", "slot", {"wkc": 2}, "SM1 WKC 2"),
+        ("station", "station", {"station_address": 4112}, "station address differs"),
+    ]:
+        evidence = json.loads(sample.read_bytes())
+        device = evidence["devices"][1]
+        target = {"count": device["count"], "slot": device["slots"][1], "station": device}[field]
+        target.update(changes)
+        downstream = reject(save(name, evidence), issue)
+        if name == "ambiguous-slot":
+            assert downstream["slots"][1]["channel"] is None
+        if name == "station":
+            assert not downstream["fmmu_station_matches"]
+
+    for name, offset, value, expected in [
+        ("wrong-fmmu-target", 8, 8, "coverage differs"),
+        ("physical-alias", 8, 4, "overlap in physical memory"),
+        ("bad-logical-range", 0, 7, "logical layout check did not pass"),
+    ]:
+        evidence = json.loads(fmmu.read_bytes())
+        evidence["devices"][1]["slots"][2]["value"][offset] = value
+        reject(sample, expected, save(name, evidence), fmmu_valid=(offset != 0))
+
+    mapping = json.loads(fmmu.read_bytes())
+    mapping["devices"][1]["slots"][1]["value"][8:10] = [0, 19]
+    sync = json.loads(sample.read_bytes())
+    device = sync["devices"][1]
+    device["count"]["value"] = 3
+    device["slots"][1]["value"][2] = 4
+    device["slots"].append({"wkc": 1, "value": [0, 19, 4, 0, 0, 0, 1, 0]})
+    split = inspect(save("two-input-buffers", sync), save("split-fmmus", mapping), "--frame", frame)
+    assert split["sync_managers"]["valid"] and split["devices"] == previous["devices"]
+    downstream = split["sync_managers"]["devices"][1]
+    assert downstream["input_buffer_ranges"] == [
+        {"start": 0x1200, "end": 0x1204}, {"start": 0x1300, "end": 0x1304}
+    ]
+    assert [s["covering_fmmu_slots"] for s in downstream["slots"]] == [[], [2], [1]]
+    second_fmmu = mapping["devices"][1]
+    coalesced = second_fmmu["slots"].pop()
+    coalesced["value"][4] = 8
+    second_fmmu["slots"][1] = coalesced
+    second_fmmu["count"]["value"] = 2
+    reject(destination / "two-input-buffers.json", "coverage differs", save("coalesced-over-gap", mapping))
+
+    malformed = json.loads(sample.read_bytes())
+    malformed["devices"][1]["slots"][1]["value"].append(0)
+    no_output = destination / "unusable-export.json"
+    assert "parse " in inspect(save("bad-register", malformed), fmmu, "--out", no_output, success=False)
+    assert not no_output.exists()
+    assert "--fmmu" in cli_call(cli, "inspect-input-group", manifest, "--sync-managers", sample, success=False)
+
+
 def verify_pcap(cli, destination):
     """Authored PCAP records: no capture hardware or packet transmission."""
     fixture = json.loads((ROOT / "samples/synthetic-replay.json").read_text(encoding="utf-8"))
@@ -2519,6 +2632,9 @@ def main():
     fmmu_destination = destination / "input-group-fmmu"
     fmmu_destination.mkdir()
     verify_input_group_fmmu(cli, fmmu_destination)
+    sm_destination = destination / "input-group-sync-managers"
+    sm_destination.mkdir()
+    verify_input_group_sync_managers(cli, sm_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

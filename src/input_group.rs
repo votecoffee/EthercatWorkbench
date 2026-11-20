@@ -1,5 +1,6 @@
 //! Offline planning and decoding for a byte-aligned, input-only logical read.
 pub(crate) mod fmmu;
+pub(crate) mod sync_manager;
 
 use crate::{
     esc::{AlStatus, al_status, clean_safeop},
@@ -58,6 +59,11 @@ pub struct InputGroup {
     expected_wkc: u16,
 }
 
+pub(crate) struct MappingReview {
+    fmmu: fmmu::Review,
+    sync_managers: Option<sync_manager::Review>,
+}
+
 #[derive(Serialize)]
 pub struct Inspection<'a> {
     schema: u32,
@@ -70,6 +76,8 @@ pub struct Inspection<'a> {
     pub(crate) frame: Option<FrameCheck>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fmmu: Option<fmmu::Review>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_managers: Option<sync_manager::Review>,
     pub(crate) devices: Vec<Device<'a>>,
 }
 
@@ -213,19 +221,38 @@ impl InputGroup {
     }
 
     pub fn inspect_fmmu_file(&self, path: &Path, frame: Option<&Path>) -> Result<Inspection<'_>> {
-        let review = fmmu::review(path, &self.bindings)?;
+        self.inspect_mapping_files(path, None, frame)
+    }
+
+    pub fn inspect_mapping_files(
+        &self,
+        fmmu: &Path,
+        sync_managers: Option<&Path>,
+        frame: Option<&Path>,
+    ) -> Result<Inspection<'_>> {
+        let fmmu = fmmu::review(fmmu, &self.bindings)?;
+        let sync_managers = sync_managers
+            .map(|path| sync_manager::review(path, &fmmu))
+            .transpose()?;
         if let Some(frame) = frame {
-            return self.inspect_saved_frame(frame, Some(review));
+            return self.inspect_saved_frame(
+                frame,
+                Some(MappingReview {
+                    fmmu,
+                    sync_managers,
+                }),
+            );
         }
         let mut inspection = self.inspection(None, None);
-        inspection.fmmu = Some(review);
+        inspection.fmmu = Some(fmmu);
+        inspection.sync_managers = sync_managers;
         Ok(inspection)
     }
 
     fn inspect_saved_frame(
         &self,
         path: &Path,
-        fmmu: Option<fmmu::Review>,
+        mapping: Option<MappingReview>,
     ) -> Result<Inspection<'_>> {
         let (sample, _) = read_json::<FrameSample>(path, MAX_FRAME_FILE_BYTES)?;
         ensure!(
@@ -244,7 +271,7 @@ impl InputGroup {
             "frame exceeds {MAX_FRAME_BYTES} bytes"
         );
         let reply = hex::decode(hex).context("group frame reply must contain hex byte pairs")?;
-        self.inspect_reply(sample.index, &sample.stations, &reply, fmmu)
+        self.inspect_reply(sample.index, &sample.stations, &reply, mapping)
     }
 
     pub(crate) fn expected_frame(
@@ -265,7 +292,7 @@ impl InputGroup {
         index: u8,
         stations: &[u16],
         reply: &[u8],
-        mut fmmu: Option<fmmu::Review>,
+        mut mapping: Option<MappingReview>,
     ) -> Result<Inspection<'_>> {
         ensure!(
             reply.len() <= MAX_FRAME_BYTES,
@@ -292,10 +319,13 @@ impl InputGroup {
             .collect();
         let lrd_wkc_matches = wkc == self.expected_wkc;
         let valid = lrd_wkc_matches && al_reads.iter().all(|al| al.clean_safeop);
-        if let Some(review) = &mut fmmu {
-            review.compare_stations(stations);
+        if let Some(review) = &mut mapping {
+            review.fmmu.compare_stations(stations);
         }
-        let usable = valid && fmmu.as_ref().is_none_or(|review| review.valid);
+        let usable = valid
+            && mapping.as_ref().is_none_or(|review| {
+                review.fmmu.valid && review.sync_managers.as_ref().is_none_or(|sync| sync.valid)
+            });
         let mut inspection = self.inspection(usable.then_some(payload), Some(wkc));
         inspection.frame = Some(FrameCheck {
             index,
@@ -303,7 +333,10 @@ impl InputGroup {
             lrd_wkc_matches,
             valid,
         });
-        inspection.fmmu = fmmu;
+        if let Some(review) = mapping {
+            inspection.fmmu = Some(review.fmmu);
+            inspection.sync_managers = review.sync_managers;
+        }
         for (device, al) in inspection.devices.iter_mut().zip(al_reads) {
             device.al = Some(al);
         }
@@ -355,6 +388,7 @@ impl InputGroup {
             actual_wkc,
             frame: None,
             fmmu: None,
+            sync_managers: None,
             devices,
         }
     }

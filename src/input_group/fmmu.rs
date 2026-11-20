@@ -36,13 +36,13 @@ pub(crate) struct Review {
     layout_matches: bool,
     stations_match: Option<bool>,
     pub(super) valid: bool,
-    devices: Vec<Device>,
+    pub(super) devices: Vec<Device>,
 }
 
 #[derive(Serialize)]
 pub(crate) struct Device {
     position: usize,
-    station_address: u16,
+    pub(super) station_address: u16,
     station_matches: Option<bool>,
     count: Read<u8>,
     slots: Vec<Slot>,
@@ -162,6 +162,20 @@ impl Review {
             .all(|device| device.station_matches == Some(true));
         self.stations_match = Some(matches);
         self.valid = self.layout_matches && matches;
+    }
+}
+
+impl Device {
+    pub(super) fn physical_read_ranges(&self) -> Vec<(usize, Range<u32>)> {
+        self.slots
+            .iter()
+            .filter_map(|slot| {
+                let mapping = slot.mapping.as_ref()?;
+                mapping.read_range().ok().flatten()?;
+                let start = u32::from(mapping.physical_start);
+                Some((slot.index, start..start + u32::from(mapping.length)))
+            })
+            .collect()
     }
 }
 

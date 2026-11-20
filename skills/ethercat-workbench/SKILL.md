@@ -29,6 +29,8 @@ Use `inspect-input-group MANIFEST --frame FILE` for a saved single Workbench rep
 
 Add `--fmmu FILE` for a saved per-station channel count and ordered 16-byte FMMU records with WKC. Input mappings must cover exactly the planned byte slices. With `--frame`, check both `frame.valid` and `fmmu.valid`. The same station order, full register coverage and matching geometry are necessary for decoding. Use snapshots from the same setup; these are offline checks and do not verify physical PDO assignments or freshness.
 
+Add `--sync-managers FILE` with `--fmmu` to also check the physical coverage of the enabled buffered input windows. Include the supported-channel count and all eight-byte slots with WKC. When also supplying a frame, check `frame.valid`, `fmmu.valid` and `sync_managers.valid`. The ranges cover each visible first buffer. Keep actual PDO assignments, snapshot freshness and ESC-specific allocation separate.
+
 Use headless files/CLI by default. Desktop input, screenshots or recording need an explicit request in the current chat. Do not run the verification script's optional native GUI mode automatically.
 
 ## Desktop navigation

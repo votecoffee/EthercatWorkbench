@@ -62,6 +62,9 @@ enum Command {
         /// Check a saved FMMU register snapshot against the input plan.
         #[arg(long, conflicts_with_all = ["hex", "wkc"])]
         fmmu: Option<PathBuf>,
+        /// Check saved SyncManager registers against the FMMU physical ranges.
+        #[arg(long, requires = "fmmu")]
+        sync_managers: Option<PathBuf>,
         /// Export inspection JSON to a new file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -389,11 +392,14 @@ fn main() -> Result<()> {
             wkc,
             frame,
             fmmu,
+            sync_managers,
             out,
         } => {
             let group = ethercat_workbench::input_group::InputGroup::load(&manifest)?;
             let inspection = match (fmmu.as_deref(), frame.as_deref()) {
-                (Some(path), frame) => group.inspect_fmmu_file(path, frame)?,
+                (Some(path), frame) => {
+                    group.inspect_mapping_files(path, sync_managers.as_deref(), frame)?
+                }
                 (None, Some(path)) => group.inspect_frame_file(path)?,
                 (None, None) => {
                     let payload = hex.as_deref().map(payload_hex).transpose()?;
