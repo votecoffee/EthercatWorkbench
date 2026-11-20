@@ -1568,7 +1568,7 @@ mod tests {
 
         fn archived_group(&self, scenario: GroupReviewFixture) -> PathBuf {
             use ethercat_workbench::input_group::{
-                InputGroup, audit::Evidence, bundle, clock_rehearsal, replay,
+                InputGroup, audit::Evidence, bundle, clock_rehearsal, preflight, replay,
             };
             let (sample, clock_case) = match scenario {
                 GroupReviewFixture::Inputs(_) | GroupReviewFixture::InputsWithPdo => {
@@ -1588,8 +1588,17 @@ mod tests {
                 GroupReviewFixture::InputsWithPdo => Some(VirtualScenario::Clean),
                 _ => None,
             };
-            let pdo = matches!(scenario, GroupReviewFixture::InputsWithPdo)
-                .then(|| manifest.with_file_name("input-group-pdo.json"));
+            let pdo = matches!(scenario, GroupReviewFixture::InputsWithPdo).then(|| {
+                let path = self.0.join("pdo-readback.json");
+                let report = preflight::inspect_virtual(
+                    &group,
+                    preflight::GroupMappingScenario::Clean,
+                    true,
+                )
+                .unwrap();
+                std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+                path
+            });
             let generated = if let Some(scenario) = input_scenario {
                 replay::generate_virtual(&group, scenario)
             } else {
@@ -1945,6 +1954,10 @@ mod tests {
         );
         assert!(
             text.contains("Saved TxPDO layout verified · 2 generations"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Saved PDO transcript verified · 139 exchanges"),
             "{text}"
         );
     }

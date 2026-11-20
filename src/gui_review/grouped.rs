@@ -169,6 +169,11 @@ impl Panel {
                     }
                 ));
             }
+            if let Some(exchanges) = audit.verified_pdo_exchanges {
+                ui.label(format!(
+                    "Saved PDO transcript verified · {exchanges} exchanges"
+                ));
+            }
             if let Some(generations) = audit.verified_clock_setup_generations {
                 ui.label(format!(
                     "Saved SYNC0 readback verified · {generations} generations"

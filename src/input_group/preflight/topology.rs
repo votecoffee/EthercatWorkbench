@@ -45,23 +45,7 @@ impl Recording {
         &self,
         expected_stations: &[u16],
     ) -> Result<GenerationCheck> {
-        ensure!(
-            self.before_mapping.index < self.after_mapping.index,
-            "topology probe datagram indexes must increase"
-        );
-        let before = self
-            .before_mapping
-            .inspect(expected_stations)
-            .context("before mapping")?;
-        let after = self
-            .after_mapping
-            .inspect(expected_stations)
-            .context("after mapping")?;
-        let topology = Check::new(before, after);
-        ensure!(
-            topology.valid,
-            "saved topology probes fail count, station order or stability checks"
-        );
+        let topology = verify_probes(&self.before_mapping, &self.after_mapping, expected_stations)?;
         Ok(GenerationCheck {
             connection_generation: self.connection_generation,
             topology,
@@ -69,6 +53,54 @@ impl Recording {
             configured_sync0: None,
         })
     }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ReadbackProbes {
+    before_mapping: ReadbackProbe,
+    after_mapping: ReadbackProbe,
+}
+
+// The readback report flattens these raw fields alongside computed station observations.
+#[derive(Deserialize)]
+struct ReadbackProbe {
+    index: u8,
+    reply_hex: String,
+}
+
+impl From<ReadbackProbe> for ProbeReply {
+    fn from(raw: ReadbackProbe) -> Self {
+        Self {
+            index: raw.index,
+            reply_hex: raw.reply_hex,
+        }
+    }
+}
+
+impl ReadbackProbes {
+    pub(super) fn verify(self, stations: &[u16]) -> Result<Check> {
+        verify_probes(
+            &self.before_mapping.into(),
+            &self.after_mapping.into(),
+            stations,
+        )
+    }
+}
+
+fn verify_probes(before: &ProbeReply, after: &ProbeReply, stations: &[u16]) -> Result<Check> {
+    ensure!(
+        before.index < after.index,
+        "topology probe datagram indexes must increase"
+    );
+    let topology = Check::new(
+        before.inspect(stations).context("before mapping")?,
+        after.inspect(stations).context("after mapping")?,
+    );
+    ensure!(
+        topology.valid,
+        "saved topology probes fail count, station order or stability checks"
+    );
+    Ok(topology)
 }
 
 #[derive(Serialize)]

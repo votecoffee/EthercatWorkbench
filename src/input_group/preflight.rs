@@ -12,7 +12,7 @@ use crate::{
     wire::{Datagram, FPRD, Frame},
 };
 use anyhow::{Context, Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::AtomicBool;
 
@@ -31,6 +31,63 @@ pub struct Report<'a> {
     pdo_exchanges: Option<Vec<pdos::Exchange>>,
     inspection: Inspection<'a>,
     wire_audit: Vec<VirtualStats>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ReadbackReport {
+    pdo_snapshot: Option<pdo_readback::Snapshot>,
+    inspection: ReadbackInspection,
+    mapping_replies: Vec<String>,
+    pdo_exchanges: Option<Vec<pdos::Exchange>>,
+}
+
+#[derive(Deserialize)]
+struct ReadbackInspection {
+    topology: topology::ReadbackProbes,
+}
+
+impl ReadbackReport {
+    pub(super) fn rebuild(
+        self,
+        group: &InputGroup,
+        stop: Option<&AtomicBool>,
+    ) -> Result<(pdo_readback::Snapshot, usize)> {
+        let declared = self
+            .pdo_snapshot
+            .context("virtual group readback report has no PDO snapshot")?;
+        let saved = self
+            .pdo_exchanges
+            .context("virtual group readback report has no PDO exchanges")?;
+        let fixture = virtual_group(group)?;
+        let topology = self
+            .inspection
+            .topology
+            .verify(fixture.stations)
+            .context("PDO report setup topology")?;
+        let [before, after] = topology.probe_indexes();
+        let mapping = verify_recorded_mapping(
+            group,
+            fixture.stations,
+            before,
+            after,
+            &self.mapping_replies,
+            stop,
+        )
+        .context("PDO report setup mapping")?;
+        let snapshot = pdos::rebuild(
+            &saved,
+            fixture,
+            &mapping.sync_managers,
+            after.wrapping_add(1),
+            stop,
+        )
+        .context("rebuild PDO snapshot from saved exchanges")?;
+        ensure!(
+            snapshot == declared,
+            "PDO snapshot differs from the saved exchanges"
+        );
+        Ok((snapshot, saved.len()))
+    }
 }
 
 pub fn inspect_virtual(

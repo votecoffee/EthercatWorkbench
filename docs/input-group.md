@@ -114,7 +114,9 @@ Use the readback report from the preceding example with a fixture that records i
 
 A standalone `--pdo` accepts a schema 1 PDO snapshot or the complete virtual readback report. It requires recorded FMMU and SyncManager replies for every generation, as in fixture schemas 4 through 6. Replay rebuilds each generation's register mapping, then checks the supplied PDO descriptors and their placement against it before opening CSV. A placement mismatch names the generation and station. The receipt shows the first generation's detailed PDO review under `plan.pdo` and reports the total number of verified generations in `verified_pdo_generations`.
 
-Replay uses the typed `pdo_snapshot` inside a virtual readback report. The original transcript travels with the archived source. Audit hashes the entire supplied file and repeats the descriptor checks. The bundle copies the original file as `pdo.json`, and desktop **Review → Grouped capture → Verified source** shows the verified generation count after opening the bundle.
+With a complete virtual readback report, Workbench first rebuilds the report's setup from its raw topology probes and register replies. It matches each saved PDO request in order, checks the reply and Working Counter, and decodes SII identity, CoE descriptors and SII PDO categories. The reconstructed layout must agree with the saved `pdo_snapshot` before it is compared with the replay fixture. A standalone descriptor snapshot goes directly to the placement comparison.
+
+Audit hashes the entire supplied file. For a complete report, it repeats reconstruction and includes `verified_pdo_exchanges`. The bundle copies the source file as `pdo.json`. Desktop **Review → Grouped capture → Verified source** shows the verified generation count and, for a complete report, the verified exchange count. The transcript checks apply to the recorded virtual transaction sequence.
 
 Use all three evidence arguments when supplying separate FMMU and SyncManager snapshots. Older fixtures that lack raw setup register replies need that form. A single-frame inspection always needs both register snapshots for a PDO comparison.
 

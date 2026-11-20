@@ -3377,6 +3377,7 @@ def verify_group_pdo_against_recorded_setup(cli, destination):
     assert [d["readback"]["mapping_source"] for d in proof["devices"]] == ["coe", "sii"]
     audited = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, base, "--pdo", readback)
     assert audited["verified_rows"] == 12 and audited["verified_pdo_generations"] == 2
+    assert audited["verified_pdo_exchanges"] == len(exported["pdo_exchanges"])
     assert "differs from the rebuilt" in cli_call(cli, "verify-group-replay", manifest, fixture, receipt, base, success=False)
     altered_receipt = json.loads(receipt.read_bytes())
     altered_receipt["verified_pdo_generations"] = 1
@@ -3391,6 +3392,7 @@ def verify_group_pdo_against_recorded_setup(cli, destination):
     assert not (moved / "fmmu.json").exists() and not (moved / "sync-managers.json").exists()
     reopened = cli_call(cli, "verify-group-bundle", moved)["audit"]
     assert reopened["verified_pdo_generations"] == 2 and reopened["verified_rows"] == 12
+    assert reopened["verified_pdo_exchanges"] == 139
     altered_file = moved / "pdo.json"
     original = altered_file.read_bytes()
     changed = original.replace(b'"scenario": "clean"', b'"scenario": "other"', 1)
@@ -3459,6 +3461,81 @@ def verify_group_pdo_against_recorded_setup(cli, destination):
     dc_report = cli_call(cli, "replay-input-group", dc_manifest, dc_fixture, "--pdo", dc_pdo,
                          "--csv", destination / "reconnect.csv")
     assert dc_report["verified_pdo_generations"] == 2 and dc_report["counts"]["valid"] == 5
+
+
+def verify_group_pdo_transcript(cli, destination):
+    sample = ROOT / "samples"
+    manifest = sample / "input-group.json"
+    fixture = destination / "frames.json"
+    readback = destination / "pdo-readback.json"
+    cli_call(cli, "generate-group-replay", manifest, "--out", fixture)
+    report = cli_call(cli, "inspect-virtual-group-mapping", manifest, "--read-pdos", "--out", readback)
+    assert len(report["pdo_exchanges"]) == 139
+
+    def rejected(name, mutate, message):
+        document = json.loads(readback.read_bytes())
+        mutate(document)
+        path = destination / (name + ".json")
+        path.write_text(json.dumps(document), encoding="utf-8")
+        csv_base = destination / (name + ".csv")
+        receipt = destination / (name + "-replay.json")
+        error = cli_call(cli, "replay-input-group", manifest, fixture, "--pdo", path,
+                         "--csv", csv_base, "--out", receipt, success=False)
+        assert message in error, (name, error)
+        assert not csv_base.exists() and not receipt.exists()
+
+    def patch(frame, key, offset, value):
+        data = bytearray.fromhex(frame[key])
+        data[offset:offset + len(value)] = value
+        frame[key] = data.hex()
+
+    def change_coe(document):
+        for exchange in document["pdo_exchanges"]:
+            reply = bytes.fromhex(exchange["reply_hex"])
+            if reply[16] == 4 and reply[20:22] == b"\x40\x10" and reply[35:38] == b"\x00\x1a\x01":
+                patch(exchange, "reply_hex", 38, b"\x10\x04\x00\x60")
+                return
+        raise AssertionError("missing CoE mapping descriptor reply")
+
+    def change_sii(document):
+        for index, exchange in enumerate(document["pdo_exchanges"]):
+            request = bytes.fromhex(exchange["request_hex"])
+            if request[16] == 5 and request[18:22] == b"\x01\x10\x02\x05" and request[28:30] == b"\x08\x00":
+                patch(document["pdo_exchanges"][index + 2], "reply_hex", 26, b"\x7f")
+                return
+        raise AssertionError("missing SII identity exchange")
+
+    rejected("decoded-only", lambda d: d["pdo_snapshot"]["devices"][0]["identity"].update(revision=2),
+             "PDO snapshot differs from the saved exchanges")
+    rejected("coe-payload", change_coe, "PDO snapshot differs from the saved exchanges")
+    rejected("sii-payload", change_sii, "PDO snapshot differs from the saved exchanges")
+    rejected("request", lambda d: patch(d["pdo_exchanges"][0], "request_hex", 28, b"\x0a"),
+             "request differs from the expected frame")
+    rejected("wkc", lambda d: patch(d["pdo_exchanges"][0], "reply_hex", 32, b"\x00\x00"),
+             "Working Counter 1")
+    rejected("short-reply", lambda d: d["pdo_exchanges"][0].update(
+        reply_hex=d["pdo_exchanges"][0]["reply_hex"][:-2]), "reply length differs")
+    rejected("missing-tail", lambda d: d["pdo_exchanges"].pop(), "missing saved PDO exchange")
+    rejected("unexpected-tail", lambda d: d["pdo_exchanges"].append(d["pdo_exchanges"][-1]),
+             "unexpected trailing PDO exchanges")
+    rejected("absent-transcript", lambda d: d.pop("pdo_exchanges"), "has no PDO exchanges")
+    rejected("bad-report-topology", lambda d: patch(d["inspection"]["topology"]["after_mapping"], "reply_hex",
+                                                    28, b"\x01\x00"), "PDO report setup topology")
+    rejected("bad-report-mapping", lambda d: d["mapping_replies"].pop(), "PDO report setup mapping")
+
+    triple_manifest = sample / "input-group-three.json"
+    triple_readback = destination / "three-station-report.json"
+    triple = cli_call(cli, "inspect-virtual-group-mapping", triple_manifest, "--read-pdos", "--out", triple_readback)
+    frames = destination / "three-station-frames.json"
+    csv_base = destination / "three-station.csv"
+    receipt = destination / "three-station-replay.json"
+    cli_call(cli, "generate-group-replay", triple_manifest, "--out", frames)
+    replay = cli_call(cli, "replay-input-group", triple_manifest, frames, "--pdo", triple_readback,
+                      "--csv", csv_base, "--out", receipt)
+    assert replay["verified_pdo_generations"] == 2 and replay["counts"]["valid"] == 12
+    audit = cli_call(cli, "verify-group-replay", triple_manifest, frames, receipt, csv_base, "--pdo", triple_readback)
+    assert audit["verified_pdo_exchanges"] == len(triple["pdo_exchanges"])
+    assert audit["verified_rows"] == 12
 
 
 def verify_virtual_group_mapping(cli, destination):
@@ -4859,6 +4936,9 @@ def main():
     recorded_setup_pdo_destination = destination / "recorded-setup-pdo"
     recorded_setup_pdo_destination.mkdir()
     verify_group_pdo_against_recorded_setup(cli, recorded_setup_pdo_destination)
+    pdo_transcript_destination = destination / "recorded-pdo-transcript"
+    pdo_transcript_destination.mkdir()
+    verify_group_pdo_transcript(cli, pdo_transcript_destination)
     group_dc_destination = destination / "input-group-dc"
     group_dc_destination.mkdir()
     verify_group_dc(cli, group_dc_destination)

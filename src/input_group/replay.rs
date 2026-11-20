@@ -311,7 +311,8 @@ pub(super) fn prepare_capture<'a>(
     );
     let mut plan = group.inspection(None, None);
     let verified_pdo_generations = if let Some(fmmu) = options.fmmu {
-        let mut mapping = group.load_mapping_evidence(fmmu, options.sync_managers, options.pdo)?;
+        let mut mapping =
+            group.load_mapping_evidence(fmmu, options.sync_managers, options.pdo, stop)?;
         mapping.compare_stations(&fixture.stations);
         ensure!(
             mapping.valid(),
@@ -500,7 +501,7 @@ fn review_pdo_against_setup(
     setup: &[GenerationCheck],
     stop: Option<&AtomicBool>,
 ) -> Result<pdo_readback::Review> {
-    let (snapshot, source_sha256) = pdo_readback::load_snapshot(path)?;
+    let evidence = pdo_readback::Evidence::load(path, group, stop)?;
     let mut first = None;
     for generation in setup {
         check_cancel(stop)?;
@@ -510,13 +511,7 @@ fn review_pdo_against_setup(
                 generation.connection_generation
             )
         })?;
-        let review = pdo_readback::review_snapshot(
-            snapshot.clone(),
-            source_sha256.clone(),
-            &group.bindings,
-            &mapping.fmmu,
-            &mapping.sync_managers,
-        )?;
+        let review = evidence.review(group, &mapping.fmmu, &mapping.sync_managers)?;
         review.require_valid().with_context(|| {
             format!(
                 "TxPDO verification failed for generation {}",

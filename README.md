@@ -95,7 +95,7 @@ Run `ethercat-workbench-cli.exe inspect-input-group samples/input-group.json` to
 
 Run `ethercat-workbench-cli.exe rehearse-group-dc samples/input-group-dc.json` to check reference-clock distribution and follower readback on two virtual DC stations. The rehearsal collects grouped inputs only when the clock checks pass. [Two-station DC rehearsal](docs/input-group.md#rehearse-two-distributed-clocks)
 
-Use `inspect-virtual-group-mapping samples/input-group.json --read-pdos` to check group TxPDO layouts from modeled CoE and SII readback. [Virtual group TxPDO readback](docs/input-group.md#read-txpdo-descriptors-from-the-virtual-group) · [Replay with one PDO file](docs/input-group.md#replay-with-one-pdo-evidence-file)
+Use `inspect-virtual-group-mapping samples/input-group.json --read-pdos` to check group TxPDO layouts from modeled CoE and SII readback. Replay rebuilds the PDO snapshot from the report's saved CoE and SII exchanges. [Virtual group TxPDO readback](docs/input-group.md#read-txpdo-descriptors-from-the-virtual-group) · [Replay with one PDO file](docs/input-group.md#replay-with-one-pdo-evidence-file)
 
 Use `generate-group-dc-replay` to save the raw clock and input replies for CSV replay and audit. The receipt preserves clock rejections and the resulting gaps between valid samples. [Clock-qualified CSV replay](docs/input-group.md#replay-clock-qualified-inputs)
 

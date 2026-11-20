@@ -736,3 +736,11 @@ The Windows release CLI replayed a two-generation fixture using the complete 0.7
 Moving the CoE input from SM3 to SM2 in generation two preserved physical coverage and passed the FMMU and SyncManager checks. Standalone PDO validation identified the second generation and blocked CSV creation. A reordered PDO report, missing descriptor snapshot, wrong report source and schema 1 or 3 fixture without setup register replies also blocked the new route. The focused tests verified two-generation PDO checks in schema 4, 5 and 6. The 0.76.0 explicit-snapshot bundle and the 0.75.0 reconnect bundle still verified.
 
 Formatting, locked Clippy, 192 Rust tests, the locked Windows x64 MSVC build and the full Windows headless regression passed. The headless desktop showed both verified PDO setups in the grouped bundle. This workflow uses saved offline evidence. Live grouped readback and physical timing remain pending.
+
+## Version 0.78.0 archived PDO transcript verification (2026-11-20)
+
+The Windows release CLI rebuilt the two-station PDO snapshot from 139 saved exchanges after independently checking the report's topology probes and register replies. It verified all 12 CSV rows and both replay generations. The relocated bundle repeated the check and the headless desktop showed the exchange count under Verified source. A three-station readback also verified all 12 rows and retained the no-PDO middle station.
+
+Edits to the decoded snapshot, CoE descriptor payload or SII identity payload failed reconstruction. Changed request bytes, a bad WKC, a short reply, missing or trailing exchanges, and broken report topology or mapping also stopped replay before CSV creation. The 0.77.0 report-backed bundle verified with the new exchange count. The 0.76.0 descriptor-only bundle and 0.75.0 reconnect bundle still verified.
+
+Formatting, locked Clippy, 192 Rust tests, the locked Windows x64 MSVC build and the full Windows headless regression passed. The transcript checks use authored virtual frames. Live grouped mailbox readback and physical timing remain pending.

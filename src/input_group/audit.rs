@@ -56,6 +56,8 @@ pub struct Audit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_pdo_generations: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_pdo_exchanges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_clock_setup_generations: Option<usize>,
     pub capture_error: Option<String>,
     pub parts: Vec<Part>,
@@ -188,6 +190,11 @@ pub(super) fn verify_with_layout(
             })
             .filter(|count| *count > 0),
         verified_pdo_generations: expected.verified_pdo_generations,
+        verified_pdo_exchanges: expected
+            .plan
+            .pdo
+            .as_ref()
+            .and_then(|pdo| pdo.verified_exchanges),
         verified_clock_setup_generations: expected
             .setup_topology
             .as_ref()

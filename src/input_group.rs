@@ -20,6 +20,7 @@ use std::{
     fs::File,
     io::Read,
     path::{Component, Path, PathBuf},
+    sync::atomic::AtomicBool,
 };
 
 const MAX_DEVICES: usize = 16;
@@ -298,7 +299,7 @@ impl InputGroup {
         pdo: Option<&Path>,
         frame: Option<&Path>,
     ) -> Result<Inspection<'_>> {
-        let mapping = self.load_mapping_evidence(fmmu, sync_managers, pdo)?;
+        let mapping = self.load_mapping_evidence(fmmu, sync_managers, pdo, None)?;
         if let Some(frame) = frame {
             return self.inspect_saved_frame(frame, Some(mapping));
         }
@@ -312,6 +313,7 @@ impl InputGroup {
         fmmu: &Path,
         sync_managers: Option<&Path>,
         pdo: Option<&Path>,
+        stop: Option<&AtomicBool>,
     ) -> Result<MappingReview> {
         let fmmu = fmmu::review(fmmu, &self.bindings)?;
         let sync_managers = sync_managers
@@ -319,9 +321,8 @@ impl InputGroup {
             .transpose()?;
         let pdo = pdo
             .map(|path| {
-                pdo_readback::review(
-                    path,
-                    &self.bindings,
+                pdo_readback::Evidence::load(path, self, stop)?.review(
+                    self,
                     &fmmu,
                     sync_managers
                         .as_ref()

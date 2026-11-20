@@ -1,19 +1,22 @@
 //! Capture TxPDO descriptors from the authored ESCs using the in-memory wire.
-use super::super::{pdo_readback, sync_manager};
+use super::super::{decode_frame_hex, pdo_readback, sync_manager};
 use crate::{
     model::Identity,
     pdo::{Layout, MappingSource, Pdo, SyncManager},
+    review::check_cancel,
     sii::{MAX_CATEGORIES_BYTES, SiiPdos},
     virtual_esc::{GroupFixture, VirtualWire},
     wire::{Datagram, FPRD, FPWR, Frame},
 };
 use anyhow::{Context, Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::AtomicBool;
 
 const MAX_PDOS: usize = 64;
 const MAX_ENTRIES: usize = 1024;
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Exchange {
     request_hex: String,
     reply_hex: String,
@@ -25,78 +28,122 @@ pub(super) fn capture(
     sync_managers: &sync_manager::Review,
     first_index: u8,
 ) -> Result<(pdo_readback::Snapshot, Vec<Exchange>)> {
+    let mut exchanges = Vec::new();
     let mut reader = Reader {
-        wire,
         next_index: first_index,
-        exchanges: Vec::new(),
+        transfer: |frame: &Frame<1>| {
+            wire.send(frame.bytes())?;
+            let reply = wire
+                .receive()
+                .context("missing virtual PDO readback reply")?;
+            exchanges.push(Exchange {
+                request_hex: hex::encode(frame.bytes()),
+                reply_hex: hex::encode(reply),
+            });
+            Ok(reply.to_vec())
+        },
     };
-    let mut devices = Vec::with_capacity(fixture.stations.len());
-    for ((&station, model), sync_manager) in fixture
-        .stations
-        .iter()
-        .zip(fixture.devices)
-        .zip(&sync_managers.devices)
-    {
-        let identity = Identity {
-            vendor: reader.sii_word(station, 0x0008).map(u32::from_le_bytes)?,
-            product: reader.sii_word(station, 0x000a).map(u32::from_le_bytes)?,
-            revision: reader.sii_word(station, 0x000c).map(u32::from_le_bytes)?,
-        };
-        let inputs: Vec<_> = sync_manager
-            .input_buffers()
-            .map(|(slot, range)| (slot as u8, range.len()))
-            .collect();
-        let layout = if model.model.has_coe() {
-            reader.coe_layout(station, &inputs)
-        } else {
-            reader
-                .sii_categories(station)
-                .and_then(|raw| SiiPdos::parse(&raw))
-                .map(|sii| sii.layout(true, &inputs))
-        };
-        let (tx, tx_unavailable) = match layout {
-            Ok(layout) => (
-                Some(pdo_readback::TxLayout {
-                    mapping_source: layout.mapping_source,
-                    sync_managers: layout.sync_managers,
-                }),
-                None,
-            ),
-            Err(error) => (None, Some(format!("{error:#}"))),
-        };
-        devices.push(pdo_readback::Station {
-            station_address: station,
-            identity,
-            tx,
-            tx_unavailable,
-        });
-    }
-    Ok((
-        pdo_readback::Snapshot { schema: 1, devices },
-        reader.exchanges,
-    ))
+    let snapshot = reader.capture_snapshot(fixture, sync_managers, false)?;
+    Ok((snapshot, exchanges))
 }
 
-struct Reader<'a> {
-    wire: &'a mut VirtualWire,
+pub(super) fn rebuild(
+    exchanges: &[Exchange],
+    fixture: GroupFixture,
+    sync_managers: &sync_manager::Review,
+    first_index: u8,
+    stop: Option<&AtomicBool>,
+) -> Result<pdo_readback::Snapshot> {
+    let mut saved = exchanges.iter().enumerate();
+    let mut reader = Reader {
+        next_index: first_index,
+        transfer: |frame: &Frame<1>| {
+            check_cancel(stop)?;
+            let (index, exchange) = saved.next().context("missing saved PDO exchange")?;
+            let request = decode_frame_hex(&exchange.request_hex)?;
+            let reply = decode_frame_hex(&exchange.reply_hex)?;
+            ensure!(
+                request == frame.bytes(),
+                "saved PDO exchange {} request differs from the expected frame",
+                index + 1
+            );
+            ensure!(
+                reply.len() == request.len(),
+                "saved PDO exchange {} reply length differs from the request",
+                index + 1
+            );
+            Ok(reply)
+        },
+    };
+    let snapshot = reader.capture_snapshot(fixture, sync_managers, true)?;
+    ensure!(saved.next().is_none(), "unexpected trailing PDO exchanges");
+    Ok(snapshot)
+}
+
+struct Reader<F> {
     next_index: u8,
-    exchanges: Vec<Exchange>,
+    transfer: F,
 }
 
-impl Reader<'_> {
+impl<F: FnMut(&Frame<1>) -> Result<Vec<u8>>> Reader<F> {
+    fn capture_snapshot(
+        &mut self,
+        fixture: GroupFixture,
+        sync_managers: &sync_manager::Review,
+        strict: bool,
+    ) -> Result<pdo_readback::Snapshot> {
+        let mut devices = Vec::with_capacity(fixture.stations.len());
+        for ((&station, model), sync_manager) in fixture
+            .stations
+            .iter()
+            .zip(fixture.devices)
+            .zip(&sync_managers.devices)
+        {
+            let identity = Identity {
+                vendor: self.sii_word(station, 0x0008).map(u32::from_le_bytes)?,
+                product: self.sii_word(station, 0x000a).map(u32::from_le_bytes)?,
+                revision: self.sii_word(station, 0x000c).map(u32::from_le_bytes)?,
+            };
+            let inputs: Vec<_> = sync_manager
+                .input_buffers()
+                .map(|(slot, range)| (slot as u8, range.len()))
+                .collect();
+            let layout = if model.model.has_coe() {
+                self.coe_layout(station, &inputs)
+            } else {
+                self.sii_categories(station)
+                    .and_then(|raw| SiiPdos::parse(&raw))
+                    .map(|sii| sii.layout(true, &inputs))
+            };
+            let (tx, tx_unavailable) = match layout {
+                Ok(layout) => (
+                    Some(pdo_readback::TxLayout {
+                        mapping_source: layout.mapping_source,
+                        sync_managers: layout.sync_managers,
+                    }),
+                    None,
+                ),
+                Err(error) if strict => {
+                    return Err(error)
+                        .with_context(|| format!("PDO exchanges at station {station:#06x}"));
+                }
+                Err(error) => (None, Some(format!("{error:#}"))),
+            };
+            devices.push(pdo_readback::Station {
+                station_address: station,
+                identity,
+                tx,
+                tx_unavailable,
+            });
+        }
+        Ok(pdo_readback::Snapshot { schema: 1, devices })
+    }
+
     fn exchange(&mut self, frame: Frame<1>) -> Result<Vec<u8>> {
         self.next_index = self.next_index.wrapping_add(1);
-        self.wire.send(frame.bytes())?;
-        let reply = self
-            .wire
-            .receive()
-            .context("missing virtual PDO readback reply")?;
-        self.exchanges.push(Exchange {
-            request_hex: hex::encode(frame.bytes()),
-            reply_hex: hex::encode(reply),
-        });
+        let reply = (self.transfer)(&frame)?;
         let [(bytes, wkc)] = frame
-            .reply(reply)
+            .reply(&reply)
             .context("virtual PDO readback reply does not match its request")?;
         ensure!(
             wkc == 1,
@@ -264,7 +311,7 @@ struct Mailboxes {
     write: Mailbox,
 }
 
-impl Reader<'_> {
+impl<F: FnMut(&Frame<1>) -> Result<Vec<u8>>> Reader<F> {
     fn discover_mailboxes(&mut self, station: u16) -> Result<Mailboxes> {
         let count = self.read(station, 0x0005, 1)?[0];
         ensure!(
