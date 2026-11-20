@@ -2323,6 +2323,88 @@ def verify_input_group_replay(cli, destination):
     assert audit(nan_base, nan_receipt, source=nan_fixture)["complete"]
 
 
+def verify_dc_rehearsal(cli, destination):
+    profile = ROOT / "samples/virtual-dc.json"
+    period = 700_000
+    delay = 2_000_123
+    reference_at_setup = 1_000_000_000
+    start_register = (reference_at_setup + delay) // period * period
+    expected_options = ["--period-ns", period, "--start-delay-ns", delay, "--cycles", 5]
+
+    for scenario, activation, disable, count, reads, error in [
+        ("normal", 3, 0, 5, 5, None),
+        ("activation-mismatch", 1, 0, 0, 0, "activation readback differs"),
+        ("reference-wkc", 3, 0, 2, 1, "reference clock exchange 2"),
+        ("input-wkc", 3, 0, 2, 2, "input exchange 2 lacked WKC 1"),
+        ("disable-rejected", 3, 3, 5, 5, "deactivation was not confirmed"),
+    ]:
+        target = destination / f"{scenario}.json"
+        report = cli_call(cli, "rehearse-dc", profile, *expected_options, "--scenario", scenario,
+                          "--out", target, success=error is None)
+        assert report == json.loads(target.read_bytes())
+        assert report["schema"] == 1 and report["scope"] == "virtual_sync0_rehearsal"
+        assert report["scenario"] == scenario and report["requested_cycles"] == 5
+        assert report["timing_source"] == "authored_reference_clock_unpaced_host"
+        assert report["host_requested_cycle_us"] == 1000
+        assert report["stopped_al"] == [1, 0]
+        assert report["device"]["identity"] == json.loads(profile.read_bytes())["expected_identity"]
+        assert report["device"]["al_status"] == 4
+        trial = report["trial"]
+        assert trial["period_ns"] == period and trial["start_delay_ns"] == delay
+        assert trial["start_register_ns"] == {"value": start_register, "unavailable": None}
+        assert trial["reference_before_cycles_ns"]["value"] == reference_at_setup
+        assert trial["activation_after_disable"] == {"value": disable, "unavailable": None}
+        dc = report["synchronization"]["dc"]
+        assert dc["requested_sync"] == "virtual SYNC0"
+        assert dc["activation"]["value"] == activation and dc["assign_activate"]["value"] == activation << 8
+        assert dc["sync0_cycle_ns"]["value"] == period and dc["sync1_cycle_ns"]["value"] == 0
+        assert dc["cyclic_clock_distribution"] == (count > 0)
+        wire = report["wire"]
+        assert wire["dc_enable_requests"] == 1 and wire["dc_clock_distribution"] == count
+        assert wire["logical_reads"] == reads and wire["state_requests"] == [1, 2, 4, 1]
+        assert wire["logical_writes"] == wire["physical_output_writes"] == wire["op_requests"] == 0
+        assert len(report["cycles"]) == count
+        valid_reads = reads - int(scenario == "input-wkc")
+        for index, exchange in enumerate(report["cycles"][:valid_reads], 1):
+            assert exchange["index"] == index and exchange["reference_ns"] == reference_at_setup + index * period
+            assert exchange["reference_wkc"] == exchange["expected_reference_wkc"] == exchange["input_wkc"] == 1
+            assert exchange["al"]["raw"] == 4
+            assert len(exchange["tx_hex"]) == 16
+        if scenario == "reference-wkc":
+            failed = report["cycles"][1]
+            assert failed["reference_wkc"] == 0 and failed["reference_ns"] is None
+            assert failed["input_wkc"] is None and failed["tx_hex"] is None
+        if scenario == "input-wkc":
+            failed = report["cycles"][1]
+            assert failed["reference_ns"] == reference_at_setup + 2 * period
+            assert failed["reference_wkc"] == 1 and failed["input_wkc"] == 0
+            assert failed["al"]["raw"] == 4 and failed["tx_hex"] is None
+        if error is None:
+            assert report["error"] is None
+            assert [x["tx_hex"][:4] for x in report["cycles"]] == ["0000"] * 4 + ["0100"]
+        else:
+            assert error in report["error"]
+        assert report["setup_failure_al"] == ([4, 0] if scenario == "activation-mismatch" else None)
+
+    stale = cli_call(cli, "rehearse-dc", profile, "--period-ns", period, "--start-delay-ns", 0, success=False)
+    assert "future aligned time" in stale["error"] and stale["trial"]["activation_after_disable"]["value"] == 0
+    assert stale["stopped_al"] == [1, 0] and not stale["cycles"]
+    existing = destination / "normal.json"
+    contents = existing.read_bytes()
+    assert "exists" in cli_call(cli, "rehearse-dc", profile, *expected_options, "--out", existing, success=False)
+    assert contents == existing.read_bytes()
+    refused = destination / "refused.json"
+    wrong = cli_call(cli, "rehearse-dc", ROOT / "samples/virtual.json", *expected_options, "--out", refused, success=False)
+    assert "authored CoE/DC identity" in wrong and not refused.exists()
+    for key, value, reason in [
+        ("--period-ns", 0, "period must be positive"), ("--cycles", 65, "1–64 cycles"),
+    ]:
+        options = expected_options.copy()
+        options[options.index(key) + 1] = value
+        assert reason in cli_call(cli, "rehearse-dc", profile, *options, "--out", refused, success=False)
+        assert not refused.exists()
+
+
 def verify_output_plan(cli, destination):
     sample = ROOT / "samples"
     model_profiles = {
@@ -3467,6 +3549,9 @@ def main():
     output_timing_destination = destination / "output-timing"
     output_timing_destination.mkdir()
     verify_output_timing(cli, output_timing_destination)
+    dc_rehearsal_destination = destination / "dc-rehearsal"
+    dc_rehearsal_destination.mkdir()
+    verify_dc_rehearsal(cli, dc_rehearsal_destination)
     pcap_destination = destination / "pcap"
     pcap_destination.mkdir()
     verify_pcap(cli, pcap_destination)

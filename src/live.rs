@@ -1,5 +1,6 @@
 mod coe;
 mod pdo_readback;
+pub mod virtual_dc;
 pub mod virtual_output;
 
 use crate::wire::{APRD, BRD, Datagram, ETHERCRAB_REPLY, Frame, input_datagrams, input_reply};
@@ -415,6 +416,22 @@ fn safeop_on(
     port: &mut Transport,
     run: impl FnOnce(LiveBus<'_, '_>, &mut Report) -> Result<()>,
 ) -> Result<()> {
+    safeop_configured(profile, stop, view, report, port, None, run)
+}
+
+fn safeop_configured(
+    profile: &Profile,
+    stop: &AtomicBool,
+    view: &Mutex<Snapshot>,
+    report: &mut Report,
+    port: &mut Transport,
+    mut dc_trial: Option<&mut virtual_dc::Trial>,
+    run: impl FnOnce(LiveBus<'_, '_>, &mut Report) -> Result<()>,
+) -> Result<()> {
+    ensure!(
+        dc_trial.is_none() || matches!(&port.io, PacketIo::Virtual(_)),
+        "SYNC0 rehearsal requires in-memory transport"
+    );
     if stop.load(Relaxed) {
         return Ok(());
     }
@@ -452,7 +469,7 @@ fn safeop_on(
     );
 
     let setup = (|| {
-        let group = port
+        let mut group = port
             .drive(
                 &mut tx,
                 &mut rx,
@@ -479,6 +496,16 @@ fn safeop_on(
             "bus identity {observed} differs from profile {expected}"
         );
 
+        if dc_trial.is_some() {
+            ensure!(
+                sd.dc_support().enhanced(),
+                "SYNC0 rehearsal requires enhanced DC"
+            );
+            for mut member in group.iter_mut(&main) {
+                member.set_dc_sync(ethercrab::DcSync::Sync0);
+            }
+        }
+        let sd = group.subdevice(&main, 0)?;
         let protocols = port.drive(
             &mut tx,
             &mut rx,
@@ -549,7 +576,12 @@ fn safeop_on(
                 dc: DcReadback {
                     support: format!("{:?}", sd.dc_support()),
                     enhanced_sync_supported: sd.dc_support().enhanced(),
-                    requested_sync: "disabled".into(),
+                    requested_sync: if dc_trial.is_some() {
+                        "virtual SYNC0"
+                    } else {
+                        "disabled"
+                    }
+                    .into(),
                     initial_offset_setup_attempted: sd.dc_support().any(),
                     static_sync_iterations: 0,
                     cyclic_clock_distribution: false,
@@ -671,9 +703,22 @@ fn safeop_on(
                 .join(" / ")
         );
         check_cancel(Some(stop))?;
-        let _group = port
-            .drive(&mut tx, &mut rx, Some(stop), group.into_safe_op(&main))
-            .context("request SAFEOP")?;
+        if let Some(trial) = dc_trial.as_deref_mut() {
+            trial.attempted_station = Some(station);
+            let group = port
+                .drive(
+                    &mut tx,
+                    &mut rx,
+                    Some(stop),
+                    group.configure_dc_sync(&main, trial.configuration()),
+                )
+                .context("configure virtual SYNC0 with EtherCrab")?;
+            port.drive(&mut tx, &mut rx, Some(stop), group.into_safe_op(&main))
+                .context("request virtual SYNC0 SAFEOP")?;
+        } else {
+            port.drive(&mut tx, &mut rx, Some(stop), group.into_safe_op(&main))
+                .context("request SAFEOP")?;
+        }
         let al = port.drive(
             &mut tx,
             &mut rx,
@@ -714,14 +759,30 @@ fn safeop_on(
             sync.dc.sync0_cycle_ns = Some(sync0);
             sync.dc.sync1_cycle_ns = Some(sync1);
             report.dc_sync = sync.dc.summary();
-            sync.dc.confirm_disabled()?;
+            if let Some(trial) = dc_trial.as_deref_mut() {
+                trial.confirm_active(
+                    LiveBus {
+                        port,
+                        tx: &mut tx,
+                        rx: &mut rx,
+                        main: &main,
+                        station,
+                        input: profile.tx_bytes,
+                        timeout: Duration::ZERO,
+                    },
+                    stop,
+                    &sync.dc,
+                )?;
+            } else {
+                sync.dc.confirm_disabled()?;
+            }
         }
         report.sync_review =
             crate::sync_review::review(profile, report.synchronization.as_ref())?.map(Arc::new);
         Ok(station)
     })();
 
-    match setup {
+    let result = match setup {
         Ok(station) => {
             report.expected_wkc = 1;
             run(
@@ -755,17 +816,49 @@ fn safeop_on(
                     device.al_code = al[2];
                 }
             }
-            match request_init(port, &mut tx, &mut rx, &main) {
-                Ok(al) => {
-                    report.stopped_al = Some(al);
-                    if cancelled { Ok(()) } else { Err(error) }
-                }
-                Err(cleanup) => {
-                    Err(error.context(format!("INIT cleanup also failed: {cleanup:#}")))
+            if dc_trial
+                .as_ref()
+                .and_then(|trial| trial.attempted_station)
+                .is_some()
+            {
+                if cancelled { Ok(()) } else { Err(error) }
+            } else {
+                match request_init(port, &mut tx, &mut rx, &main) {
+                    Ok(al) => {
+                        report.stopped_al = Some(al);
+                        if cancelled { Ok(()) } else { Err(error) }
+                    }
+                    Err(cleanup) => {
+                        Err(error.context(format!("INIT cleanup also failed: {cleanup:#}")))
+                    }
                 }
             }
         }
+    };
+    if let Some(trial) = dc_trial
+        && let Some(station) = trial.attempted_station
+    {
+        let cleanup = trial.teardown(
+            LiveBus {
+                port,
+                tx: &mut tx,
+                rx: &mut rx,
+                main: &main,
+                station,
+                input: profile.tx_bytes,
+                timeout: Duration::ZERO,
+            },
+            report,
+        );
+        return match (result, cleanup) {
+            (Err(error), Err(cleanup)) => {
+                Err(error.context(format!("virtual DC teardown also failed: {cleanup:#}")))
+            }
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            _ => Ok(()),
+        };
     }
+    result
 }
 
 fn request_init<'a>(

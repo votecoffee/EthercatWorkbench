@@ -1,7 +1,7 @@
 //! Authored EtherCAT ESCs and in-memory transport for discovery and process data.
 use crate::model::Identity;
 use crate::wire::{APRD, BRD, LWR};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use clap::ValueEnum;
 use serde::Serialize;
 use std::{collections::VecDeque, time::Instant};
@@ -12,6 +12,12 @@ const MAILBOX_BYTES: usize = 64;
 const OUTPUTS: usize = 0x1100;
 const INPUTS: usize = 0x1200;
 pub(crate) const PD_WATCHDOG_STATUS: u16 = 0x0440;
+pub(crate) const DC_TIME: u16 = 0x0910;
+pub(crate) const DC_ACTIVATION: u16 = 0x0981;
+pub(crate) const DC_START: u16 = 0x0990;
+pub(crate) const DC_SYNC0_CYCLE: u16 = 0x09a0;
+const VIRTUAL_DC_STARTING_TIME: u64 = 1_000_000_000;
+const FRMW: u8 = 0x0e;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -216,6 +222,22 @@ struct OutputRehearsal {
     audit: OutputAudit,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DcRehearsalCase {
+    #[default]
+    Normal,
+    ActivationMismatch,
+    ReferenceWkc,
+    InputWkc,
+    DisableRejected,
+}
+
+struct DcRehearsal {
+    case: DcRehearsalCase,
+    reference_ns: u64,
+}
+
 pub(crate) struct VirtualWire {
     devices: Vec<VirtualEsc>,
     replies: VecDeque<Vec<u8>>,
@@ -225,6 +247,15 @@ pub(crate) struct VirtualWire {
 impl VirtualWire {
     pub fn new(model: VirtualModel, fault: VirtualFault) -> Self {
         Self::single(VirtualEsc::new(model, fault))
+    }
+
+    pub(crate) fn for_dc_rehearsal(case: DcRehearsalCase) -> Self {
+        let mut esc = VirtualEsc::new(VirtualModel::CoeDc, VirtualFault::None);
+        esc.dc_rehearsal = Some(DcRehearsal {
+            case,
+            reference_ns: VIRTUAL_DC_STARTING_TIME,
+        });
+        Self::single(esc)
     }
 
     pub(crate) fn for_output_rehearsal(
@@ -431,6 +462,7 @@ pub(crate) struct VirtualEsc {
     logical_starts: (u32, u32),
     logical_counter_offset: u16,
     output_rehearsal: Option<OutputRehearsal>,
+    dc_rehearsal: Option<DcRehearsal>,
     clock_started: Instant,
     transport_lost: bool,
     upload: Option<Upload>,
@@ -469,6 +501,7 @@ impl VirtualEsc {
             logical_starts: (0, 8),
             logical_counter_offset: 0,
             output_rehearsal: None,
+            dc_rehearsal: None,
             clock_started: Instant::now(),
             transport_lost: false,
             upload: None,
@@ -541,9 +574,19 @@ impl VirtualEsc {
                 0x04 | 0x05 => station == word(&self.registers[0x0010..]),
                 0x07 | 0x08 | 0x0a => true,
                 LWR if self.output_rehearsal.is_some() => true,
-                0x0e => {
+                FRMW => {
                     self.stats.dc_clock_distribution += 1;
-                    bail!("virtual fixture rejects cyclic DC clock distribution")
+                    ensure!(
+                        self.dc_rehearsal.is_some(),
+                        "virtual fixture rejects cyclic DC clock distribution"
+                    );
+                    ensure!(
+                        station == word(&self.registers[0x0010..])
+                            && register == DC_TIME
+                            && len == 8,
+                        "virtual DC rehearsal expects one designated reference-clock read"
+                    );
+                    true
                 }
                 0x0b | 0x0c => {
                     self.stats.logical_writes += 1;
@@ -582,6 +625,7 @@ impl VirtualEsc {
                         let address = u32::from(station) | (u32::from(register) << 16);
                         self.logical_read(address, data)?
                     }
+                    FRMW => self.reference_clock(data)?,
                     LWR => {
                         let address = u32::from(station) | (u32::from(register) << 16);
                         let written = self.logical_output(address, data);
@@ -670,6 +714,11 @@ impl VirtualEsc {
         {
             data.fill(0);
             data[0x0981 - register] = 3; // Authored unexpected device activation, no enable write was sent.
+        } else if register == usize::from(DC_TIME)
+            && data.len() == 8
+            && let Some(dc) = &self.dc_rehearsal
+        {
+            data.copy_from_slice(&dc.reference_ns.to_le_bytes());
         } else if register == 0x0508 {
             let word_address = usize::from(word(&self.registers[0x0504..]));
             let start = word_address * 2;
@@ -689,6 +738,22 @@ impl VirtualEsc {
             data.copy_from_slice(&self.registers[register..end.expect("checked")]);
         }
         Ok(())
+    }
+
+    fn reference_clock(&mut self, data: &mut [u8]) -> Result<u16> {
+        ensure!(
+            word(&self.registers[0x0130..]) == 4
+                && self.registers[usize::from(DC_ACTIVATION)] & 7 == 3,
+            "virtual reference clock requires active SYNC0 in SAFEOP"
+        );
+        let dc = self.dc_rehearsal.as_mut().expect("checked DC rehearsal");
+        if dc.case == DcRehearsalCase::ReferenceWkc && self.stats.dc_clock_distribution == 2 {
+            return Ok(0);
+        }
+        let period = dword(&self.registers[usize::from(DC_SYNC0_CYCLE)..]);
+        dc.reference_ns += u64::from(period);
+        data.copy_from_slice(&dc.reference_ns.to_le_bytes());
+        Ok(1)
     }
 
     fn write(&mut self, register: usize, data: &[u8]) -> Result<()> {
@@ -720,7 +785,31 @@ impl VirtualEsc {
                     self.stats.dc_activation_writes += 1;
                     if data[0] & 7 != 0 {
                         self.stats.dc_enable_requests += 1;
-                        bail!("virtual fixture rejects DC enable requests");
+                        let dc = self
+                            .dc_rehearsal
+                            .as_ref()
+                            .context("virtual fixture rejects DC enable requests")?;
+                        ensure!(
+                            data == [3]
+                                && word(&self.registers[0x0130..]) == 2
+                                && dword(&self.registers[usize::from(DC_SYNC0_CYCLE)..]) != 0,
+                            "virtual DC rehearsal expects configured SYNC0 in PREOP"
+                        );
+                        self.registers[register] = if dc.case == DcRehearsalCase::ActivationMismatch
+                        {
+                            1
+                        } else {
+                            3
+                        };
+                        return Ok(());
+                    }
+                    if self.registers[register] & 7 != 0
+                        && self
+                            .dc_rehearsal
+                            .as_ref()
+                            .is_some_and(|dc| dc.case == DcRehearsalCase::DisableRejected)
+                    {
+                        return Ok(());
                     }
                 }
                 _ => {}
@@ -1119,6 +1208,14 @@ impl VirtualEsc {
 
     fn logical_read(&mut self, address: u32, data: &mut [u8]) -> Result<u16> {
         self.stats.logical_reads += 1;
+        if self.stats.logical_reads == 2
+            && self
+                .dc_rehearsal
+                .as_ref()
+                .is_some_and(|dc| dc.case == DcRehearsalCase::InputWkc)
+        {
+            return Ok(0);
+        }
         if matches!(
             self.fault,
             VirtualFault::TransportError | VirtualFault::TransportLost
