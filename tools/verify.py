@@ -2111,6 +2111,9 @@ def verify_input_group_replay(cli, destination):
     def replay(base, *args, source=fixture, plan=manifest, success=True):
         return cli_call(cli, "replay-input-group", plan, source, "--csv", base, *args, success=success)
 
+    def audit(base, receipt, *args, source=fixture, plan=manifest, success=True):
+        return cli_call(cli, "verify-group-replay", plan, source, receipt, base, *args, success=success)
+
     def csv_records(base):
         parts = sorted(base.parent.glob(f"{base.stem}.*.csv"))
         if not parts:
@@ -2166,6 +2169,19 @@ def verify_input_group_replay(cli, destination):
         parts, observations = csv_records(base)
         assert len(parts) == expected_parts and not base.exists()
         check_rows(observations, expected)
+        audit_path = destination / f"{mode}-audit.json"
+        checked = audit(base, out, *options, "--out", audit_path)
+        assert checked == json.loads(audit_path.read_bytes())
+        assert checked["complete"] and checked["mode"] == mode
+        assert checked["verified_rows"] == checked["expected_rows"] == len(expected)
+        assert checked["receipt_sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
+        assert checked["fixture_sha256"] == result["fixture_sha256"]
+        for index, (entry, part) in enumerate(zip(checked["parts"], parts, strict=True)):
+            data = part.read_bytes()
+            assert entry["sha256"] == hashlib.sha256(data).hexdigest()
+            assert entry["bytes"] == len(data) and entry["rows"] == min(2, len(expected) - 2 * index)
+        assert "exists" in audit(base, out, *options, "--out", audit_path, success=False)
+        assert checked == json.loads(audit_path.read_bytes())
 
     plan = json.loads(manifest.read_bytes())
     for device in plan["devices"]:
@@ -2187,10 +2203,16 @@ def verify_input_group_replay(cli, destination):
 
     collision = destination / "collision.0002.csv"
     collision.write_bytes(b"must preserve this part\n")
-    partial = replay(destination / "collision.csv", "--rotate-rows", 2, success=False)
+    incomplete_base = destination / "collision.csv"
+    incomplete_receipt = destination / "collision.json"
+    partial = replay(incomplete_base, "--rotate-rows", 2, "--out", incomplete_receipt, success=False)
     assert collision.read_bytes() == b"must preserve this part\n"
     assert partial["capture"]["written"] == 2 and partial["capture"]["selected"] == 6
     assert "CSV replay incomplete" in partial["error"]
+    reopened = audit(incomplete_base, incomplete_receipt)
+    assert not reopened["complete"] and reopened["capture_error"] == partial["error"]
+    assert (reopened["verified_rows"], reopened["expected_rows"], len(reopened["parts"])) == (2, 6, 1)
+    assert collision.read_bytes() == b"must preserve this part\n"
     assert "already exists" in replay(destination / "no-csv.csv", "--out", destination / "every.json", success=False)
     assert not (destination / "no-csv.csv").exists()
 
@@ -2229,10 +2251,76 @@ def verify_input_group_replay(cli, destination):
     only_unmatched = destination / "only-unmatched.json"
     only_unmatched.write_text(json.dumps({**authored, "cycles": [authored["cycles"][3]]}), encoding="utf-8")
     empty_base = destination / "header-only.csv"
-    no_data = replay(empty_base, source=only_unmatched)
+    empty_receipt = destination / "header-only-receipt.json"
+    no_data = replay(empty_base, "--out", empty_receipt, source=only_unmatched)
     assert no_data["counts"]["unmatched_cycles"] == 1 and no_data["capture"]["written"] == 0
     assert no_data["valid_receive_spacing"]["count"] == 0 and no_data["valid_receive_spacing"]["p99_us"] is None
     assert csv_records(empty_base) == ([empty_base], [])
+    zero_audit = audit(empty_base, empty_receipt, source=only_unmatched)
+    assert zero_audit["complete"] and zero_audit["verified_rows"] == zero_audit["expected_rows"] == 0
+
+    receipt = destination / "every.json"
+    base = destination / "every.csv"
+    parts, _ = csv_records(base)
+    for name, column, replacement, reason in [
+        ("wrong-field", 5, "43", "differs from recorded input"),
+        ("wrong-time", 1, "101", "elapsed_us differs from replay"),
+        ("wrong-cycle", 4, "3", "cycle_index differs from replay"),
+        ("wrong-generation", 3, "8", "connection_generation differs from replay"),
+    ]:
+        altered_base = destination / f"{name}.csv"
+        for index, part in enumerate(parts, 1):
+            copied = destination / f"{name}.{index:04}.csv"
+            if index != 1:
+                shutil.copyfile(part, copied)
+                continue
+            with part.open("r", encoding="utf-8", newline="") as stream:
+                rows = list(csv.reader(stream, strict=True))
+            rows[1][column] = replacement
+            with copied.open("w", encoding="utf-8", newline="") as stream:
+                csv.writer(stream, lineterminator="\n").writerows(rows)
+        out = destination / f"{name}-audit.json"
+        assert reason in audit(altered_base, receipt, *options, "--out", out, success=False)
+        assert not out.exists()
+
+    for index, part in enumerate(parts, 1):
+        torn = destination / f"torn.{index:04}.csv"
+        torn.write_bytes(part.read_bytes()[:-1] if index == len(parts) else part.read_bytes())
+    assert "missing its final newline" in audit(destination / "torn.csv", receipt, *options, success=False)
+    assert "rebuilt cycles" in audit(base, receipt, success=False)  # Earlier receipt retained all three evidence files.
+    changed_fixture = destination / "changed-source.json"
+    changed_fixture.write_bytes(fixture.read_bytes() + b"\n")
+    assert "fixture SHA-256 differs" in audit(base, receipt, *options, source=changed_fixture, success=False)
+    tampered_receipt = destination / "tampered-receipt.json"
+    edited = json.loads(receipt.read_bytes())
+    edited["cycles"][2]["valid"] = True
+    tampered_receipt.write_text(json.dumps(edited), encoding="utf-8")
+    assert "rebuilt cycles" in audit(base, tampered_receipt, *options, success=False)
+    changed_plan = destination / "modified-plan"
+    changed_plan.mkdir()
+    copied_manifest = changed_plan / manifest.name
+    shutil.copyfile(manifest, copied_manifest)
+    for position, device in enumerate(json.loads(manifest.read_bytes())["devices"]):
+        data = (manifest.parent / device["profile"]).read_bytes()
+        (changed_plan / device["profile"]).write_bytes(data + (b"\n" if position == 1 else b""))
+    assert "profile/mapping evidence" in audit(base, receipt, *options, plan=copied_manifest, success=False)
+    shutil.copyfile(parts[0], destination / "missing.0001.csv")
+    assert "missing.0002.csv" in audit(destination / "missing.csv", receipt, *options, success=False)
+
+    nan_fixture = destination / "nan-bits.json"
+    nanos = json.loads(fixture.read_bytes())
+    nanos["cycles"] = nanos["cycles"][:2]
+    for index, cycle in enumerate(nanos["cycles"], 1):
+        packet = bytearray.fromhex(cycle["received_hex"][-1])
+        packet[30:34] = struct.pack("<I", 0x7fc00000 + index)
+        cycle["received_hex"][-1] = packet.hex()
+    nan_fixture.write_text(json.dumps(nanos), encoding="utf-8")
+    nan_base = destination / "nan.csv"
+    nan_receipt = destination / "nan-receipt.json"
+    assert replay(nan_base, "--on-change", "--out", nan_receipt, source=nan_fixture)["capture"]["written"] == 2
+    _, nan_rows = csv_records(nan_base)
+    assert [row["Position 0 Scaled counter"] for row in nan_rows] == ["NaN", "NaN"]
+    assert audit(nan_base, nan_receipt, source=nan_fixture)["complete"]
 
 
 def verify_pcap(cli, destination):

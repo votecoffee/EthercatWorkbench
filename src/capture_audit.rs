@@ -16,7 +16,7 @@ use std::{
 
 const MAX_RECORD: u64 = 1024 * 1024;
 const MAX_PARTS: u64 = 100_000;
-const MAX_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct SavedCapture {
@@ -393,25 +393,20 @@ pub(crate) fn verify_with_stop(
         })
         .context("cycle index bound overflow")?;
     let mut parts = Vec::new();
-    let contract = Contract {
-        saved: &saved,
-        ctx,
-        cap,
-        fields: &fields,
-        header: &header,
-        max_cycle,
-        stop,
-    };
     let mut total_bytes = 0;
     let mut cursor = Cursor::default();
     for index in 1..=cap.parts {
         let path = part_path(base, index, rotate)?;
-        let part = inspect(
+        let part = inspect_part(
             &path,
-            index,
-            &contract,
+            &header,
             MAX_BYTES - total_bytes,
-            &mut cursor,
+            stop,
+            |row_number, row| {
+                cursor
+                    .accept(row, &saved, ctx, cap, &fields, max_cycle)
+                    .with_context(|| format!("part {index}, data row {row_number}"))
+            },
         )
         .with_context(|| format!("CSV part {}", path.display()))?;
         let expected_rows = if rotate == 0 {
@@ -488,24 +483,14 @@ pub(crate) fn verify_with_stop(
     })
 }
 
-struct Contract<'a> {
-    saved: &'a SavedCapture,
-    ctx: &'a RunContext,
-    cap: &'a CaptureStats,
-    fields: &'a [&'a Field],
-    header: &'a [&'a str],
-    max_cycle: u64,
-    stop: Option<&'a AtomicBool>,
-}
-
-fn inspect(
+pub(crate) fn inspect_part(
     path: &Path,
-    index: u64,
-    contract: &Contract<'_>,
+    header: &[&str],
     limit: u64,
-    cursor: &mut Cursor,
+    stop: Option<&AtomicBool>,
+    mut accept: impl FnMut(u64, &csv::StringRecord) -> Result<()>,
 ) -> Result<Part> {
-    crate::review::check_cancel(contract.stop)?;
+    crate::review::check_cancel(stop)?;
     let file = File::open(path)?;
     let initial = file.metadata()?;
     ensure!(
@@ -517,16 +502,16 @@ fn inspect(
         digest: Sha256::new(),
         bytes: 0,
         limit,
-        stop: contract.stop,
+        stop,
     };
     let mut reader = BufReader::new(hashed);
     let mut line = Vec::new();
     let mut eol = None;
     let mut bom = false;
-    let start_rows = cursor.rows;
+    let mut rows = 0;
     let mut is_header = true;
     loop {
-        crate::review::check_cancel(contract.stop)?;
+        crate::review::check_cancel(stop)?;
         line.clear();
         if reader
             .by_ref()
@@ -545,23 +530,14 @@ fn inspect(
         eol = Some(crlf);
         if is_header {
             ensure!(
-                row.iter().eq(contract.header.iter().copied()),
+                row.iter().eq(header.iter().copied()),
                 "CSV header differs from selected fields/order"
             );
             bom = has_bom;
             is_header = false;
         } else {
-            let row_number = cursor.rows - start_rows + 1;
-            cursor
-                .accept(
-                    &row,
-                    contract.saved,
-                    contract.ctx,
-                    contract.cap,
-                    contract.fields,
-                    contract.max_cycle,
-                )
-                .with_context(|| format!("part {index}, data row {row_number}"))?;
+            rows += 1;
+            accept(rows, &row)?;
         }
     }
     ensure!(!is_header, "CSV part is empty (header missing)");
@@ -577,7 +553,7 @@ fn inspect(
         file: path.to_owned(),
         sha256: hex::encode(hashed.digest.finalize()),
         bytes: hashed.bytes,
-        rows: cursor.rows - start_rows,
+        rows,
         eol: if eol == Some(true) { "CRLF" } else { "LF" }.into(),
         utf8_bom: bom,
     })

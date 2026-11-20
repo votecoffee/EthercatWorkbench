@@ -45,17 +45,17 @@ struct RecordedCycle {
     received_hex: Vec<String>,
 }
 
-struct PreparedCycle {
-    receipt: Cycle,
-    payload: Option<Vec<u8>>,
+pub(super) struct PreparedCycle {
+    pub(super) receipt: Cycle,
+    pub(super) payload: Option<Vec<u8>>,
 }
 
 #[derive(Serialize)]
-struct Cycle {
-    connection_generation: u64,
-    cycle_index: u64,
+pub(super) struct Cycle {
+    pub(super) connection_generation: u64,
+    pub(super) cycle_index: u64,
     index: u8,
-    elapsed_us: Option<u64>,
+    pub(super) elapsed_us: Option<u64>,
     actual_wkc: Option<u16>,
     al: Vec<AlRead>,
     ignored_frames: usize,
@@ -91,7 +91,44 @@ pub struct Report<'a> {
     pub error: Option<String>,
 }
 
+pub(super) struct PreparedReplay<'a> {
+    pub(super) utc_start: String,
+    pub(super) fixture_sha256: String,
+    stations: Vec<u16>,
+    plan: Inspection<'a>,
+    pub(super) profile: Profile,
+    pub(super) cycles: Vec<PreparedCycle>,
+}
+
 pub fn run<'a>(group: &'a InputGroup, file: &Path, options: Options<'_>) -> Result<Report<'a>> {
+    let prepared = prepare_capture(group, file, &options)?;
+    let mut capture = Capture::start_replay(options.csv, &prepared.profile, &prepared.utc_start)?;
+    for PreparedCycle { receipt, payload } in &prepared.cycles {
+        if let Some(payload) = payload {
+            let mut data = [0; MAX_PAYLOAD];
+            data[..payload.len()].copy_from_slice(payload);
+            capture.submit_elapsed(
+                receipt
+                    .elapsed_us
+                    .expect("matched cycle has a receive timestamp"),
+                receipt.connection_generation,
+                receipt.cycle_index,
+                &data,
+            );
+        }
+    }
+    let (capture, result) = capture.finish();
+    let error = result
+        .err()
+        .map(|error| format!("CSV replay incomplete: {error:#}"));
+    Ok(prepared.into_report(capture, error))
+}
+
+pub(super) fn prepare_capture<'a>(
+    group: &'a InputGroup,
+    file: &Path,
+    options: &Options<'_>,
+) -> Result<PreparedReplay<'a>> {
     let (fixture, bytes) = read_json::<Fixture>(file, MAX_FIXTURE_BYTES)?;
     ensure!(
         fixture.schema == 1,
@@ -159,55 +196,56 @@ pub fn run<'a>(group: &'a InputGroup, file: &Path, options: Options<'_>) -> Resu
         mode: options.mode,
         ..Profile::default()
     };
-    let mut capture = Capture::start_replay(options.csv, &profile, &fixture.capture_start_utc)?;
-    let mut counts = Counts {
-        cycles: prepared.len(),
-        ..Counts::default()
-    };
-    let mut cycles = Vec::with_capacity(prepared.len());
-    for PreparedCycle { receipt, payload } in prepared {
-        counts.ignored_frames += receipt.ignored_frames;
-        if let Some(wkc) = receipt.actual_wkc {
-            counts.matched_replies += 1;
-            counts.wkc_mismatches += usize::from(wkc != group.expected_wkc);
-            counts.invalid_al += usize::from(receipt.al.iter().any(|al| !al.clean_safeop));
-        } else {
-            counts.unmatched_cycles += 1;
-        }
-        if let Some(payload) = payload {
-            counts.valid += 1;
-            let mut data = [0; MAX_PAYLOAD];
-            data[..payload.len()].copy_from_slice(&payload);
-            capture.submit_elapsed(
-                receipt
-                    .elapsed_us
-                    .expect("matched cycle has a receive timestamp"),
-                receipt.connection_generation,
-                receipt.cycle_index,
-                &data,
-            );
-        }
-        cycles.push(receipt);
-    }
-    let (capture, result) = capture.finish();
-    Ok(Report {
-        schema: 1,
-        source: "offline_group_replay",
+    ensure!(
+        !profile.tx.is_empty(),
+        "select at least one TxPDO field for CSV"
+    );
+    Ok(PreparedReplay {
+        utc_start: fixture.capture_start_utc,
         fixture_sha256: hex::encode(Sha256::digest(&bytes)),
         stations: fixture.stations,
         plan,
-        mode: options.mode,
-        rotate_rows: options.rotate_rows,
-        queue_capacity,
-        counts,
-        receive_spacing: spacing(cycles.iter()),
-        valid_receive_spacing: spacing(cycles.iter().filter(|cycle| cycle.valid)),
-        capture,
-        cycles,
-        error: result
-            .err()
-            .map(|error| format!("CSV replay incomplete: {error:#}")),
+        profile,
+        cycles: prepared,
     })
+}
+
+impl<'a> PreparedReplay<'a> {
+    pub(super) fn into_report(self, capture: CaptureStats, error: Option<String>) -> Report<'a> {
+        let mut counts = Counts {
+            cycles: self.cycles.len(),
+            ..Counts::default()
+        };
+        let mut cycles = Vec::with_capacity(self.cycles.len());
+        for PreparedCycle { receipt, .. } in self.cycles {
+            counts.ignored_frames += receipt.ignored_frames;
+            counts.valid += usize::from(receipt.valid);
+            if let Some(wkc) = receipt.actual_wkc {
+                counts.matched_replies += 1;
+                counts.wkc_mismatches += usize::from(wkc != self.plan.expected_wkc);
+                counts.invalid_al += usize::from(receipt.al.iter().any(|al| !al.clean_safeop));
+            } else {
+                counts.unmatched_cycles += 1;
+            }
+            cycles.push(receipt);
+        }
+        Report {
+            schema: 1,
+            source: "offline_group_replay",
+            fixture_sha256: self.fixture_sha256,
+            stations: self.stations,
+            plan: self.plan,
+            mode: self.profile.mode,
+            rotate_rows: self.profile.rotate_rows,
+            queue_capacity: self.profile.queue_capacity,
+            counts,
+            receive_spacing: spacing(cycles.iter()),
+            valid_receive_spacing: spacing(cycles.iter().filter(|cycle| cycle.valid)),
+            capture,
+            cycles,
+            error,
+        }
+    }
 }
 
 fn prepare(

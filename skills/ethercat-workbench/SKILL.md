@@ -35,6 +35,8 @@ Add `--pdo FILE` with the FMMU and SyncManager snapshots to compare each station
 
 Use `replay-input-group MANIFEST FIXTURE --csv NEW.csv [--out NEW.json]` to replay the authored group sequence or a supplied fixture. Use `--on-change` for selected-field changes and `--rotate-rows` for numbered parts. Preserve the supplied UTC anchor, elapsed receive offsets and generation/cycle indexes. CSV includes only valid group cycles. The receipt keeps unmatched candidates, WKC and AL quality, saved-clock spacing and writer losses. Optional saved FMMU, SyncManager and PDO checks gate the replay before it creates CSV.
 
+Use `verify-group-replay MANIFEST FIXTURE RECEIPT CSV_BASE [--out NEW.json]` with the original references and any mapping evidence used for capture. The command checks the rebuilt cycles, selected rows, typed values and part hashes. Read `complete` and the expected/written row counts. A matching prefix can coexist with a reported writer error. Preserve original evidence and write audit JSON to a new path.
+
 Use headless files/CLI by default. Desktop input, screenshots or recording need an explicit request in the current chat. Do not run the verification script's optional native GUI mode automatically.
 
 ## Desktop navigation

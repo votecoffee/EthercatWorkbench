@@ -98,6 +98,25 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Verify a saved group replay receipt and CSV against the original frames.
+    VerifyGroupReplay {
+        manifest: PathBuf,
+        fixture: PathBuf,
+        receipt: PathBuf,
+        csv: PathBuf,
+        /// Saved FMMU evidence used when creating the receipt.
+        #[arg(long)]
+        fmmu: Option<PathBuf>,
+        /// Saved SyncManager evidence used when creating the receipt.
+        #[arg(long, requires = "fmmu")]
+        sync_managers: Option<PathBuf>,
+        /// Saved TxPDO evidence used when creating the receipt.
+        #[arg(long, requires_all = ["fmmu", "sync_managers"])]
+        pdo: Option<PathBuf>,
+        /// Export the audit and CSV part hashes to a new JSON file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Read one existing Windows shared-memory input snapshot. Never opens an EtherCAT NIC.
     ReadShared {
         name: String,
@@ -480,6 +499,31 @@ fn main() -> Result<()> {
                 bail!("{error}");
             }
             Ok(())
+        }
+        Command::VerifyGroupReplay {
+            manifest,
+            fixture,
+            receipt,
+            csv,
+            fmmu,
+            sync_managers,
+            pdo,
+            out,
+        } => {
+            use ethercat_workbench::input_group::{InputGroup, audit};
+            let group = InputGroup::load(&manifest)?;
+            let checked = audit::verify(
+                &group,
+                &fixture,
+                &receipt,
+                &csv,
+                audit::Evidence {
+                    fmmu: fmmu.as_deref(),
+                    sync_managers: sync_managers.as_deref(),
+                    pdo: pdo.as_deref(),
+                },
+            )?;
+            inspection_export(&checked, out.as_deref())
         }
         Command::ReadShared {
             name,

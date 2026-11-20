@@ -93,7 +93,7 @@ For a read-only two-device example, run `ethercat-workbench-cli.exe scan-virtual
 
 Run `ethercat-workbench-cli.exe inspect-input-group samples/input-group.json` to review byte ranges and expected Working Counter for a two-device input read. Saved evidence options check AL status, FMMU coverage, physical SyncManager buffers and TxPDO assignment order before decoding. [Offline input groups](docs/input-group.md)
 
-Use `replay-input-group` with the bundled sequence to write valid grouped inputs to CSV, retain recorded receive timestamps and audit dropped or invalid cycles. [Grouped CSV replay](docs/input-group.md#replay-group-cycles-to-csv)
+Use `replay-input-group` to write valid grouped inputs to CSV with recorded receive timestamps. Run `verify-group-replay` to check the receipt and CSV values against the saved frame sequence. [Grouped CSV replay](docs/input-group.md#replay-group-cycles-to-csv)
 
 ```powershell
 .\ethercat-workbench-cli.exe nics

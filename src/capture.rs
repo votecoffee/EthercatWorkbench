@@ -31,6 +31,19 @@ pub(crate) const METADATA: [&str; 5] = [
     "cycle_index",
 ];
 
+pub(crate) fn selects_sample(
+    mode: LogMode,
+    fields: &[Field],
+    generation: u64,
+    data: &[u8],
+    previous: Option<(u64, &[u8])>,
+) -> bool {
+    mode == LogMode::Every
+        || previous.is_none_or(|(old_generation, old_data)| {
+            generation != old_generation || fields.iter().any(|field| field.changed(data, old_data))
+        })
+}
+
 struct Shared {
     queue: ArrayQueue<Sample>,
     done: AtomicBool,
@@ -151,15 +164,17 @@ impl Capture {
         cycle: u64,
         data: &[u8; MAX_PAYLOAD],
     ) {
-        if self.mode == LogMode::Change
-            && self.previous.as_ref().is_some_and(|previous| {
-                previous.generation == generation
-                    && self
-                        .fields
-                        .iter()
-                        .all(|f| !f.changed(&data[..self.len], &previous.data[..self.len]))
-            })
-        {
+        let previous = self
+            .previous
+            .as_ref()
+            .map(|sample| (sample.generation, &sample.data[..self.len]));
+        if !selects_sample(
+            self.mode,
+            &self.fields,
+            generation,
+            &data[..self.len],
+            previous,
+        ) {
             return;
         }
         self.selected += 1;

@@ -67,4 +67,16 @@ The replay uses the existing bounded CSV writer. Columns follow bus order and us
 
 The receipt records match and quality evidence by cycle, independent WKC and AL failures, ignored candidates, and selected/written rows and overruns. Receive spacing uses the saved clock, with exact nearest-rank percentiles for matched replies and valid input separately within each generation. The command replays without pacing and measures no host deadline or physical bus timing. A write failure leaves completed CSV parts and reports the incomplete capture.
 
+## Verify a saved group CSV
+
+```powershell
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group.json samples/input-group-replay.json .local/group-replay.json .local/group.csv --out .local/group-audit.json
+```
+
+Supply the original manifest, profiles, raw frame fixture, replay receipt, and CSV base name. Reuse any `--fmmu`, `--sync-managers` and `--pdo` evidence supplied when creating the capture. For rotation, give the base name without the numbered suffix.
+
+The audit rebuilds the recorded cycles, timing, and selection from the original inputs. It checks every row against the group payload, including the timestamp, sample index, generation, cycle index and typed field text. On-change verification uses the selected bits, so two distinct NaN encodings can correctly appear as consecutive `NaN` values. The audit checks headers and part boundaries and returns SHA-256 hashes of the saved receipt, raw frame fixture and every CSV part it read.
+
+A completed capture must contain all selected rows and sets `complete` to true. When the receipt records a writer failure, the audit can verify the exact saved prefix. It sets `complete` to false and retains the capture error. It reads only the declared parts and preserves the input files. Saved evidence covers the supplied offline sequence and mapping.
+
 Live SAFEOP sessions require exactly one isolated SubDevice. Live grouped acquisition remains on the [roadmap](../ROADMAP.md).

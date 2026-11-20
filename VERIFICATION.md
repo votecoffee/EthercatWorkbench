@@ -586,3 +586,11 @@ The authored two-device sequence contained nine cycles across two generations, i
 The release CLI checked matched and valid-input spacing independently within each generation. It rejected incoherent cycle order, missing or regressing receive times, malformed candidate order and invalid saved mapping evidence before creating CSV. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
 
 The replay uses the saved receive clock. Live grouped acquisition, native GUI interaction and physical bench timing remain pending.
+
+## Version 0.56.0 saved group replay audit (2026-11-20)
+
+The verifier rebuilt the selected rows from saved group Ethernet frames and metadata, including the original rotated 0.55.0 every-valid capture. It checked exact CSV values, timestamps, row indexes, generation transitions, rotation and raw part hashes. The focused CLI suite rejected plausible edited values, changed timestamps, invalid cycle or generation substitutions, changed fixture and profile bytes, altered receipt quality, omitted mapping evidence, and missing or unterminated parts.
+
+The on-change audit accepted two distinct NaN bit patterns rendered as identical text. The header-only capture verified with no selected rows. After a rotation collision, the audit verified the exact two-row saved prefix, reported the incomplete six-row capture and preserved the conflicting file. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
+
+The audit reconstructs the supplied offline evidence. Native GUI interaction, live grouped acquisition and physical bench timing remain pending.
