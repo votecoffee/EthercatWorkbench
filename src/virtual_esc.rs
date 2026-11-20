@@ -179,6 +179,7 @@ pub enum OutputRehearsalCase {
     PreloadWkc,
     OpReject,
     WriteReplyLost,
+    SafeStopReplyLost,
     InitReject,
 }
 
@@ -187,7 +188,18 @@ pub(crate) struct OutputAudit {
     pub(crate) preload_writes: u64,
     pub(crate) op_writes: u64,
     pub(crate) last_applied: Option<[u8; 2]>,
+    // OP entry and the two bounded OP writes. The last applied value is always retained.
+    pub(crate) applied_in_order: Vec<[u8; 2]>,
     pub(crate) outputs_active: bool,
+}
+
+impl OutputAudit {
+    fn applied(&mut self, bytes: [u8; 2]) {
+        if self.applied_in_order.len() < 3 {
+            self.applied_in_order.push(bytes);
+        }
+        self.last_applied = Some(bytes);
+    }
 }
 
 struct OutputRehearsal {
@@ -207,8 +219,8 @@ impl VirtualWire {
         Self::single(VirtualEsc::new(model, fault))
     }
 
-    pub(crate) fn for_output_rehearsal(case: OutputRehearsalCase) -> Self {
-        let mut esc = VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
+    pub(crate) fn for_output_rehearsal(model: VirtualModel, case: OutputRehearsalCase) -> Self {
+        let mut esc = VirtualEsc::new(model, VirtualFault::None);
         esc.output_rehearsal = Some(OutputRehearsal {
             case,
             preload: None,
@@ -554,7 +566,15 @@ impl VirtualEsc {
                         if written
                             && word(&self.registers[0x0130..]) == 8
                             && self.output_rehearsal.as_ref().is_some_and(|output| {
-                                output.case == OutputRehearsalCase::WriteReplyLost
+                                match output.case {
+                                    OutputRehearsalCase::WriteReplyLost => {
+                                        output.audit.op_writes == 1
+                                    }
+                                    OutputRehearsalCase::SafeStopReplyLost => {
+                                        output.audit.op_writes == 2
+                                    }
+                                    _ => false,
+                                }
                             })
                         {
                             drop_reply = true;
@@ -768,7 +788,7 @@ impl VirtualEsc {
         {
             self.registers[0x0130..0x0132].copy_from_slice(&8u16.to_le_bytes());
             output.audit.outputs_active = true;
-            output.audit.last_applied = Some(bytes);
+            output.audit.applied(bytes);
         } else {
             self.registers[0x0130..0x0132].copy_from_slice(&0x14u16.to_le_bytes());
             self.registers[0x0134..0x0136].copy_from_slice(&0x19u16.to_le_bytes());
@@ -796,7 +816,7 @@ impl VirtualEsc {
             }
             8 if output.audit.outputs_active => {
                 output.audit.op_writes += 1;
-                output.audit.last_applied = Some(bytes);
+                output.audit.applied(bytes);
             }
             _ => return false,
         }

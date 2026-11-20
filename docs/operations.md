@@ -53,7 +53,7 @@ Profiles use schema 1 with defaults for omitted settings and validation on load/
 .\ethercat-workbench-cli.exe stage-rx samples/output-staging.json --set '2=-1234' --out .local/staged.json
 ```
 
-In the GUI, inspect raw/typed inputs in **Inputs** (or **Offline decoder…**) and staged outputs in **Outputs**. Typed staging prepares a frozen preview, shows overlapping views and updates only the offline staged image after Apply. Saving or loading a profile preserves staged bytes for explicit use. The native cycle remains input-only. Use [`rehearse-output`](output-staging.md#rehearse-an-rxpdo-write) to exercise a staged CoE profile through a single simulated output exchange, with per-step WKC and AL evidence.
+In the GUI, inspect raw/typed inputs in **Inputs** (or **Offline decoder…**) and staged outputs in **Outputs**. Typed staging prepares a frozen preview, shows overlapping views and updates only the offline staged image after Apply. Saving or loading a profile preserves staged bytes for explicit use. The native cycle remains input-only. Use [`rehearse-output`](output-staging.md#rehearse-an-rxpdo-write) to exercise a staged CoE profile through a single simulated output exchange, with per-step WKC and AL evidence. An optional [frozen output plan](output-staging.md#review-a-bench-output-plan) adds the reviewed safe image and optional serial check to the virtual sequence.
 
 ## Exercise the pipeline headlessly
 

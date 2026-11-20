@@ -2323,6 +2323,91 @@ def verify_input_group_replay(cli, destination):
     assert audit(nan_base, nan_receipt, source=nan_fixture)["complete"]
 
 
+def verify_output_plan(cli, destination):
+    sample = ROOT / "samples"
+    model_profiles = {
+        "coe": "virtual.json", "sii": "virtual-sii.json", "coe_dc": "virtual-dc.json",
+        "coe_normal": "virtual-normal.json", "coe_segmented": "virtual-segmented.json",
+    }
+    for model, filename in model_profiles.items():
+        profile = json.loads((sample / filename).read_bytes())
+        profile["nic"] = r"\Device\NPF_{11111111-1111-1111-1111-111111111111}"
+        profile["staged_rx_hex"] = "3412"
+        profile_path = destination / f"{model}-profile.json"
+        profile_path.write_text(json.dumps(profile), encoding="utf-8")
+        plan_path = destination / f"{model}-plan.json"
+        options = ["--safe-hex", "00 00", "--watchdog-us", 10000, "--max-op-us", 1000,
+                   "--stop-observation", "Observe independent output indicator at zero", "--serial", 1]
+        review = cli_call(cli, "plan-output", profile_path, *options, "--out", plan_path)
+        assert review == json.loads(plan_path.read_bytes())
+        proposal = review["proposal"]
+        digest = review["plan_sha256"]
+        assert digest == hashlib.sha256(json.dumps(proposal, separators=(",", ":")).encode()).hexdigest()
+        assert proposal["scope"] == "offline_one_shot_output_plan" and proposal["rx_bytes"] == 2
+        assert proposal["nic"] == profile["nic"] and proposal["expected_identity"] == profile["expected_identity"]
+        assert proposal["staged_rx_hex"] == "3412"
+        assert proposal["stop"]["safe_rx_hex"] == "0000" and proposal["stop"]["expected_serial"] == 1
+        assert proposal["fields"][0]["safe"] == "0" and proposal["fields"][0]["staged"] == "4660"
+        assert cli_call(cli, "verify-output-plan", profile_path, plan_path, "--sha256", digest) == review
+        report = cli_call(cli, "rehearse-output", profile_path, "--plan", plan_path, "--plan-sha256", digest)
+        assert report["plan_sha256"] == digest and report["safe_rx_hex"] == "0000"
+        assert report["profile_sha256"] == proposal["profile_sha256"]
+        assert report["device"]["identity"] == proposal["expected_identity"]
+        assert report["device"]["serial"] == 1 and report["wire"]["model"] == model
+        assert report["pdo_verification"]["readback"]["rx"]["mapping_source"] == ("sii" if model == "sii" else "coe")
+        assert report["pdo_verification"]["rx"]["entries"][0]["sync_manager"] == (0 if model == "sii" else 2)
+        assert report["sequence"]["safe_stop"]["actual_wkc"] == 1
+        assert report["sequence"]["init"]["raw"] == 1 and report["error"] is None
+        assert report["wire"]["logical_writes"] == 3 and report["wire"]["dc_enable_requests"] == 0
+        assert report["modeled_outputs"]["applied_in_order"] == [[0, 0], [52, 18], [0, 0]]
+        assert report["modeled_outputs"]["last_applied"] == [0, 0]
+        assert not report["modeled_outputs"]["outputs_active"]
+        if model == "sii":
+            assert report["wire"]["coe_uploads"] == 0 and report["wire"]["sii_reads"] > 0
+        if model in ("coe_normal", "coe_segmented"):
+            assert report["wire"]["coe_" + model.removeprefix("coe_") + "_uploads"] > 0
+        if model != "coe":
+            continue
+
+        before = plan_path.read_bytes()
+        assert "exists" in cli_call(cli, "plan-output", profile_path, *options, "--out", plan_path, success=False)
+        assert plan_path.read_bytes() == before
+        for scenario, op_writes, applied, steps, code in [
+            ("write-reply-lost", 1, [[0, 0], [52, 18]], ("output",), "OP output write outcome unknown"),
+            ("safe-stop-reply-lost", 2, [[0, 0], [52, 18], [0, 0]], ("safe_stop",), "safe-image write outcome unknown"),
+        ]:
+            fault = cli_call(cli, "rehearse-output", profile_path, "--plan", plan_path,
+                             "--plan-sha256", digest, "--scenario", scenario, success=False)
+            assert code in fault["error"] and fault["wire"]["logical_writes"] == op_writes + 1
+            assert fault["modeled_outputs"]["applied_in_order"] == applied
+            for step in steps:
+                assert fault["sequence"][step]["actual_wkc"] is None
+            assert ("safe_stop" in fault["sequence"]) == (op_writes == 2)
+            assert fault["sequence"]["init"]["raw"] == 1 and not fault["modeled_outputs"]["outputs_active"]
+
+        changed = destination / "changed-profile.json"
+        for key, value in [("nic", "another NIC"), ("staged_rx_hex", "AABB"), ("name", "edited mapping")]:
+            changed.write_text(json.dumps(dict(profile, **{key: value})), encoding="utf-8")
+            assert "differs" in cli_call(cli, "verify-output-plan", changed, plan_path, "--sha256", digest, success=False)
+        tampered = destination / "tampered-plan.json"
+        edited = json.loads(before)
+        edited["proposal"]["stop"]["safe_rx_hex"] = "FF00"
+        tampered.write_text(json.dumps(edited), encoding="utf-8")
+        assert "differs" in cli_call(cli, "verify-output-plan", profile_path, tampered, "--sha256", digest, success=False)
+        assert "differs" in cli_call(cli, "verify-output-plan", profile_path, plan_path, "--sha256", "0" * 64, success=False)
+        refused = destination / "refused.json"
+        cli_call(cli, "rehearse-output", changed, "--plan", plan_path, "--plan-sha256", digest,
+                 "--out", refused, success=False)
+        assert not refused.exists()
+        cli_call(cli, "rehearse-output", profile_path, "--plan", plan_path, success=False)
+        mismatched = destination / "serial-plan.json"
+        other_serial = cli_call(cli, "plan-output", profile_path, *options[:-1], 2, "--out", mismatched)
+        rejected = cli_call(cli, "rehearse-output", profile_path, "--plan", mismatched, "--plan-sha256",
+                            other_serial["plan_sha256"], success=False)
+        assert "serial differs" in rejected["error"] and rejected["wire"]["logical_writes"] == 0
+        assert rejected["wire"]["op_requests"] == 0 and rejected["sequence"]["init"]["raw"] == 1
+
+
 def verify_output_rehearsal(cli, destination):
     sample = ROOT / "samples" / "virtual.json"
     source_bytes = sample.read_bytes()
@@ -3297,6 +3382,9 @@ def main():
     rehearsal_destination = destination / "output-rehearsal"
     rehearsal_destination.mkdir()
     verify_output_rehearsal(cli, rehearsal_destination)
+    output_plan_destination = destination / "output-plan"
+    output_plan_destination.mkdir()
+    verify_output_plan(cli, output_plan_destination)
     pcap_destination = destination / "pcap"
     pcap_destination.mkdir()
     verify_pcap(cli, pcap_destination)

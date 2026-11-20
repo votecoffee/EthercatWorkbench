@@ -45,6 +45,20 @@ Only selected bits are replaced in an existing image. Padding and unrelated byte
 
 The bundled fixture has bit fields, a signed setpoint, a big-endian float, a word-byte-swapped counter, raw bytes, an overlapping control-byte view and an F64 ratio. Its bytes and device-independent fields are authored examples, not vendor data or a physical output contract. Native GUI interaction and separately approved physical output work remain pending.
 
+## Review a bench output plan
+
+With the selected NIC and exact device identity set in the profile, stage a deliberate RxPDO image. Specify a separate full safe image, the device-specific watchdog interval, your proposed maximum time in OP, and how you will independently observe the stop. Supply `--serial` if the proposal should bind an observed serial. The following example uses an illustrative two-byte output and fixture timing values.
+
+```powershell
+$review = .\ethercat-workbench-cli.exe plan-output .local/rehearsal-profile.json --safe-hex '00 00' --watchdog-us 10000 --max-op-us 1000 --stop-observation 'Confirm zero using the independent indicator' --out .local/output-plan.json | ConvertFrom-Json
+.\ethercat-workbench-cli.exe verify-output-plan .local/rehearsal-profile.json .local/output-plan.json --sha256 $review.plan_sha256
+.\ethercat-workbench-cli.exe rehearse-output .local/rehearsal-profile.json --plan .local/output-plan.json --plan-sha256 $review.plan_sha256
+```
+
+Record the returned `plan_sha256` independently at review time. Verification rebuilds the proposal and checks it against that digest and the current effective profile. The proposal records the declared target, decoded staged and safe values, and planned operations. A changed profile, stop policy or image requires a new review. Use an authored virtual profile with a NIC label for the rehearsal. Physical approval, timing enforcement and device-specific stop observation remain separate.
+
+With a verified plan, the virtual sequence preloads the safe image, confirms OP, sends the staged image once, and restores the safe image after an acknowledged staged write. It then requests INIT and reads back AL status. A missing write reply stops further output sends and still attempts INIT. The independent model audit shows the sequence of images applied. Watchdog and OP limit values are recorded review inputs. Hardware enforcement and independent physical stop observation remain to be implemented and tested.
+
 ## Rehearse an RxPDO write
 
 ```powershell
@@ -52,7 +66,7 @@ The bundled fixture has bit fields, a signed setpoint, a big-endian float, a wor
 .\ethercat-workbench-cli.exe rehearse-output .local/rehearsal-profile.json --out .local/write-rehearsal.json
 ```
 
-The command uses one in-memory CoE device and an explicit two-byte staged image. EtherCrab verifies the modeled identity, image sizes and PDO mapping during setup. The rehearsal requires the entire RxPDO image to match the single mapped field, then reads clean SAFEOP, preloads the two bytes with LWR, requests and confirms OP, and sends the same two bytes once more in OP. Each write expects WKC 1. INIT cleanup reads the AL state separately from the state-write acknowledgement. This is a one-shot sequence. Device-specific watchdogs and cyclic output timing require separate bench work. [Beckhoff state machine](https://infosys.beckhoff.com/content/1033/el6688/1036980875.html), [Beckhoff ESC command reference](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+The command uses one in-memory device selected by the authored profile identity and an explicit two-byte staged image. Supported models are CoE, SII, CoE normal and segmented upload, and CoE with DC capability and SYNC disabled. EtherCrab verifies the modeled identity, image sizes and PDO mapping during setup. The rehearsal requires the entire RxPDO image to match the single mapped field, then reads clean SAFEOP, preloads the two bytes with LWR, requests and confirms OP, and sends the same two bytes once more in OP. Each write expects WKC 1. INIT cleanup reads the AL state separately from the state-write acknowledgement. This is a one-shot sequence. Device-specific watchdogs and cyclic output timing require separate bench work. [Beckhoff state machine](https://infosys.beckhoff.com/content/1033/el6688/1036980875.html), [Beckhoff ESC command reference](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
 
 | Scenario | Evidence to check |
 | --- | --- |
@@ -60,6 +74,7 @@ The command uses one in-memory CoE device and an explicit two-byte staged image.
 | `preload-wkc` | WKC 0 stops OP entry and the output exchange. |
 | `op-reject` | The state write acknowledges, but AL reports an error and the post-OP LWR is skipped. |
 | `write-reply-lost` | The post-OP LWR is attempted once. Its missing reply leaves the sender's outcome unknown. The separate model audit records application, then INIT is confirmed. |
+| `safe-stop-reply-lost` | The safe-image restore is attempted once using a verified plan. A missing reply is reported as unknown, then INIT is attempted. |
 | `init-reject` | The INIT request acknowledges, but AL still reports OP. The model retains active outputs and the rehearsal fails. |
 
 Supply `--scenario CASE` to select a fault. Faults return a nonzero exit and still produce a JSON report when the rehearsal started. The report binds the effective profile hash and staged bytes to the PDO verification, per-step WKC and AL readback. A null step means the operation was skipped. An attempted write with null `actual_wkc` means the matching acknowledgement was unavailable. `modeled_outputs.last_applied` is historical simulation evidence and `outputs_active` is its final state. Existing report destinations and the staged profile are preserved.

@@ -310,11 +310,44 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Propose a one-shot output trial for offline review.
+    PlanOutput {
+        profile: PathBuf,
+        #[arg(long)]
+        safe_hex: String,
+        /// Documented or proposed process-data watchdog interval in microseconds.
+        #[arg(long)]
+        watchdog_us: u64,
+        /// Proposed maximum time to stay in OP, in microseconds.
+        #[arg(long)]
+        max_op_us: u64,
+        /// How the operator will independently observe the safe stop.
+        #[arg(long)]
+        stop_observation: String,
+        /// Require this device serial when observing the device.
+        #[arg(long)]
+        serial: Option<u32>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Verify a saved output proposal against the reviewed SHA-256 and current profile.
+    VerifyOutputPlan {
+        profile: PathBuf,
+        plan: PathBuf,
+        #[arg(long)]
+        sha256: String,
+    },
     /// Rehearse staged RxPDO output, OP and INIT using an in-memory device.
     RehearseOutput {
         profile: PathBuf,
         #[arg(long, value_enum, default_value = "normal")]
         scenario: ethercat_workbench::live::virtual_output::OutputRehearsalCase,
+        /// Use the safe image and optional serial from this saved proposal.
+        #[arg(long, requires = "plan_sha256")]
+        plan: Option<PathBuf>,
+        /// Review digest recorded independently of the proposal file.
+        #[arg(long, requires = "plan")]
+        plan_sha256: Option<String>,
         /// Save the review, including failed rehearsal outcomes, to a new JSON file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -877,14 +910,58 @@ fn main() -> Result<()> {
             }
             output(plan.review())
         }
+        Command::PlanOutput {
+            profile,
+            safe_hex,
+            watchdog_us,
+            max_op_us,
+            stop_observation,
+            serial,
+            out,
+        } => {
+            use ethercat_workbench::output_plan::{StopPlan, prepare};
+            shared_outputs(out.as_deref(), None)?;
+            let profile = Profile::load(&profile)?;
+            let review = prepare(
+                &profile,
+                StopPlan {
+                    safe_rx_hex: safe_hex,
+                    watchdog_us,
+                    max_op_us,
+                    stop_observation,
+                    expected_serial: serial,
+                },
+            )?;
+            inspection_export(&review, out.as_deref())
+        }
+        Command::VerifyOutputPlan {
+            profile,
+            plan,
+            sha256,
+        } => {
+            let profile = Profile::load(&profile)?;
+            output(&ethercat_workbench::output_plan::verify(
+                &profile, &plan, &sha256,
+            )?)
+        }
         Command::RehearseOutput {
             profile,
             scenario,
+            plan,
+            plan_sha256,
             out,
         } => {
             shared_outputs(out.as_deref(), None)?;
             let profile = Profile::load(&profile)?;
-            let report = ethercat_workbench::live::virtual_output::run(&profile, scenario)?;
+            let review = plan
+                .as_deref()
+                .zip(plan_sha256.as_deref())
+                .map(|(path, digest)| {
+                    ethercat_workbench::output_plan::verify(&profile, path, digest)
+                })
+                .transpose()?;
+            let report =
+                ethercat_workbench::live::virtual_output::run(&profile, scenario, review.as_ref())?;
             inspection_export(&report, out.as_deref())?;
             if let Some(error) = report.error {
                 bail!("{error}");

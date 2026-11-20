@@ -13,6 +13,7 @@ pub mod input_group;
 pub mod mode_pdo_stage;
 pub mod model;
 pub mod mqtt_feed;
+pub mod output_plan;
 pub mod output_stage;
 pub mod pcap_inspect;
 pub mod pdo;
