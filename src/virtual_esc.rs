@@ -213,6 +213,7 @@ pub(crate) struct VirtualEsc {
     stats: VirtualStats,
     fault: VirtualFault,
     model: VirtualModel,
+    logical_starts: (u32, u32),
     clock_started: Instant,
     transport_lost: bool,
     upload: Option<Upload>,
@@ -248,6 +249,7 @@ impl VirtualEsc {
             },
             fault,
             model,
+            logical_starts: (0, 8),
             clock_started: Instant::now(),
             transport_lost: false,
             upload: None,
@@ -554,12 +556,19 @@ impl VirtualEsc {
                 && sm[4] & 0x0f == direction
                 && sm[6] & 1 == 1
         });
+        let (input_start, output_start) = self.logical_starts;
         let fmmus = match self.model {
             VirtualModel::Coe
             | VirtualModel::CoeDc
             | VirtualModel::CoeNormal
-            | VirtualModel::CoeSegmented => [(0, 0u32, INPUTS, 8, 1), (1, 8, OUTPUTS, 2, 2)],
-            VirtualModel::Sii => [(1, 0u32, INPUTS, 8, 1), (0, 8, OUTPUTS, 2, 2)],
+            | VirtualModel::CoeSegmented => [
+                (0, input_start, INPUTS, 8, 1),
+                (1, output_start, OUTPUTS, 2, 2),
+            ],
+            VirtualModel::Sii => [
+                (1, input_start, INPUTS, 8, 1),
+                (0, output_start, OUTPUTS, 2, 2),
+            ],
         };
         sms_ok
             && fmmus
@@ -935,6 +944,89 @@ mod tests {
             [word(&reply[18..]), word(&reply[32..]), word(&reply[48..])],
             [2, 2, 1]
         );
+    }
+
+    #[test]
+    fn group_plan_decodes_two_read_contributions_and_rejects_a_partial_lrd() {
+        use crate::{input_group::InputGroup, wire::LRD};
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/input-group.json");
+        let group = InputGroup::load(&path).unwrap();
+        let plan = group.inspect(None).unwrap();
+        assert_eq!((plan.input_bytes, plan.expected_wkc), (16, 2));
+        let mut wire =
+            VirtualWire::single(VirtualEsc::for_scan(VirtualModel::Coe, ScanCase::Normal));
+        wire.devices
+            .push(VirtualEsc::for_scan(VirtualModel::Sii, ScanCase::Normal));
+        for (index, (esc, device)) in wire.devices.iter_mut().zip(&plan.devices).enumerate() {
+            // Seed the authored SAFEOP layout directly. Only the LRD goes through the wire.
+            let input_start = u32::try_from(device.offset.unwrap()).unwrap();
+            let output_start = u32::try_from(plan.input_bytes + 2 * index).unwrap();
+            assert_eq!(device.tx_bytes, 8);
+            esc.logical_starts = (input_start, output_start);
+            esc.registers[0x0130] = 4;
+            esc.stats.logical_reads = (index * 4) as u64;
+            let (input_sm, output_sm, input_fmmu, output_fmmu) = if index == 0 {
+                (3, 2, 0, 1)
+            } else {
+                (1, 0, 1, 0)
+            };
+            for (sm, fmmu, logical, physical, length, mode) in [
+                (input_sm, input_fmmu, input_start, INPUTS, 8u16, 1),
+                (output_sm, output_fmmu, output_start, OUTPUTS, 2u16, 2),
+            ] {
+                let physical = u16::try_from(physical).unwrap().to_le_bytes();
+                let length = length.to_le_bytes();
+                let base = 0x0800 + sm * 8;
+                esc.registers[base..base + 7].copy_from_slice(&[
+                    physical[0],
+                    physical[1],
+                    length[0],
+                    length[1],
+                    if mode == 1 { 0 } else { 4 },
+                    0,
+                    1,
+                ]);
+                let base = 0x0600 + fmmu * 16;
+                esc.registers[base..base + 4].copy_from_slice(&logical.to_le_bytes());
+                esc.registers[base + 4..base + 13].copy_from_slice(&[
+                    length[0],
+                    length[1],
+                    0,
+                    7,
+                    physical[0],
+                    physical[1],
+                    0,
+                    mode,
+                    1,
+                ]);
+            }
+        }
+        let request = Frame::new(1, [Datagram::register(LRD, 0, 0, plan.input_bytes)]);
+        wire.send(request.bytes()).unwrap();
+        let [(payload, wkc)] = request.reply(wire.receive().unwrap()).unwrap();
+        let decoded = group.inspect(Some((payload, wkc))).unwrap();
+        assert_eq!(
+            decoded.devices[0].input.as_ref().unwrap().raw_hex,
+            "0000000000000000"
+        );
+        assert_eq!(
+            decoded.devices[1].input.as_ref().unwrap().raw_hex,
+            "010001000000803e"
+        );
+
+        wire.devices[1].registers[0x0130] = 2; // The downstream ESC stops contributing process data.
+        wire.send(request.bytes()).unwrap();
+        let [(partial, wkc)] = request.reply(wire.receive().unwrap()).unwrap();
+        assert_eq!(wkc, 1);
+        assert!(group.inspect(Some((partial, wkc))).is_err());
+        for audit in wire.chain_audits() {
+            assert_eq!(
+                audit.register_writes + audit.logical_writes + audit.physical_output_writes,
+                0
+            );
+            assert!(audit.state_requests.is_empty());
+        }
     }
 
     #[test]

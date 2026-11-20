@@ -23,6 +23,8 @@ The CLI is `ethercat-workbench-cli.exe` at a portable root, or `target/x86_64-pc
 
 Use `scan-virtual --case two-devices` to exercise read-only bus ordering and per-device audits. The `second-device-diagnostics-timeout` case retains both core reports. The `second-device-core-timeout` case fails discovery at zero-based position 1. Cyclic SAFEOP setup requires one isolated SubDevice.
 
+Use `inspect-input-group samples/input-group.json` to plan one byte-aligned input read from ordered, exact-identity profile references. The report includes position, source profile SHA-256, byte offset and expected LRD WKC; a zero-length TxPDO contributes no bytes or WKC. Supply both `--hex` and `--wkc` for offline typed decoding, and choose a new path for optional `--out`. Keep supplied bytes and WKC separate from identity, mapping and AL evidence. See `docs/input-group.md`.
+
 Use headless files/CLI by default. Desktop input, screenshots or recording need an explicit request in the current chat. Do not run the verification script's optional native GUI mode automatically.
 
 ## Desktop navigation

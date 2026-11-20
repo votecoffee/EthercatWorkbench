@@ -1539,6 +1539,79 @@ def verify_discovery(cli, destination):
     (destination/"scans.json").write_text(json.dumps(reports,indent=2),encoding="utf-8")
 
 
+def verify_input_group(cli, destination):
+    manifest = ROOT / "samples/input-group.json"
+    payload = "2a 00 01 00 00 00 80 3f 12 34 00 00 00 00 00 40"
+    plan = cli_call(cli, "inspect-input-group", manifest)
+    assert (plan["schema"], plan["source"], plan["logical_start"]) == (1, "offline_profiles", 0)
+    assert (plan["input_bytes"], plan["expected_wkc"], plan["actual_wkc"]) == (16, 2, None)
+    for index, device in enumerate(plan["devices"]):
+        assert (device["position"], device["offset"], device["tx_bytes"]) == (index, index * 8, 8)
+        assert device["input"] is None
+        assert device["identity"]["product"] == index + 1
+        profile = manifest.parent / device["profile"]
+        assert device["profile_sha256"] == hashlib.sha256(profile.read_bytes()).hexdigest()
+    out = destination / "decoded.json"
+    decoded = cli_call(cli, "inspect-input-group", manifest, "--hex", payload, "--wkc", 2, "--out", out)
+    assert decoded == json.loads(out.read_bytes()) and decoded["actual_wkc"] == 2
+    expected = [("2a0001000000803f", ["42", "true", "1"]), ("1234000000000040", ["13330", "false", "2"])]
+    for device, (raw, values) in zip(decoded["devices"], expected, strict=True):
+        assert device["input"]["raw_hex"] == raw
+        single = cli_call(cli, "decode", manifest.parent / device["profile"], raw)
+        assert device["input"]["fields"] == single
+        assert [f["value"] for f in single] == values
+
+    saved = out.read_bytes()
+    assert "existing paths are preserved" in cli_call(cli, "inspect-input-group", manifest, "--out", out, success=False)
+    assert out.read_bytes() == saved
+    invalid = destination / "no-invalid-output.json"
+    for wkc in (1, 3):
+        assert "payload decoding withheld" in cli_call(
+            cli, "inspect-input-group", manifest, "--hex", payload, "--wkc", wkc, "--out", invalid,
+            success=False,
+        )
+        assert not invalid.exists()
+    assert "expected 16 group input bytes" in cli_call(
+        cli, "inspect-input-group", manifest, "--hex", "00", "--wkc", 2, success=False,
+    )
+    for option, value, required in [("--hex", payload, "--wkc"), ("--wkc", 2, "--hex")]:
+        assert required in cli_call(cli, "inspect-input-group", manifest, option, value, success=False)
+
+    first, second = json.loads(manifest.read_bytes())["devices"]
+    first["profile"] = str((manifest.parent / first["profile"]).resolve())
+    second["profile"] = str((manifest.parent / second["profile"]).resolve())
+    def write_manifest(name, devices, schema=1):
+        path = destination / name
+        path.write_text(json.dumps({"schema": schema, "devices": devices}), encoding="utf-8")
+        return path
+
+    middle = {"position": 1, "profile": "zero-input.json", "identity": second["identity"]}
+    zero = destination / middle["profile"]
+    zero.write_bytes(b"\xef\xbb\xbf" + json.dumps({"expected_identity": middle["identity"]}).encode("utf-8"))
+    with_zero = write_manifest("zero-middle.json", [first, middle, {**second, "position": 2}])
+    witness = cli_call(cli, "inspect-input-group", with_zero, "--hex", payload, "--wkc", 2)
+    assert witness["expected_wkc"] == 2 and witness["input_bytes"] == 16
+    assert [d["offset"] for d in witness["devices"]] == [0, None, 8]
+    assert witness["devices"][1]["input"] is None
+    assert witness["devices"][1]["profile_sha256"] == hashlib.sha256(zero.read_bytes()).hexdigest()
+
+    big = destination / "full-input.json"
+    big.write_text(json.dumps({"expected_identity": first["identity"], "tx_bytes": 1024}), encoding="utf-8")
+    full = {**first, "profile": big.name}
+    assert cli_call(cli, "inspect-input-group", write_manifest("max.json", [full, middle]))["input_bytes"] == 1024
+    for name, devices, schema, message in [
+        ("schema", [first], 2, "unsupported input group schema"),
+        ("order", [second, first], 1, "expected position 0"),
+        ("identity", [first, {**second, "profile": first["profile"]}], 1, "position 1 profile must carry"),
+        ("empty", [{**middle, "position": 0}], 1, "at least one nonempty TxPDO image"),
+        ("oversize", [full, second], 1, "group input exceeds 1024 bytes"),
+        ("count", [{**first, "position": index} for index in range(17)], 1, "device positions"),
+    ]:
+        invalid_manifest = write_manifest(name + ".json", devices, schema)
+        assert message in cli_call(cli, "inspect-input-group", invalid_manifest, success=False)
+    (destination / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+
 def verify_pcap(cli, destination):
     """Authored PCAP records: no capture hardware or packet transmission."""
     fixture = json.loads((ROOT / "samples/synthetic-replay.json").read_text(encoding="utf-8"))
@@ -2194,6 +2267,9 @@ def main():
     discovery_destination = destination / "discovery"
     discovery_destination.mkdir()
     verify_discovery(cli, discovery_destination)
+    group_destination = destination / "input-group"
+    group_destination.mkdir()
+    verify_input_group(cli, group_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

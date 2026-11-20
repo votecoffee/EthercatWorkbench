@@ -47,6 +47,19 @@ enum Command {
     },
     /// Interpret an offline ESC register snapshot (no bus access).
     DecodeEsc { file: PathBuf },
+    /// Plan one grouped logical input read or decode its saved bytes offline.
+    InspectInputGroup {
+        manifest: PathBuf,
+        /// Complete LRD payload as hex byte pairs, with optional spaces.
+        #[arg(long, requires = "wkc")]
+        hex: Option<String>,
+        /// Actual LRD Working Counter supplied with the sample.
+        #[arg(long, requires = "hex")]
+        wkc: Option<u16>,
+        /// Export inspection JSON to a new file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Read one existing Windows shared-memory input snapshot. Never opens an EtherCAT NIC.
     ReadShared {
         name: String,
@@ -364,6 +377,17 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::DecodeEsc { file } => output(&ethercat_workbench::esc::load(&file)?),
+        Command::InspectInputGroup {
+            manifest,
+            hex,
+            wkc,
+            out,
+        } => {
+            let group = ethercat_workbench::input_group::InputGroup::load(&manifest)?;
+            let payload = hex.as_deref().map(payload_hex).transpose()?;
+            let inspection = group.inspect(payload.as_deref().zip(wkc))?;
+            inspection_export(&inspection, out.as_deref())
+        }
         Command::ReadShared {
             name,
             profile,

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "devices": [
+    {
+      "position": 0,
+      "profile": "virtual.json",
+      "identity": { "vendor": 16715776, "product": 1, "revision": 1 }
+    },
+    {
+      "position": 1,
+      "profile": "virtual-sii.json",
+      "identity": { "vendor": 16715776, "product": 2, "revision": 1 }
+    }
+  ]
+}

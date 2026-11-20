@@ -538,3 +538,11 @@ The in-memory chain returned broadcast Working Counter 2 and Working Counter 1 f
 The headless desktop test used the two-device fixture to verify physical NIC preflight scoping. The SAFEOP guard test stopped after discovery, before initialization or cyclic input. Per-device audits recorded zero register writes, logical I/O, EEPROM reads, mailbox traffic and state requests in the read-only scan cases.
 
 Formatting, Clippy, 180 locked offline Rust tests (138 library and 42 desktop), the Windows x64 MSVC release build and focused release CLI discovery checks passed. Native GUI interaction, physical discovery, cyclic SAFEOP input and 1 ms timing remain pending on the isolated bench. Multi-device cyclic acquisition remains on the roadmap.
+
+## Version 0.50.0 offline input groups (2026-11-20)
+
+The sample manifest bound two profile identities by position and planned a 16-byte LRD at logical address zero with expected WKC 2. The in-memory test seeded the CoE and SII devices' authored SAFEOP layouts, received distinct eight-byte contributions and decoded both slices. When the second ESC entered the authored PREOP state, WKC fell to 1 and the decoder withheld results. The exchanged datagrams made no register, logical or physical output writes and requested no state changes.
+
+The focused release CLI checks matched each typed value to the single-profile decoder and source profile SHA-256 to file bytes. Tests covered a zero-input position, the 1,024-byte group boundary, excessive payload size or device count, wrong WKC or length, inconsistent identity, wrong position order, unknown schema and protected JSON exports. Formatting, Clippy, 181 offline Rust tests (139 library and 42 desktop), and the Windows x64 MSVC release build passed.
+
+The group uses offline manifests and supplied bytes. Live grouped setup, per-device AL and mapping verification, cyclic logging and physical bench qualification remain pending. Live SAFEOP setup continues to require one isolated SubDevice.

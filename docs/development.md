@@ -31,6 +31,7 @@ Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supp
 | Windows host prerequisites | `runtime_check.rs`: bounded file headers/version resources and query-only service/registry metadata; no capture API, NIC ownership or service/configuration changes |
 | Native transport/setup | `live.rs`, `live/coe.rs`, `live/pdo_readback.rs`, `wire.rs`, `sii.rs`, `sync.rs`: selected-NIC Npcap/EtherCrab setup, bounded readback including setup-only CoE cycle/minimum snapshots and retained partial diagnostics, input-only LRD/AL cycles, INIT cleanup |
 | Virtual/replay evidence | `virtual_esc.rs`, `replay.rs`: authored memory/frame models, early-initializer compatibility injection receipts and write audits; they are not hardware acceptance |
+| Offline input groups | `input_group.rs`: bounded manifest/profile loads, exact identity per position, contiguous byte ranges, WKC check and local typed decoding. The grouped virtual LRD test seeds an authored layout and retains the single-device acquisition guard. |
 | Acquisition and quality | `run.rs`, `health.rs`: independent cycle worker, scheduler, preallocated send/all-reply/valid-input histograms, near-receive timestamps, generation/cycle identity, WKC/AL/input-loss state and summaries |
 | CSV pipeline | `capture.rs`: preallocated bounded samples, batched writer, rotation/flush and visible loss; keep file I/O off acquisition |
 | Read-only input HTTP | `http_feed.rs`: prebound loopback listener, bounded fixed-record handoff/history, worker-owned HTTP/decoding, freshness and independent feed losses |

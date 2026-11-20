@@ -24,6 +24,8 @@ Acknowledgement binds the full effective profile, run duration, normalized CSV d
 
 ## Choose the evidence and target
 
+Use [offline input groups](input-group.md) to review the logical byte ranges and expected WKC for an ordered set of profiles or decode a supplied LRD payload. Group profiles and payloads are reviewed entirely offline. Physical cyclic setup still requires one SubDevice.
+
 Use `samples/synthetic.json` for generated inputs, the matching `samples/virtual*.json` for the selected in-memory ESC model, and `samples/synthetic-replay.json` for authored raw-frame replay. They provide no physical device evidence. Put vendor ESI files, selected-NIC profiles, raw captures and receipts in ignored `.local/`.
 
 For a physical bench, first obtain the exact model/revision, licensed ESI location, isolated NIC identifier and input value plus an independent way to vary/observe it. The roadmap records the pending selection; a new chat should verify current user context. Do not assume that a matching byte count proves a matching device or PDO layout.
