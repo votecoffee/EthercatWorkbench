@@ -51,6 +51,8 @@ pub struct Audit {
     pub complete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_topology_generations: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_mapping_generations: Option<usize>,
     pub capture_error: Option<String>,
     pub parts: Vec<Part>,
     #[serde(skip)]
@@ -171,6 +173,16 @@ pub(super) fn verify_with_layout(
         verified_rows: cap.written,
         complete,
         verified_topology_generations: expected.setup_topology.as_ref().map(Vec::len),
+        verified_mapping_generations: expected
+            .setup_topology
+            .as_ref()
+            .map(|setup| {
+                setup
+                    .iter()
+                    .filter(|generation| generation.mapping.is_some())
+                    .count()
+            })
+            .filter(|count| *count > 0),
         capture_error: saved.error,
         parts,
         rotated: rotate != 0,

@@ -1,5 +1,8 @@
 //! Verify configured station order using the position-based traversal of the modeled wire.
-use super::super::{MAX_DATAGRAMS, decode_frame_hex};
+use super::{
+    super::{MAX_DATAGRAMS, decode_frame_hex},
+    RegisterReview,
+};
 use crate::{
     virtual_esc::VirtualWire,
     wire::{APRD, BRD, Datagram, Frame},
@@ -18,17 +21,28 @@ pub(crate) struct Recording {
     pub(crate) connection_generation: u64,
     before_mapping: ProbeReply,
     after_mapping: ProbeReply,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) mapping_replies: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
-pub(crate) struct GenerationCheck {
-    connection_generation: u64,
+pub(in crate::input_group) struct GenerationCheck {
+    pub(crate) connection_generation: u64,
     #[serde(flatten)]
     topology: Check,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::input_group) mapping: Option<RegisterReview>,
 }
 
 impl Recording {
-    pub(crate) fn verify(&self, expected_stations: &[u16]) -> Result<GenerationCheck> {
+    pub(crate) fn probe_indexes(&self) -> [u8; 2] {
+        [self.before_mapping.index, self.after_mapping.index]
+    }
+
+    pub(in crate::input_group) fn verify(
+        &self,
+        expected_stations: &[u16],
+    ) -> Result<GenerationCheck> {
         ensure!(
             self.before_mapping.index < self.after_mapping.index,
             "topology probe datagram indexes must increase"
@@ -49,6 +63,7 @@ impl Recording {
         Ok(GenerationCheck {
             connection_generation: self.connection_generation,
             topology,
+            mapping: None,
         })
     }
 }
@@ -75,11 +90,16 @@ impl Check {
         }
     }
 
-    pub(crate) fn recording(&self, connection_generation: u64) -> Recording {
+    pub(crate) fn recording(
+        &self,
+        connection_generation: u64,
+        mapping_replies: Vec<String>,
+    ) -> Recording {
         Recording {
             connection_generation,
             before_mapping: self.before_mapping.raw.clone(),
             after_mapping: self.after_mapping.raw.clone(),
+            mapping_replies: Some(mapping_replies),
         }
     }
 }

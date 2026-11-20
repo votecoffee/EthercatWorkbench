@@ -1,8 +1,11 @@
 //! Read and verify the grouped station order and register layout before cyclic input.
 pub(super) mod topology;
-use super::{InputGroup, Inspection, MappingReview, fmmu, fmmu::Read, sync_manager};
+use super::{
+    InputGroup, Inspection, MappingReview, decode_frame_hex, fmmu, fmmu::Read, sync_manager,
+};
 pub use crate::virtual_esc::GroupMappingScenario;
 use crate::{
+    review::check_cancel,
     virtual_esc::{
         GROUP_MODELS, GROUP_RX_BYTES, GROUP_STATIONS, GROUP_TX_BYTES, VirtualModel, VirtualStats,
         VirtualWire,
@@ -12,6 +15,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::AtomicBool;
 
 #[derive(Serialize)]
 pub struct Report<'a> {
@@ -21,6 +25,7 @@ pub struct Report<'a> {
     valid: bool,
     fmmu_snapshot: fmmu::Snapshot,
     sync_manager_snapshot: sync_manager::Snapshot,
+    mapping_replies: Vec<String>,
     inspection: Inspection<'a>,
     wire_audit: Vec<VirtualStats>,
 }
@@ -29,12 +34,18 @@ pub fn inspect_virtual(group: &InputGroup, scenario: GroupMappingScenario) -> Re
     validate_virtual_group(group)?;
     let mut wire = VirtualWire::for_group_replay();
     wire.apply_group_mapping_scenario(scenario);
-    let (fmmu_snapshot, sync_manager_snapshot, topology) = capture_registers(&mut wire, 0)?;
+    let Captured {
+        fmmu: fmmu_snapshot,
+        sm: sync_manager_snapshot,
+        topology,
+        replies: mapping_replies,
+    } = capture_registers(&mut wire, 0)?;
     let mapping = review(
         group,
+        &GROUP_STATIONS,
         fmmu_snapshot.clone(),
         sync_manager_snapshot.clone(),
-        topology,
+        Some(topology),
     )?;
     let valid = mapping.valid();
     let mut inspection = group.inspect(None)?;
@@ -46,6 +57,7 @@ pub fn inspect_virtual(group: &InputGroup, scenario: GroupMappingScenario) -> Re
         valid,
         fmmu_snapshot,
         sync_manager_snapshot,
+        mapping_replies,
         inspection,
         wire_audit: wire.chain_audits(),
     })
@@ -72,25 +84,74 @@ pub(super) fn require_valid_mapping(
     group: &InputGroup,
     wire: &mut VirtualWire,
     first_index: u8,
-) -> Result<MappingReview> {
-    let (fmmu, sync_manager, topology) = capture_registers(wire, first_index)?;
+) -> Result<(MappingReview, Vec<String>)> {
+    let Captured {
+        fmmu,
+        sm,
+        topology,
+        replies,
+    } = capture_registers(wire, first_index)?;
     ensure!(
         topology.valid,
         "virtual group topology preflight failed before cyclic reads"
     );
-    let mapping = review(group, fmmu, sync_manager, topology)?;
+    let mapping = review(group, &GROUP_STATIONS, fmmu, sm, Some(topology))?;
     ensure!(
         mapping.valid(),
         "virtual group FMMU or SyncManager preflight failed before cyclic reads"
     );
-    Ok(mapping)
+    Ok((mapping, replies))
+}
+
+#[derive(Serialize)]
+pub(super) struct RegisterReview {
+    pub(super) fmmu: fmmu::Review,
+    pub(super) sync_managers: sync_manager::Review,
+}
+
+pub(super) fn verify_recorded_mapping(
+    group: &InputGroup,
+    stations: &[u16],
+    before: u8,
+    after: u8,
+    replies: &[String],
+    stop: Option<&AtomicBool>,
+) -> Result<RegisterReview> {
+    ensure!(
+        after.checked_sub(before).map(usize::from) == Some(replies.len() + 1),
+        "mapping reply count differs from the setup probe indexes"
+    );
+    let mut index = before + 1;
+    let mut replies = replies.iter();
+    let (fmmu, sm) = read_registers(stations, &mut index, &mut |_| {
+        check_cancel(stop)?;
+        decode_frame_hex(
+            replies
+                .next()
+                .context("missing setup mapping register reply")?,
+        )
+    })?;
+    ensure!(
+        index == after && replies.next().is_none(),
+        "unexpected setup mapping register replies"
+    );
+    let mapping = review(group, stations, fmmu, sm, None)?;
+    ensure!(
+        mapping.valid(),
+        "recorded FMMU or SyncManager mapping failed setup verification"
+    );
+    Ok(RegisterReview {
+        fmmu: mapping.fmmu,
+        sync_managers: mapping.sync_managers.expect("setup SyncManager review"),
+    })
 }
 
 fn review(
     group: &InputGroup,
+    stations: &[u16],
     fmmu: fmmu::Snapshot,
     sm: sync_manager::Snapshot,
-    topology: topology::Check,
+    topology: Option<topology::Check>,
 ) -> Result<MappingReview> {
     let fmmu_hash = snapshot_hash(&fmmu)?;
     let sm_hash = snapshot_hash(&sm)?;
@@ -100,9 +161,9 @@ fn review(
         fmmu,
         sync_managers: Some(sync_managers),
         pdo: None,
-        topology: Some(topology),
+        topology,
     };
-    mapping.compare_stations(&GROUP_STATIONS);
+    mapping.compare_stations(stations);
     Ok(mapping)
 }
 
@@ -110,36 +171,55 @@ fn snapshot_hash(snapshot: &impl Serialize) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(snapshot)?)))
 }
 
-fn capture_registers(
-    wire: &mut VirtualWire,
-    mut index: u8,
-) -> Result<(fmmu::Snapshot, sync_manager::Snapshot, topology::Check)> {
+struct Captured {
+    fmmu: fmmu::Snapshot,
+    sm: sync_manager::Snapshot,
+    topology: topology::Check,
+    replies: Vec<String>,
+}
+
+fn capture_registers(wire: &mut VirtualWire, mut index: u8) -> Result<Captured> {
+    let before = topology::read(wire, &mut index, &GROUP_STATIONS)?;
+    let mut replies = Vec::new();
+    let (fmmu, sm) = read_registers(&GROUP_STATIONS, &mut index, &mut |frame| {
+        wire.send(frame.bytes())?;
+        let reply = wire.receive().context("missing virtual register reply")?;
+        replies.push(hex::encode(reply));
+        Ok(reply.to_vec())
+    })?;
+    let after = topology::read(wire, &mut index, &GROUP_STATIONS)?;
+    Ok(Captured {
+        fmmu,
+        sm,
+        topology: topology::Check::new(before, after),
+        replies,
+    })
+}
+
+fn read_registers(
+    stations: &[u16],
+    index: &mut u8,
+    exchange: &mut impl FnMut(&Frame<1>) -> Result<Vec<u8>>,
+) -> Result<(fmmu::Snapshot, sync_manager::Snapshot)> {
     let mut fmmu = fmmu::Snapshot {
         schema: 1,
-        devices: Vec::with_capacity(GROUP_STATIONS.len()),
+        devices: Vec::with_capacity(stations.len()),
     };
     let mut sm = sync_manager::Snapshot {
         schema: 1,
-        devices: Vec::with_capacity(GROUP_STATIONS.len()),
+        devices: Vec::with_capacity(stations.len()),
     };
-    let before = topology::read(wire, &mut index, &GROUP_STATIONS)?;
-    for station in GROUP_STATIONS {
-        let (count, slots) = read_bank::<16>(
-            wire,
-            &mut index,
-            station,
-            0x0004,
-            0x0600,
-            fmmu::MAX_CHANNELS,
-        )?;
+    for &station in stations {
+        let (count, slots) =
+            read_bank::<16>(exchange, index, station, 0x0004, 0x0600, fmmu::MAX_CHANNELS)?;
         fmmu.devices.push(fmmu::Station {
             station_address: station,
             count,
             slots,
         });
         let (count, slots) = read_bank::<8>(
-            wire,
-            &mut index,
+            exchange,
+            index,
             station,
             0x0005,
             0x0800,
@@ -151,14 +231,13 @@ fn capture_registers(
             slots,
         });
     }
-    let after = topology::read(wire, &mut index, &GROUP_STATIONS)?;
-    Ok((fmmu, sm, topology::Check::new(before, after)))
+    Ok((fmmu, sm))
 }
 
 type ChannelReads<const N: usize> = (Read<u8>, Vec<Read<[u8; N]>>);
 
 fn read_bank<const N: usize>(
-    wire: &mut VirtualWire,
+    exchange: &mut impl FnMut(&Frame<1>) -> Result<Vec<u8>>,
     index: &mut u8,
     station: u16,
     count_register: u16,
@@ -168,29 +247,31 @@ fn read_bank<const N: usize>(
     let Read {
         value: [value],
         wkc,
-    } = read_register(wire, index, station, count_register)?;
+    } = read_register(exchange, index, station, count_register)?;
     let count = Read { value, wkc };
     let mut slots = Vec::new();
     if count.wkc == 1 && usize::from(count.value) <= max_channels {
         for slot in 0..count.value {
             let offset = start + u16::from(slot) * N as u16;
-            slots.push(read_register(wire, index, station, offset)?);
+            slots.push(read_register(exchange, index, station, offset)?);
         }
     }
     Ok((count, slots))
 }
 
 fn read_register<const N: usize>(
-    wire: &mut VirtualWire,
+    exchange: &mut impl FnMut(&Frame<1>) -> Result<Vec<u8>>,
     index: &mut u8,
     station: u16,
     offset: u16,
 ) -> Result<Read<[u8; N]>> {
     let frame = Frame::new(*index, [Datagram::register(FPRD, station, offset, N)]);
     *index = index.wrapping_add(1);
-    wire.send(frame.bytes())?;
-    let [(bytes, wkc)] = wire.receive().and_then(|reply| frame.reply(reply))
-        .with_context(|| format!("missing matching virtual register reply for station {station:#06x}, register {offset:#06x}"))?;
+    let label = || format!("register {offset:#06x} at station {station:#06x}");
+    let reply = exchange(&frame).with_context(label)?;
+    let [(bytes, wkc)] = frame
+        .reply(&reply)
+        .with_context(|| format!("reply does not match {}", label()))?;
     Ok(Read {
         wkc,
         value: bytes
@@ -220,8 +301,10 @@ mod tests {
             assert!(error.to_string().contains("topology preflight failed"));
             assert!(wire.chain_audits().iter().all(|esc| esc.logical_reads == 0));
 
-            let (fmmu, sync_managers, topology) = capture_registers(&mut wire, 0).unwrap();
-            let mapping = review(&group, fmmu, sync_managers, topology).unwrap();
+            let Captured {
+                fmmu, sm, topology, ..
+            } = capture_registers(&mut wire, 0).unwrap();
+            let mapping = review(&group, &GROUP_STATIONS, fmmu, sm, Some(topology)).unwrap();
             assert!(mapping.fmmu.valid);
             assert!(mapping.sync_managers.unwrap().valid);
 

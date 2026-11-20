@@ -1,5 +1,5 @@
 //! Produce replay candidates from an authored two-device virtual wire.
-use super::{Fixture, InputGroup, MODELED_UTC, RecordedCycle, TOPOLOGY_FIXTURE_SCHEMA};
+use super::{Fixture, InputGroup, MAPPING_FIXTURE_SCHEMA, MODELED_UTC, RecordedCycle};
 use crate::{
     input_group::preflight,
     virtual_esc::{GROUP_MODELS, GROUP_STATIONS, GroupDownstream, VirtualWire},
@@ -42,11 +42,12 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
         if cycle_index == 1 {
             // Leave a distinct index range for the register reads in each generation.
             let first_index = if connection_generation == 1 { 0 } else { 32 };
-            let mapping = preflight::require_valid_mapping(group, &mut wire, first_index)?;
+            let (mapping, replies) =
+                preflight::require_valid_mapping(group, &mut wire, first_index)?;
             let topology = mapping
                 .topology
                 .context("missing verified setup topology")?;
-            setup_topology.push(topology.recording(connection_generation));
+            setup_topology.push(topology.recording(connection_generation, replies));
         }
         let frame = group.expected_frame(index, &GROUP_STATIONS)?;
         wire.send(frame.bytes())?;
@@ -86,7 +87,7 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
         "virtual group replay expected one logical read per device and cycle, with zero writes"
     );
     Ok(Fixture {
-        schema: TOPOLOGY_FIXTURE_SCHEMA,
+        schema: MAPPING_FIXTURE_SCHEMA,
         virtual_scenario: Some(scenario),
         virtual_dc: None,
         capture_start_utc: MODELED_UTC.into(),

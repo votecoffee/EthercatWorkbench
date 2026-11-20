@@ -6,7 +6,10 @@ use super::{
     AlRead, InputGroup, Inspection,
     clock_rehearsal::{ClockCheck, ClockFrames, ClockRecording},
     decode_al_reads, decode_frame_hex,
-    preflight::topology::{GenerationCheck, Recording},
+    preflight::{
+        self,
+        topology::{GenerationCheck, Recording},
+    },
     read_json, validate_stations,
 };
 use crate::{
@@ -24,7 +27,8 @@ use std::{path::Path, sync::atomic::AtomicBool};
 const MAX_FIXTURE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CYCLES: usize = 4096;
 const MAX_CANDIDATES: usize = 64;
-pub(super) const TOPOLOGY_FIXTURE_SCHEMA: u32 = 3;
+const TOPOLOGY_FIXTURE_SCHEMA: u32 = 3;
+pub(super) const MAPPING_FIXTURE_SCHEMA: u32 = 4;
 pub(super) const MODELED_UTC: &str = "2026-01-01T00:00:00.000000Z";
 
 pub struct Options<'a> {
@@ -200,10 +204,13 @@ pub(super) fn prepare_capture<'a>(
         &fixture.setup_topology,
     ) {
         (1, None, _, None) | (2, Some(_), None, None) => {}
-        (TOPOLOGY_FIXTURE_SCHEMA, None, Some(_), Some(_))
-        | (TOPOLOGY_FIXTURE_SCHEMA, Some(_), None, Some(_)) => {}
-        (TOPOLOGY_FIXTURE_SCHEMA, _, _, None) => {
-            bail!("schema 3 group replay requires setup topology probes")
+        (TOPOLOGY_FIXTURE_SCHEMA | MAPPING_FIXTURE_SCHEMA, None, Some(_), Some(_))
+        | (TOPOLOGY_FIXTURE_SCHEMA | MAPPING_FIXTURE_SCHEMA, Some(_), None, Some(_)) => {}
+        (TOPOLOGY_FIXTURE_SCHEMA | MAPPING_FIXTURE_SCHEMA, _, _, None) => {
+            bail!(
+                "group replay schema {} requires setup topology probes",
+                fixture.schema
+            )
         }
         _ => bail!(
             "unsupported group replay schema or source metadata {}",
@@ -230,7 +237,16 @@ pub(super) fn prepare_capture<'a>(
     let setup_topology = fixture
         .setup_topology
         .as_ref()
-        .map(|probes| verify_topology(probes, &fixture.stations, &fixture.cycles, stop))
+        .map(|probes| {
+            verify_setup(
+                group,
+                probes,
+                &fixture.stations,
+                &fixture.cycles,
+                fixture.schema == MAPPING_FIXTURE_SCHEMA,
+                stop,
+            )
+        })
         .transpose()?;
     ensure!(
         options.sync_managers.is_none() || options.fmmu.is_some(),
@@ -245,6 +261,9 @@ pub(super) fn prepare_capture<'a>(
             "saved mapping evidence failed; review it with inspect-input-group before replay"
         );
         mapping.attach(&mut plan);
+        if let Some(setup) = &setup_topology {
+            require_consistent_mapping(setup, &plan, stop)?;
+        }
     } else {
         ensure!(
             options.pdo.is_none(),
@@ -349,10 +368,12 @@ impl<'a> PreparedReplay<'a> {
     }
 }
 
-fn verify_topology(
+fn verify_setup(
+    group: &InputGroup,
     probes: &[Recording],
     stations: &[u16],
     cycles: &[RecordedCycle],
+    require_mapping: bool,
     stop: Option<&AtomicBool>,
 ) -> Result<Vec<GenerationCheck>> {
     ensure!(
@@ -371,14 +392,59 @@ fn verify_topology(
             recording.connection_generation == generation,
             "setup topology records do not match generation {generation}"
         );
-        findings.push(
-            recording
-                .verify(stations)
-                .with_context(|| format!("setup topology for generation {generation}"))?,
-        );
+        let mut verified = recording
+            .verify(stations)
+            .with_context(|| format!("setup topology for generation {generation}"))?;
+        verified.mapping = match (require_mapping, &recording.mapping_replies) {
+            (true, Some(replies)) => {
+                let [before, after] = recording.probe_indexes();
+                Some(
+                    preflight::verify_recorded_mapping(
+                        group, stations, before, after, replies, stop,
+                    )
+                    .with_context(|| format!("setup mapping for generation {generation}"))?,
+                )
+            }
+            (true, None) => bail!("missing setup mapping replies for generation {generation}"),
+            (false, Some(_)) => bail!("schema 3 cannot include mapping replies"),
+            (false, None) => None,
+        };
+        findings.push(verified);
     }
     ensure!(probes.next().is_none(), "unmatched setup topology records");
     Ok(findings)
+}
+
+fn require_consistent_mapping(
+    setup: &[GenerationCheck],
+    plan: &Inspection<'_>,
+    stop: Option<&AtomicBool>,
+) -> Result<()> {
+    let fmmu = plan.fmmu.as_ref().expect("supplied FMMU evidence");
+    let expected_fmmu = serde_json::to_value(&fmmu.devices)?;
+    let expected_sm = plan
+        .sync_managers
+        .as_ref()
+        .map(|sm| serde_json::to_value(&sm.devices))
+        .transpose()?;
+    for generation in setup {
+        check_cancel(stop)?;
+        if let Some(mapping) = &generation.mapping {
+            ensure!(
+                serde_json::to_value(&mapping.fmmu.devices)? == expected_fmmu,
+                "saved FMMU snapshot differs from recorded setup mapping for generation {}",
+                generation.connection_generation
+            );
+            if let Some(expected) = &expected_sm {
+                ensure!(
+                    serde_json::to_value(&mapping.sync_managers.devices)? == *expected,
+                    "saved SyncManager snapshot differs from recorded setup mapping for generation {}",
+                    generation.connection_generation
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn prepare(

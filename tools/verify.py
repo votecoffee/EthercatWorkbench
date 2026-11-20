@@ -2192,7 +2192,7 @@ def verify_group_dc_replay(cli, destination):
     fixture = destination / "stale.json"
     authored = cli_call(cli, "generate-group-dc-replay", manifest, "--period-ns", 700_000,
                         "--cycles", 8, "--scenario", "follower-stale", "--out", fixture)
-    assert json.loads(fixture.read_bytes()) == authored and authored["schema"] == 3
+    assert json.loads(fixture.read_bytes()) == authored and authored["schema"] == 4
     policy = authored["virtual_dc"]
     assert (policy["scenario"], policy["period_ns"], policy["difference_limit_ns"]) == ("follower-stale", 700_000, 500)
     assert bytes.fromhex(policy["sync0_hex"])[12:14] == b"\x88\xa4"
@@ -2216,6 +2216,9 @@ def verify_group_dc_replay(cli, destination):
     assert report["virtual_dc"] == policy
     assert len(report["setup_topology"]) == 1
     assert report["setup_topology"][0]["valid"]
+    assert report["setup_topology"][0]["mapping"]["fmmu"]["valid"]
+    assert report["setup_topology"][0]["mapping"]["sync_managers"]["valid"]
+    assert len(authored["setup_topology"][0]["mapping_replies"]) == 16
     assert report["fixture_sha256"] == hashlib.sha256(before).hexdigest()
     assert report["counts"]["valid"] == report["counts"]["matched_replies"] == 7
     assert report["counts"]["unmatched_cycles"] == 0 and report["counts"]["clock_rejections"] == 1
@@ -2258,6 +2261,7 @@ def verify_group_dc_replay(cli, destination):
     bundled = cli_call(cli, "verify-group-bundle", relocated)
     assert bundled["audit"]["verified_rows"] == 7
     assert bundled["audit"]["verified_topology_generations"] == 1
+    assert bundled["audit"]["verified_mapping_generations"] == 1
 
     empty = destination / "no-accepted-cycles.json"
     cli_call(cli, "generate-group-dc-replay", manifest, "--difference-limit-ns", 249,
@@ -2324,7 +2328,9 @@ def verify_group_dc_replay(cli, destination):
     result = run(legacy_base, legacy_receipt, legacy)
     assert result["counts"]["valid"] == 7 and result["counts"]["clock_rejections"] == 1
     assert "setup_topology" not in result
-    assert "verified_topology_generations" not in audit(legacy_base, legacy_receipt, legacy)
+    legacy_audit = audit(legacy_base, legacy_receipt, legacy)
+    assert "verified_topology_generations" not in legacy_audit
+    assert "verified_mapping_generations" not in legacy_audit
 
 
 def verify_input_group_replay(cli, destination):
@@ -3079,8 +3085,21 @@ def verify_replay_setup_topology(cli, destination):
     fixture = destination / "topology.json"
     captured = cli_call(cli, "generate-group-replay", manifest, "--out", fixture)
     probes = captured["setup_topology"]
-    assert captured["schema"] == 3 and [p["connection_generation"] for p in probes] == [1, 2]
+    assert captured["schema"] == 4 and [p["connection_generation"] for p in probes] == [1, 2]
     assert [p["before_mapping"]["index"] for p in probes] == [0, 32]
+    expected_registers = []
+    for station, sm_count in ((4096, 4), (4097, 2)):
+        expected_registers += [(station, 0x0004, 1), (station, 0x0600, 16),
+                               (station, 0x0610, 16), (station, 0x0005, 1)]
+        expected_registers += [(station, 0x0800 + slot * 8, 8) for slot in range(sm_count)]
+    for record in probes:
+        start = record["before_mapping"]["index"] + 1
+        assert record["after_mapping"]["index"] == start + len(expected_registers)
+        for i, (text, (station, reg, width)) in enumerate(zip(record["mapping_replies"], expected_registers, strict=True), start):
+            raw = bytes.fromhex(text)
+            assert raw[12:14] == b"\x88\xa4" and raw[16:18] == bytes([4, i])
+            assert struct.unpack_from("<HHH", raw, 18) == (station, reg, width)
+            assert struct.unpack_from("<H", raw, 26 + width)[0] == 1
     base = destination / "clean.csv"
     receipt = destination / "verified.json"
     replay = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", base, "--out", receipt)
@@ -3094,7 +3113,10 @@ def verify_replay_setup_topology(cli, destination):
             assert report[phase]["count_wkc"] == 2
             assert [p["station_address"] for p in report[phase]["positions"]] == [0x1000, 0x1001]
     audit = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, base)
-    assert audit["verified_topology_generations"] == 2 and audit["verified_rows"] == 12
+    assert audit["verified_topology_generations"] == audit["verified_mapping_generations"] == 2
+    assert audit["verified_rows"] == 12
+    for entry in replay["setup_topology"]:
+        assert entry["mapping"]["fmmu"]["valid"] and entry["mapping"]["sync_managers"]["valid"]
 
     def change_reply(data, *, offset, value):
         reply = data["setup_topology"][1]["after_mapping"]
@@ -3114,6 +3136,16 @@ def verify_replay_setup_topology(cli, destination):
         change_reply(data, offset=40, value=0x1001)
         change_reply(data, offset=56, value=0x1000)
 
+    def mutate_mapping(data, ordinal, offset, value):
+        replies = data["setup_topology"][1]["mapping_replies"]
+        raw = bytearray.fromhex(replies[ordinal])
+        raw[offset] = value
+        replies[ordinal] = raw.hex()
+
+    def swap_mapping_frames(data):
+        replies = data["setup_topology"][1]["mapping_replies"]
+        replies[1], replies[2] = replies[2], replies[1]
+
     for name, mutate, message in [
         ("missing-probes", lambda d: d.pop("setup_topology"), "requires setup topology"),
         ("missing-generation", lambda d: d["setup_topology"].pop(), "missing setup topology for generation 2"),
@@ -3125,6 +3157,15 @@ def verify_replay_setup_topology(cli, destination):
         ("reversed-stations", reversed_stations, "fail count, station order or stability"),
         ("unstable-alias", lambda d: change_reply(d, offset=58, value=0x44), "fail count, station order or stability"),
         ("wrong-position", lambda d: change_reply(d, offset=48, value=66), "auto-increment address differs"),
+        ("mapping-absent", lambda d: d["setup_topology"][1].pop("mapping_replies"), "missing setup mapping replies"),
+        ("mapping-short", lambda d: d["setup_topology"][1]["mapping_replies"].pop(), "mapping reply count differs"),
+        ("mapping-reordered", swap_mapping_frames, "reply does not match register"),
+        ("mapping-wrong-station", lambda d: mutate_mapping(d, 1, 18, 17), "reply does not match register"),
+        ("mapping-count-wkc", lambda d: mutate_mapping(d, 0, 27, 0), "reply does not match register"),
+        ("mapping-slot-wkc", lambda d: mutate_mapping(d, 1, 42, 2), "recorded FMMU or SyncManager mapping failed"),
+        ("mapping-logical-shift", lambda d: mutate_mapping(d, 1, 26, 1), "recorded FMMU or SyncManager mapping failed"),
+        ("mapping-sm-disabled", lambda d: mutate_mapping(d, 7, 32, 0), "recorded FMMU or SyncManager mapping failed"),
+        ("mapping-schema-downgrade", lambda d: d.update(schema=3), "schema 3 cannot include mapping replies"),
     ]:
         data = json.loads(fixture.read_bytes())
         mutate(data)
@@ -3138,6 +3179,46 @@ def verify_replay_setup_topology(cli, destination):
         assert message in failure
         assert not blocked_csv.exists() and not blocked_receipt.exists()
 
+    conflicting = ROOT / "samples/input-group-fmmu.json"
+    failure = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", blocked_csv,
+                       "--fmmu", conflicting, success=False)
+    assert "saved FMMU snapshot differs from recorded setup mapping" in failure
+    assert not blocked_csv.exists()
+
+    register_report = cli_call(cli, "inspect-virtual-group-mapping", manifest)
+    matching_fmmu = destination / "matching-fmmu.json"
+    matching_fmmu.write_text(json.dumps(register_report["fmmu_snapshot"]), encoding="utf-8")
+    conflicting_sm = destination / "conflicting-sm.json"
+    sm = register_report["sync_manager_snapshot"]
+    sm["devices"][0]["slots"][3]["value"][5] ^= 1
+    conflicting_sm.write_text(json.dumps(sm), encoding="utf-8")
+    failure = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", blocked_csv,
+                       "--fmmu", matching_fmmu, "--sync-managers", conflicting_sm, success=False)
+    assert "saved SyncManager snapshot differs from recorded setup mapping" in failure
+    assert not blocked_csv.exists()
+
+    legacy = destination / "legacy-topology.json"
+    old = json.loads(fixture.read_bytes())
+    old["schema"] = 3
+    for pair in old["setup_topology"]:
+        del pair["mapping_replies"]
+    legacy.write_text(json.dumps(old), encoding="utf-8")
+    legacy_csv = destination / "legacy-topology.csv"
+    legacy_receipt = destination / "legacy-topology-replay.json"
+    cli_call(cli, "replay-input-group", manifest, legacy, "--csv", legacy_csv, "--out", legacy_receipt,
+             "--fmmu", conflicting)
+    legacy_audit = cli_call(cli, "verify-group-replay", manifest, legacy, legacy_receipt, legacy_csv,
+                            "--fmmu", conflicting)
+    assert legacy_audit["verified_rows"] == 12 and legacy_audit["verified_topology_generations"] == 2
+    assert "verified_mapping_generations" not in legacy_audit
+
+    removed_mapping = destination / "receipt-without-mapping.json"
+    edited = json.loads(receipt.read_bytes())
+    del edited["setup_topology"][0]["mapping"]
+    removed_mapping.write_text(json.dumps(edited), encoding="utf-8")
+    failure = cli_call(cli, "verify-group-replay", manifest, fixture, removed_mapping, base, success=False)
+    assert "differs from the rebuilt cycles" in failure
+
     no_probe_receipt = destination / "receipt-without-probes.json"
     del replay["setup_topology"]
     no_probe_receipt.write_text(json.dumps(replay), encoding="utf-8")
@@ -3148,8 +3229,13 @@ def verify_replay_setup_topology(cli, destination):
 def verify_generated_group_replay(cli, destination):
     sample = ROOT / "samples"
     manifest = sample / "input-group.json"
-    evidence = [argument for name in ("fmmu", "sync-managers", "pdo")
-                for argument in (f"--{name}", sample / f"input-group-{name}.json")]
+    setup = cli_call(cli, "inspect-virtual-group-mapping", manifest)
+    evidence = []
+    for name, key in (("fmmu", "fmmu_snapshot"), ("sync-managers", "sync_manager_snapshot")):
+        file = destination / f"matching-{name}.json"
+        file.write_text(json.dumps(setup[key]), encoding="utf-8")
+        evidence.extend((f"--{name}", file))
+    evidence.extend(("--pdo", sample / "input-group-pdo.json"))
     for scenario in ("clean", "faults"):
         faults = scenario == "faults"
         expected_valid = [0, 1, 5, 8, 9, 10, 11] if faults else list(range(12))
@@ -3157,7 +3243,7 @@ def verify_generated_group_replay(cli, destination):
         generated = cli_call(cli, "generate-group-replay", manifest, "--scenario", scenario, "--out", fixture)
         fixture_bytes = fixture.read_bytes()
         assert generated == json.loads(fixture_bytes)
-        assert generated["schema"] == 3 and generated["stations"] == [0x1000, 0x1001]
+        assert generated["schema"] == 4 and generated["stations"] == [0x1000, 0x1001]
         assert generated["virtual_scenario"] == scenario
         sent = generated["cycles"]
         assert [cycle["index"] for cycle in sent] == [((254 + i) & 255) for i in range(12)]
@@ -3224,6 +3310,7 @@ def verify_generated_group_replay(cli, destination):
                 reopened = cli_call(cli, "verify-group-bundle", relocated)
                 assert reopened["receipt"] == bundled and reopened["audit"]["complete"]
                 assert reopened["audit"]["verified_rows"] == len(expected_rows)
+                assert reopened["audit"]["verified_mapping_generations"] == 2
                 assert bundled["complete"] and bundled["verified_rows"] == len(expected_rows)
                 assert (relocated / "fixture.json").read_bytes() == fixture_bytes
 

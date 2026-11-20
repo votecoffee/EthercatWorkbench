@@ -1703,6 +1703,7 @@ mod tests {
             "Follower clock did not advance",
             "moved-bundle",
             "Saved setup topology verified · 1 generation",
+            "Saved FMMU/SyncManager mapping verified · 1 generation",
         ] {
             assert!(text.contains(label), "missing {label} in {text}");
         }
@@ -1743,6 +1744,7 @@ mod tests {
         }
         assert!(!text.contains("Clock rejections"));
         assert!(text.contains("Saved setup topology unavailable"));
+        assert!(text.contains("Raw setup mapping evidence unavailable"));
 
         let original = bundle.join("csv/capture.0001.csv");
         let bytes = std::fs::read(&original).unwrap();

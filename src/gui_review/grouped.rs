@@ -141,6 +141,18 @@ impl Panel {
             } else {
                 ui.label("Saved setup topology unavailable");
             }
+            if let Some(generations) = audit.verified_mapping_generations {
+                ui.label(format!(
+                    "Saved FMMU/SyncManager mapping verified · {generations} {}",
+                    if generations == 1 {
+                        "generation"
+                    } else {
+                        "generations"
+                    }
+                ));
+            } else {
+                ui.label("Raw setup mapping evidence unavailable");
+            }
             ui.label(format!(
                 "Ignored Ethernet candidates {}",
                 counts.ignored_frames
