@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.48.0** adds a virtual CoE rehearsal with audited timing trials and a verified evidence bundle. Use the [first bench session guide](bench-qualification.md) to prepare the physical worksheet. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
+Version **0.49.0** adds [two-device virtual discovery](esc-diagnostics.md#two-device-discovery-fixture) with downstream timeouts and an audited one-device SAFEOP guard. Use the [first bench session guide](bench-qualification.md) to prepare the physical worksheet and run the virtual CoE rehearsal. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
 
 ## Decisions to retain
 

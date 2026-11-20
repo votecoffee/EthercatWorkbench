@@ -25,11 +25,18 @@ Counter support and PDI-code meaning vary by controller. Counts can predate the 
 .\ethercat-workbench-cli.exe scan --nic '\Device\NPF_{your-nic-guid}'
 .\ethercat-workbench-cli.exe scan-virtual --model coe --case normal
 .\ethercat-workbench-cli.exe scan-virtual --case port-errors
+.\ethercat-workbench-cli.exe scan-virtual --case two-devices
 .\ethercat-workbench-cli.exe decode-esc samples/esc-diagnostics.json
 ```
 
-`scan --nic` opens only the explicitly selected adapter under the installed Npcap policy. `scan-virtual` uses memory and never opens a NIC. Its scenarios are `normal`, `port-errors`, `counters-unavailable`, `information-unavailable`, `core-wkc`, `core-timeout` and `diagnostics-timeout`. Output includes a write audit and preserves core failure details. The fixture rejects register writes, making accidental initialization visible in headless checks. These modeled results do not qualify a physical NIC or controller.
+`scan --nic` opens only the explicitly selected adapter under the installed Npcap policy. `scan-virtual` uses memory and never opens a NIC. Its single-device scenarios are `normal`, `port-errors`, `counters-unavailable`, `information-unavailable`, `core-wkc`, `core-timeout` and `diagnostics-timeout`. Output includes a write audit and preserves core failure details. The fixture rejects register writes, making accidental initialization visible in headless checks. These modeled results do not qualify a physical NIC or controller.
 
 In the desktop, **Read-only scan** displays the snapshot under each device. **Preview virtual discovery** uses the selected virtual model. Expand **ESC discovery snapshot** for port states, controller information, counters and source/time notes. Current AL status remains separate from the discovery-time AL values. No diagnostic counter-reset or state-control action is offered.
+
+## Two-device discovery fixture
+
+`two-devices` exercises a linear virtual bus. Both ESCs increment the broadcast Working Counter, giving a count of two. Each auto-increment register read returns Working Counter 1 at its addressed position. The two positions report distinct station addresses, aliases, links, AL states and ESC information. The in-memory forwarding follows the broadcast and position addressing described in the [Beckhoff ESC technology reference, sections 2.3 and 2.3.1](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf).
+
+`second-device-diagnostics-timeout` retains both core reports and marks the second device's optional information and counters unavailable. `second-device-core-timeout` fails the scan and identifies position 1, using zero-based positions. These three cases include `device_audits` in bus order. The existing `audit` still reports the first ESC. The audit tracks fixture traffic, including attempted writes, state requests and dropped replies at each position. Cyclic SAFEOP setup requires one isolated SubDevice.
 
 `decode-esc` accepts a raw snapshot object, such as the nested `diagnostics.snapshot` in a scan or run report. The bundled example is authored data. The decoder checks schema 1, UTC, exact byte-array sizes and explicit value-or-unavailable records. Files must be UTF-8 JSON, optionally with a BOM, and no larger than 64 KiB. Saved source labels are editable evidence, not signed hardware attestation. Native GUI interaction, physical raw-Ethernet exchange and device-specific interpretation remain bench qualification work.

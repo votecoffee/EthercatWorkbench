@@ -530,3 +530,11 @@ Formatting, Clippy, 178 locked offline Rust tests, the Windows x64 MSVC release 
 The first packaged smoke run exposed a missing utility command in a nested Windows PowerShell launch. The script now explicitly loads its built-in utility module from the active PowerShell installation. A nested source invocation exercised both schedulers and verified the resulting bundle.
 
 Native GUI review and the physical SAFEOP input and 1 ms bench qualification remain pending.
+
+## Version 0.49.0 two-device discovery (2026-11-20)
+
+The in-memory chain returned broadcast Working Counter 2 and Working Counter 1 for each targeted register read. The healthy scan returned two ordered positions with distinct addresses, aliases, link and signal flags, AL states and controller data. An optional diagnostics timeout left both core results available. A core timeout at position 1 failed discovery and returned no partial device list. Both fault reports attribute the dropped reply to the second ESC.
+
+The headless desktop test used the two-device fixture to verify physical NIC preflight scoping. The SAFEOP guard test stopped after discovery, before initialization or cyclic input. Per-device audits recorded zero register writes, logical I/O, EEPROM reads, mailbox traffic and state requests in the read-only scan cases.
+
+Formatting, Clippy, 180 locked offline Rust tests (138 library and 42 desktop), the Windows x64 MSVC release build and focused release CLI discovery checks passed. Native GUI interaction, physical discovery, cyclic SAFEOP input and 1 ms timing remain pending on the isolated bench. Multi-device cyclic acquisition remains on the roadmap.

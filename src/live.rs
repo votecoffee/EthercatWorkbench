@@ -6,6 +6,7 @@ use crate::{
     model::{Identity, MAX_PAYLOAD, Profile},
     run::{BenchApproval, Bus, DeviceInfo, Exchange, Report, Snapshot},
     sync::{DcReadback, RegisterRead, Synchronization},
+    virtual_esc::VirtualWire,
 };
 use anyhow::{Context, Result, bail, ensure};
 use ethercrab::{
@@ -322,6 +323,8 @@ pub struct VirtualScan {
     pub scenario: crate::virtual_esc::ScanCase,
     pub devices: Vec<DeviceInfo>,
     pub audit: crate::virtual_esc::VirtualStats,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub device_audits: Vec<crate::virtual_esc::VirtualStats>,
     pub error: Option<String>,
 }
 
@@ -330,9 +333,7 @@ pub fn scan_virtual(
     scenario: crate::virtual_esc::ScanCase,
 ) -> VirtualScan {
     let mut port = Transport {
-        io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::for_scan(
-            model, scenario,
-        ))),
+        io: PacketIo::Virtual(Box::new(VirtualWire::for_scan(model, scenario))),
         seq: 0,
         ignored_frames: 0,
         mailbox_watch: None,
@@ -342,13 +343,14 @@ pub fn scan_virtual(
         Ok(devices) => (devices, None),
         Err(error) => (Vec::new(), Some(format!("{error:#}"))),
     };
-    let PacketIo::Virtual(esc) = &port.io else {
+    let PacketIo::Virtual(wire) = &port.io else {
         unreachable!("virtual scan transport")
     };
     VirtualScan {
         scenario,
         devices,
-        audit: esc.stats(),
+        audit: wire.stats(),
+        device_audits: wire.chain_audits(),
         error,
     }
 }
@@ -391,7 +393,7 @@ pub fn virtual_safeop(
     run: impl FnOnce(LiveBus<'_, '_>, &mut Report) -> Result<()>,
 ) -> Result<()> {
     let mut port = Transport {
-        io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(model, fault))),
+        io: PacketIo::Virtual(Box::new(VirtualWire::new(model, fault))),
         seq: 0,
         ignored_frames: 0,
         mailbox_watch: None,
@@ -840,7 +842,7 @@ impl Bus for LiveBus<'_, '_> {
 
 enum PacketIo {
     Nic(Capture<Active>),
-    Virtual(Box<crate::virtual_esc::VirtualEsc>),
+    Virtual(Box<VirtualWire>),
 }
 
 impl PacketIo {
@@ -902,7 +904,7 @@ mod cancellation_tests {
         let mut esc = crate::virtual_esc::VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
         esc.stall_first_sii_status(Duration::from_millis(30));
         Transport {
-            io: PacketIo::Virtual(Box::new(esc)),
+            io: PacketIo::Virtual(Box::new(VirtualWire::single(esc))),
             seq: 0,
             ignored_frames: 0,
             mailbox_watch: None,
@@ -1020,6 +1022,47 @@ mod cancellation_tests {
     }
 
     #[test]
+    fn safeop_stops_before_initialization_on_two_devices() {
+        let mut port = Transport {
+            io: PacketIo::Virtual(Box::new(VirtualWire::for_scan(
+                VirtualModel::Coe,
+                crate::virtual_esc::ScanCase::TwoDevices,
+            ))),
+            seq: 0,
+            ignored_frames: 0,
+            mailbox_watch: None,
+            mailbox_counter: None,
+        };
+        let profile = serde_json::from_str(include_str!("../samples/virtual.json")).unwrap();
+        let mut report = Report::default();
+        let error = safeop_on(
+            &profile,
+            &AtomicBool::new(false),
+            &Mutex::new(Snapshot::default()),
+            &mut report,
+            &mut port,
+            |_, _| panic!("two-device fixture reached cyclic input"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires exactly one isolated SubDevice")
+        );
+        assert_eq!(report.devices.len(), 2);
+        let PacketIo::Virtual(wire) = &port.io else {
+            unreachable!("in-memory transport")
+        };
+        for audit in wire.chain_audits() {
+            assert_eq!(
+                audit.register_writes + audit.logical_reads + audit.sii_reads,
+                0
+            );
+            assert!(audit.state_requests.is_empty());
+        }
+    }
+
+    #[test]
     fn bounded_upload_reads_valid_segments_that_the_pinned_stock_reader_rejects() {
         use crate::virtual_esc::{VirtualFault, VirtualModel};
         let storage = PduStorage::<8, { PduStorage::element_size(1400) }>::new();
@@ -1033,7 +1076,7 @@ mod cancellation_tests {
             MainDeviceConfig::default(),
         );
         let mut port = Transport {
-            io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(
+            io: PacketIo::Virtual(Box::new(VirtualWire::new(
                 VirtualModel::CoeSegmented,
                 VirtualFault::None,
             ))),
@@ -1127,7 +1170,7 @@ mod cancellation_tests {
             MainDeviceConfig::default(),
         );
         let mut port = Transport {
-            io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(
+            io: PacketIo::Virtual(Box::new(VirtualWire::new(
                 VirtualModel::CoeSegmented,
                 VirtualFault::SegmentTimeout,
             ))),
@@ -1201,7 +1244,7 @@ mod cancellation_tests {
                 MainDeviceConfig::default(),
             );
             let mut port = Transport {
-                io: PacketIo::Virtual(Box::new(crate::virtual_esc::VirtualEsc::new(
+                io: PacketIo::Virtual(Box::new(VirtualWire::new(
                     VirtualModel::Coe,
                     VirtualFault::SetupTimeout,
                 ))),

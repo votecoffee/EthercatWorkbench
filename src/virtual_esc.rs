@@ -1,4 +1,5 @@
-//! Authored, in-memory EtherCAT ESC fixture for the Workbench's one-device setup path.
+//! Authored EtherCAT ESCs and in-memory transport for discovery and one-device setup.
+use crate::wire::{APRD, BRD};
 use anyhow::{Result, bail, ensure};
 use clap::ValueEnum;
 use serde::Serialize;
@@ -38,6 +39,9 @@ pub enum ScanCase {
     CoreWkc,
     CoreTimeout,
     DiagnosticsTimeout,
+    TwoDevices,
+    SecondDeviceDiagnosticsTimeout,
+    SecondDeviceCoreTimeout,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -127,13 +131,84 @@ struct Upload {
     toggle: bool,
 }
 
+pub(crate) struct VirtualWire {
+    devices: Vec<VirtualEsc>,
+    replies: VecDeque<Vec<u8>>,
+    current: Option<Vec<u8>>,
+}
+
+impl VirtualWire {
+    pub fn new(model: VirtualModel, fault: VirtualFault) -> Self {
+        Self::single(VirtualEsc::new(model, fault))
+    }
+
+    pub fn single(device: VirtualEsc) -> Self {
+        Self {
+            devices: vec![device],
+            replies: VecDeque::new(),
+            current: None,
+        }
+    }
+
+    pub fn for_scan(model: VirtualModel, case: ScanCase) -> Self {
+        let downstream = match case {
+            ScanCase::TwoDevices => ScanCase::Normal,
+            ScanCase::SecondDeviceDiagnosticsTimeout => ScanCase::DiagnosticsTimeout,
+            ScanCase::SecondDeviceCoreTimeout => ScanCase::CoreTimeout,
+            _ => return Self::single(VirtualEsc::for_scan(model, case)),
+        };
+        let mut first = VirtualEsc::for_scan(model, ScanCase::Normal);
+        first.registers[0x0010..0x0014].copy_from_slice(&[0x00, 0x10, 0x42, 0x00]);
+        first.registers[7] = 0x0f; // Both links use the MII family.
+        first.registers[0x0110] |= 0x20;
+        first.registers[0x0111] = 0x5a; // Ports 0–1 open with signal; unused ports closed.
+
+        let mut second = VirtualEsc::for_scan(model, downstream);
+        second.registers[0] = 0x12;
+        second.registers[0x0010..0x0014].copy_from_slice(&[0x01, 0x10, 0x43, 0x00]);
+        second.registers[0x0130] = 2; // Authored PREOP observation.
+        second.registers[0x0300] = 7;
+        let mut wire = Self::single(first);
+        wire.devices.push(second);
+        wire
+    }
+
+    pub fn stats(&self) -> VirtualStats {
+        self.devices[0].stats()
+    }
+
+    pub fn chain_audits(&self) -> Vec<VirtualStats> {
+        if self.devices.len() > 1 {
+            self.devices.iter().map(VirtualEsc::stats).collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn receive(&mut self) -> Option<&[u8]> {
+        self.current = self.replies.pop_front();
+        self.current.as_deref()
+    }
+
+    pub fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        let mut reply = bytes.to_vec();
+        let mut drop_reply = false;
+        for device in &mut self.devices {
+            drop_reply |= device.forward(&mut reply)?;
+        }
+        if !drop_reply {
+            reply[6] |= 2;
+            self.replies.push_back(reply);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct VirtualEsc {
     scan_case: ScanCase,
     read_only: bool,
     registers: Box<[u8; 65_536]>,
     eeprom: Vec<u8>,
-    replies: VecDeque<Vec<u8>>,
-    current: Option<Vec<u8>>,
     mailbox: Option<[u8; MAILBOX_BYTES]>,
     stats: VirtualStats,
     fault: VirtualFault,
@@ -166,8 +241,6 @@ impl VirtualEsc {
             read_only: false,
             registers,
             eeprom: eeprom(model, fault),
-            replies: VecDeque::new(),
-            current: None,
             mailbox: None,
             stats: VirtualStats {
                 model,
@@ -190,7 +263,7 @@ impl VirtualEsc {
         self.sii_status_stall = Some(duration);
     }
 
-    pub fn for_scan(model: VirtualModel, case: ScanCase) -> Self {
+    fn for_scan(model: VirtualModel, case: ScanCase) -> Self {
         let mut esc = Self::new(model, VirtualFault::None);
         esc.scan_case = case;
         esc.read_only = true;
@@ -215,28 +288,21 @@ impl VirtualEsc {
         stats
     }
 
-    pub fn receive(&mut self) -> Option<&[u8]> {
-        self.current = self.replies.pop_front();
-        self.current.as_deref()
-    }
-
-    pub fn send(&mut self, bytes: &[u8]) -> Result<()> {
+    fn forward(&mut self, reply: &mut [u8]) -> Result<bool> {
         if self.transport_lost {
             self.stats.transport_errors += 1;
             bail!("virtual Ethernet transport remains unavailable");
         }
         ensure!(
-            bytes.len() >= 16 && bytes[12..14] == [0x88, 0xa4],
+            reply.len() >= 16 && reply[12..14] == [0x88, 0xa4],
             "virtual ESC requires Ethernet II EtherCAT"
         );
-        let payload_len = usize::from(word(&bytes[14..]) & 0x07ff);
+        let payload_len = usize::from(word(&reply[14..]) & 0x07ff);
         let end = 16 + payload_len;
         ensure!(
-            end <= bytes.len(),
+            end <= reply.len(),
             "truncated EtherCAT frame sent to virtual ESC"
         );
-        let mut reply = bytes.to_vec();
-        reply[6] |= 2;
         let mut offset = 16;
         let mut drop_reply = false;
         while offset < end {
@@ -269,7 +335,15 @@ impl VirtualEsc {
                 let data = &mut reply[data_start..data_end];
                 wkc = match command {
                     0x01 | 0x04 | 0x07 => {
-                        self.read(usize::from(register), data)?;
+                        if command == BRD {
+                            let mut register_data = [0u8; 0x07ff];
+                            self.read(usize::from(register), &mut register_data[..len])?;
+                            for (byte, value) in data.iter_mut().zip(register_data) {
+                                *byte |= value;
+                            }
+                        } else {
+                            self.read(usize::from(register), data)?;
+                        }
                         u16::from(
                             !(self.fault == VirtualFault::DcReadbackUnavailable
                                 && (0x0980..=0x0981).contains(&register)),
@@ -293,7 +367,7 @@ impl VirtualEsc {
             {
                 drop_reply = true;
             }
-            if command == 0x01 {
+            if command == APRD && addressed {
                 match (self.scan_case, register, len) {
                     (ScanCase::CoreWkc, 0x0010, 4) => wkc = 2,
                     (ScanCase::CountersUnavailable, 0x0300, 20)
@@ -317,7 +391,8 @@ impl VirtualEsc {
                 reply[offset + 2..offset + 4]
                     .copy_from_slice(&station.wrapping_add(1).to_le_bytes());
             }
-            reply[data_end..data_end + 2].copy_from_slice(&wkc.to_le_bytes());
+            let accumulated = word(&reply[data_end..]).wrapping_add(wkc);
+            reply[data_end..data_end + 2].copy_from_slice(&accumulated.to_le_bytes());
             offset = data_end + 2;
             ensure!(
                 (flags & 0x8000 != 0) == (offset < end),
@@ -326,10 +401,8 @@ impl VirtualEsc {
         }
         if drop_reply {
             self.stats.dropped_replies += 1;
-        } else {
-            self.replies.push_back(reply);
         }
-        Ok(())
+        Ok(drop_reply)
     }
 
     fn read(&mut self, register: usize, data: &mut [u8]) -> Result<()> {
@@ -838,8 +911,35 @@ mod tests {
     use crate::wire::{Datagram, FPRD, Frame};
 
     #[test]
+    fn two_devices_accumulate_broadcast_and_resolve_auto_increment_positions() {
+        let mut wire = VirtualWire::for_scan(VirtualModel::Coe, ScanCase::TwoDevices);
+        let request = Frame::new(
+            1,
+            [
+                Datagram::register(BRD, 0, 0x0000, 2),
+                Datagram::register(APRD, 0, 0x0010, 4),
+                Datagram::register(APRD, u16::MAX, 0x0010, 4),
+            ],
+        );
+        wire.send(request.bytes()).unwrap();
+        let reply = wire.receive().unwrap();
+        assert_eq!(
+            request.reply(reply).unwrap(),
+            [
+                (&[0x13, 0][..], 2),
+                (&[0, 0x10, 0x42, 0][..], 1),
+                (&[1, 0x10, 0x43, 0][..], 1),
+            ]
+        );
+        assert_eq!(
+            [word(&reply[18..]), word(&reply[32..]), word(&reply[48..])],
+            [2, 2, 1]
+        );
+    }
+
+    #[test]
     fn scan_fixture_rejects_a_register_write_before_changing_state() {
-        let mut esc = VirtualEsc::for_scan(VirtualModel::Coe, ScanCase::Normal);
+        let mut esc = VirtualWire::for_scan(VirtualModel::Coe, ScanCase::Normal);
         let mut frame = Frame::new(1, [Datagram::register(FPRD, 0, 0x0120, 2)])
             .bytes()
             .to_vec();
@@ -858,7 +958,7 @@ mod tests {
 
     #[test]
     fn rejects_output_commands_and_requires_valid_fmmus_for_safeop() {
-        let mut esc = VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
+        let mut esc = VirtualWire::new(VirtualModel::Coe, VirtualFault::None);
         let mut write = Frame::new(1, [Datagram::register(FPRD, 0, 0x0120, 2)])
             .bytes()
             .to_vec();

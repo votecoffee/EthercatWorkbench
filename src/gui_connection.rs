@@ -313,10 +313,16 @@ mod tests {
     #[test]
     fn only_successful_discovery_on_current_physical_nic_qualifies_topology_preflight() {
         let mut app = app();
+        let chain = live::scan_virtual(
+            ethercat_workbench::virtual_esc::VirtualModel::Coe,
+            ethercat_workbench::virtual_esc::ScanCase::TwoDevices,
+        );
+        assert!(chain.error.is_none(), "{:?}", chain.error);
+        assert_eq!(chain.devices.len(), 2);
         app.discovery_origin = Some(DiscoveryOrigin::Virtual {
-            model: "authored".into(),
+            model: "two-device chain".into(),
         });
-        app.discovery = vec![DeviceInfo::default(), DeviceInfo::default()];
+        app.discovery = chain.devices;
         assert!(app.bench_issues().is_empty());
         app.discovery_origin = Some(DiscoveryOrigin::Physical {
             nic: "different-nic".into(),

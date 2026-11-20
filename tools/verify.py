@@ -1432,6 +1432,7 @@ def verify_discovery(cli, destination):
         failed = case in ["core-wkc","core-timeout"]
         report = cli_call(cli,"scan-virtual","--case",case,success=not failed)
         audit = report["audit"]
+        assert "device_audits" not in report
         assert audit["register_writes"] == audit["logical_writes"] == audit["physical_output_writes"] == 0
         assert audit["sii_reads"] == audit["coe_uploads"] == audit["coe_downloads"] == audit["op_requests"] == 0
         assert audit["state_requests"] == []
@@ -1463,6 +1464,53 @@ def verify_discovery(cli, destination):
             snapshot = destination / (case+"-snapshot.json")
             snapshot.write_text(json.dumps(raw),encoding="utf-8")
             assert cli_call(cli,"decode-esc",snapshot) == diag
+        reports[case] = report
+    chain_cases = ["two-devices", "second-device-diagnostics-timeout", "second-device-core-timeout"]
+    for case in chain_cases:
+        core_timeout = case == "second-device-core-timeout"
+        diagnostics_timeout = case == "second-device-diagnostics-timeout"
+        report = cli_call(cli, "scan-virtual", "--case", case, success=not core_timeout)
+        audits = report["device_audits"]
+        assert len(audits) == 2 and report["audit"] == audits[0]
+        downstream_drops = int(core_timeout or diagnostics_timeout)
+        assert [audit["dropped_replies"] for audit in audits] == [0, downstream_drops]
+        for audit in audits:
+            assert all(audit[field] == 0 for field in [
+                "register_writes", "logical_writes", "logical_reads", "physical_output_writes",
+                "sii_reads", "coe_uploads", "coe_downloads", "op_requests",
+            ])
+            assert audit["state_requests"] == []
+        if core_timeout:
+            assert report["devices"] == [] and "bus position 1" in report["error"]
+        else:
+            assert report["error"] is None
+            assert [
+                (device["position"], device["station_address"], device["alias"],
+                 device["link_ports"], device["al_status"])
+                for device in report["devices"]
+            ] == [
+                (0, 0x1000, 0x42, [True, True, False, False], 1),
+                (1, 0x1001, 0x43, [True, False, False, False], 2),
+            ]
+            for position, device in enumerate(report["devices"]):
+                assert device["identity"] is None and device["name"] is None
+                diag = device["diagnostics"]
+                raw = diag["snapshot"]
+                assert raw["source"] == "virtual_esc" and raw["position"] == position
+                ports = diag["data_link"]["ports"]
+                assert [port["signal_detected"] for port in ports] == device["link_ports"]
+                assert [not port["loop_closed"] for port in ports] == device["link_ports"]
+                if position == 1 and diagnostics_timeout:
+                    for name in ["information", "counters"]:
+                        assert diag[name] is None
+                        assert raw[name]["value"] is None and "within 30 ms" in raw[name]["unavailable"]
+                else:
+                    assert diag["counters"]["ports"][0]["invalid_frames"] == position * 7
+                    assert diag["information"]["controller_type"] == 0x11 + position
+                    implemented = [
+                        kind != "Not implemented" for kind in diag["information"]["port_types"]
+                    ]
+                    assert implemented == device["link_ports"]
         reports[case] = report
     for model in ["sii","coe-dc","coe-normal","coe-segmented"]:
         report = cli_call(cli,"scan-virtual","--model",model)
