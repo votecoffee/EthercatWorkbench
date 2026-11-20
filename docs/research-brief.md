@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.58.0** adds [two-device virtual group replay generation](input-group.md#generate-a-two-device-replay) with clean and faulted sequences. [Portable group evidence](input-group.md#export-and-reopen-group-evidence) can be reaudited after relocation. Read-only [virtual discovery](esc-diagnostics.md#two-device-discovery-fixture) covers downstream timeouts. Use the [first bench session guide](bench-qualification.md) to prepare the physical worksheet and run the virtual CoE rehearsal. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
+Version **0.59.0** adds [virtual group mapping readback](input-group.md#read-back-the-virtual-group-mapping). The [two-device generator](input-group.md#generate-a-two-device-replay) checks FMMU and SyncManager geometry on its virtual wire before sending LRDs. [Portable group evidence](input-group.md#export-and-reopen-group-evidence) can be reaudited after relocation. Read-only [virtual discovery](esc-diagnostics.md#two-device-discovery-fixture) covers downstream timeouts. Use the [first bench session guide](bench-qualification.md) to prepare the physical worksheet and run the virtual CoE rehearsal. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
 
 ## Decisions to retain
 

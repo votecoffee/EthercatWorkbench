@@ -2323,6 +2323,67 @@ def verify_input_group_replay(cli, destination):
     assert audit(nan_base, nan_receipt, source=nan_fixture)["complete"]
 
 
+def verify_virtual_group_mapping(cli, destination):
+    sample = ROOT / "samples"
+    manifest = sample / "input-group.json"
+    for scenario, fmmu_issue, sm_issue, count, wkc, datagrams in [
+        ("clean", None, None, 2, 1, 14),
+        ("logical-shift", "outside planned input", "FMMU logical layout", 2, 1, 14),
+        ("physical-shift", None, "physical coverage differs", 2, 1, 14),
+        ("station-missing", "count WKC 0", "count WKC 0", 0, 0, 10),
+        ("excess-channels", "exceeds 16", "exceeds 16", 255, 1, 10),
+    ]:
+        receipt = destination / f"{scenario}.json"
+        args = ["--scenario", scenario] if scenario != "clean" else []
+        result = cli_call(cli, "inspect-virtual-group-mapping", manifest, *args, "--out", receipt)
+        assert result == json.loads(receipt.read_bytes())
+        assert result["schema"] == 1 and result["source"] == "virtual_group_register_reads"
+        assert result["scenario"] == scenario and result["valid"] == (scenario == "clean")
+        checks = result["inspection"]
+        for review, issue in [(checks["fmmu"], fmmu_issue), (checks["sync_managers"], sm_issue)]:
+            assert review["valid"] == (issue is None)
+            assert not review["devices"][0]["issues"]
+            actual_issues = review["devices"][1]["issues"]
+            if issue is None:
+                assert not actual_issues
+            else:
+                assert any(issue in item for item in actual_issues), actual_issues
+        assert checks["fmmu"]["stations_match"] and all(device["input"] is None for device in checks["devices"])
+        assert [record["model"] for record in result["wire_audit"]] == ["coe", "sii"]
+        for record in result["wire_audit"]:
+            assert record["datagrams"] == datagrams
+            assert not record["state_requests"]
+            assert all(record[key] == 0 for key in (
+                "logical_reads", "register_writes", "logical_writes", "physical_output_writes",
+                "coe_uploads", "coe_downloads", "sii_reads", "op_requests",
+            ))
+        saved = []
+        for kind, review_key, upstream_count in [
+            ("fmmu", "fmmu", 2), ("sync_manager", "sync_managers", 4),
+        ]:
+            snapshot = result[f"{kind}_snapshot"]
+            stations = snapshot["devices"]
+            assert [row["station_address"] for row in stations] == [0x1000, 0x1001]
+            assert stations[0]["count"] == {"wkc": 1, "value": upstream_count}
+            assert stations[1]["count"] == {"wkc": wkc, "value": count}
+            assert len(stations[1]["slots"]) == (count if wkc == 1 and count <= 16 else 0)
+            payload = json.dumps(snapshot, separators=(",", ":")).encode()
+            assert checks[review_key]["source_sha256"] == hashlib.sha256(payload).hexdigest()
+            path = destination / f"{scenario}-{kind}.json"
+            path.write_bytes(payload)
+            saved.append(path)
+        paired = cli_call(cli, "inspect-input-group", manifest, "--fmmu", saved[0],
+                          "--sync-managers", saved[1], "--frame", sample / "input-group-frame.json")
+        assert paired["fmmu"] == checks["fmmu"]
+        assert paired["sync_managers"] == checks["sync_managers"]
+        assert paired["frame"]["valid"] and paired["actual_wkc"] == 2
+        assert all((device["input"] is not None) == result["valid"] for device in paired["devices"])
+    original = (destination / "clean.json").read_bytes()
+    assert "exists" in cli_call(cli, "inspect-virtual-group-mapping", manifest,
+                                "--out", destination / "clean.json", success=False)
+    assert (destination / "clean.json").read_bytes() == original
+
+
 def verify_generated_group_replay(cli, destination):
     sample = ROOT / "samples"
     manifest = sample / "input-group.json"
@@ -3235,6 +3296,9 @@ def main():
     generated_group_destination = destination / "input-group-generated"
     generated_group_destination.mkdir()
     verify_generated_group_replay(cli, generated_group_destination)
+    virtual_group_mapping_destination = destination / "input-group-virtual-mapping"
+    virtual_group_mapping_destination.mkdir()
+    verify_virtual_group_mapping(cli, virtual_group_mapping_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

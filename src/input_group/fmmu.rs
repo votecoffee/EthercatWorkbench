@@ -5,17 +5,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{ops::Range, path::Path};
 
-const MAX_CHANNELS: usize = 16;
+pub(super) const MAX_CHANNELS: usize = 16;
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
-struct Snapshot {
-    schema: u32,
-    devices: Vec<Station>,
+pub(super) struct Snapshot {
+    pub(super) schema: u32,
+    pub(super) devices: Vec<Station>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Station {
     pub(crate) station_address: u16,
@@ -23,7 +23,7 @@ pub(crate) struct Station {
     pub(crate) slots: Vec<Read<[u8; 16]>>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Read<T> {
     pub(crate) wkc: u16,
@@ -113,6 +113,14 @@ impl Mapping {
 
 pub(super) fn review(path: &Path, bindings: &[Binding]) -> Result<Review> {
     let (snapshot, bytes) = read_json::<Snapshot>(path, MAX_FILE_BYTES)?;
+    review_snapshot(snapshot, hex::encode(Sha256::digest(&bytes)), bindings)
+}
+
+pub(super) fn review_snapshot(
+    snapshot: Snapshot,
+    source_sha256: String,
+    bindings: &[Binding],
+) -> Result<Review> {
     ensure!(
         snapshot.schema == 1,
         "unsupported group FMMU schema {}",
@@ -142,7 +150,7 @@ pub(super) fn review(path: &Path, bindings: &[Binding]) -> Result<Review> {
         .collect::<Result<Vec<_>>>()?;
     let layout_matches = devices.iter().all(|device| device.issues.is_empty());
     Ok(Review {
-        source_sha256: hex::encode(Sha256::digest(&bytes)),
+        source_sha256,
         layout_matches,
         stations_match: None,
         valid: layout_matches,

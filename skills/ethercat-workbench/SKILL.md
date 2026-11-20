@@ -37,6 +37,8 @@ Use `replay-input-group MANIFEST FIXTURE --csv NEW.csv [--out NEW.json]` to repl
 
 Use `verify-group-replay MANIFEST FIXTURE RECEIPT CSV_BASE [--out NEW.json]` with the original references and any mapping evidence used for capture. The command checks the rebuilt cycles, selected rows, typed values and part hashes. Read `complete` and the expected/written row counts. A matching prefix can coexist with a reported writer error. Preserve original evidence and write audit JSON to a new path.
 
+Use `inspect-virtual-group-mapping samples/input-group.json [--scenario SCENARIO] [--out NEW.json]` to collect and compare FMMU and SyncManager register reads on the virtual chain. Check `valid` and per-position issues, including when a fault scenario exits successfully. The nested schema 1 snapshots can feed the existing saved-evidence checks. The generator gates LRD traffic on the same readback checks.
+
 Use `generate-group-replay samples/input-group.json --scenario clean|faults --out NEW.json` to produce replies from the two in-memory devices. Replay, audit and bundle the generated fixture with the same commands. The `virtual_scenario` marker and scheduled timestamps identify the virtual evidence.
 
 Use `bundle-group-replay MANIFEST FIXTURE RECEIPT CSV_BASE --out NEW_DIRECTORY` with the same mapping options to archive the specifically audited inputs. `verify-group-bundle DIRECTORY [--out NEW.json]` uses bundle-local copies and reruns the audit, including after relocation. Read the completion and row counts. Original manifest and receipt bytes retain the supplied path strings.

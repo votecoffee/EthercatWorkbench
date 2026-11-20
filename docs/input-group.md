@@ -54,6 +54,19 @@ Workbench compares descriptor widths and positions against fields with PDO refer
 
 Use all saved evidence from the same configuration. The reports retain file hashes, per-field checks and per-SyncManager placements. Live device identity, PDO readback, snapshot freshness, ESC-specific buffer allocation, and physical unit swaps still require separate evidence.
 
+## Read back the virtual group mapping
+
+```powershell
+.\ethercat-workbench-cli.exe inspect-virtual-group-mapping samples/input-group.json --out .local/virtual-mapping.json
+.\ethercat-workbench-cli.exe inspect-virtual-group-mapping samples/input-group.json --scenario logical-shift
+```
+
+This check reads the FMMU and SyncManager counts and declared slots from both modeled stations. `valid` covers planned logical byte ranges and physical input buffer coverage. The report includes each register's WKC and bytes, per-position findings and a virtual traffic audit. Counts with WKC other than one, or counts above 16, prevent slot reads for that bank. The other banks remain visible. `stations_match` compares the requested addresses in the reports. A station whose reads return WKC zero still fails the preflight.
+
+The default `clean` scenario passes. `logical-shift` moves the second device's input range one byte earlier, which can leave LRD WKC at two while routing the wrong bytes. `physical-shift` moves only the FMMU's physical start. `station-missing` leaves the expected second station unanswered. `excess-channels` reports slot counts of 255. These scenarios return a diagnostic report with `valid: false`. The command performs no cyclic reads and uses only the in-memory wire.
+
+The nested `fmmu_snapshot` and `sync_manager_snapshot` objects use the same schema as the saved snapshot files. Save each object to its own JSON file to use it with `inspect-input-group` or replay. Their `source_sha256` values in the preflight report identify the compact JSON object bytes. A separately saved file may have different formatting and a different hash. Review of actual TxPDO descriptors still uses separate `--pdo` evidence.
+
 ## Generate a two-device replay
 
 ```powershell
@@ -62,7 +75,7 @@ Use all saved evidence from the same configuration. The reports retain file hash
 .\ethercat-workbench-cli.exe verify-group-replay samples/input-group.json .local/virtual-group.json .local/virtual-group-replay.json .local/virtual-group.csv
 ```
 
-The generator uses the sample CoE and SII virtual identities in that order, each with eight TxPDO bytes and two RxPDO bytes. It sends the planned LRD and per-station AL reads through both in-memory ESCs. The fixture saves 12 cycles over two modeled connection generations and wraps the datagram index from 255 to 0. Each device produces its own counter, bit and float values. The default `clean` scenario yields 12 valid cycles. `faults` yields seven valid cycles and exercises downstream PREOP, a nonzero AL code with full LRD WKC, a changed station address, a stale candidate, a late reply and a missing reply. Replay with `--on-change` yields three rows in either scenario.
+The generator uses the sample CoE and SII virtual identities in that order, each with eight TxPDO bytes and two RxPDO bytes. It reads and verifies register mappings on the same virtual wire before the first LRD. Each cyclic exchange then sends the planned LRD and per-station AL reads through both in-memory ESCs. The fixture saves 12 cycles over two modeled connection generations and wraps the datagram index from 255 to 0. Each device produces its own counter, bit and float values. The default `clean` scenario yields 12 valid cycles. `faults` yields seven valid cycles and exercises downstream PREOP, a nonzero AL code with full LRD WKC, a changed station address, a stale candidate, a late reply and a missing reply. Replay with `--on-change` yields three rows in either scenario.
 
 Generated fixtures and replay receipts include `virtual_scenario`. The fixed UTC anchor and nominal 1,000 µs spacing are fixture data. They exercise the timing calculations. Host scheduling and physical frame spacing require a separately measured run. The generator uses memory only and requires a new output file.
 

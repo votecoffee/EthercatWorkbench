@@ -3,6 +3,7 @@ pub mod audit;
 pub mod bundle;
 pub(crate) mod fmmu;
 mod pdo_readback;
+pub mod preflight;
 pub mod replay;
 pub(crate) mod sync_manager;
 

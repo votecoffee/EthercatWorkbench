@@ -1,7 +1,8 @@
 //! Produce replay candidates from an authored two-device virtual wire.
 use super::{Fixture, InputGroup, RecordedCycle};
-use crate::virtual_esc::{
-    GROUP_MODELS, GROUP_RX_BYTES, GROUP_STATIONS, GROUP_TX_BYTES, GroupDownstream, VirtualWire,
+use crate::{
+    input_group::preflight,
+    virtual_esc::{GROUP_MODELS, GROUP_STATIONS, GroupDownstream, VirtualWire},
 };
 use anyhow::{Context, Result, ensure};
 use clap::ValueEnum;
@@ -16,20 +17,9 @@ pub enum VirtualScenario {
 }
 
 pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result<Fixture> {
-    ensure!(
-        group.bindings.len() == GROUP_MODELS.len()
-            && group
-                .bindings
-                .iter()
-                .zip(GROUP_MODELS)
-                .all(|(binding, model)| {
-                    binding.entry.identity == model.identity()
-                        && binding.profile.tx_bytes == GROUP_TX_BYTES
-                        && binding.profile.rx_bytes == GROUP_RX_BYTES
-                }),
-        "virtual group replay requires the authored CoE and SII identities in order with 8 TxPDO and 2 RxPDO bytes each"
-    );
+    preflight::validate_virtual_group(group)?;
     let mut wire = VirtualWire::for_group_replay();
+    preflight::require_valid_mapping(group, &mut wire)?;
     let mut previous_reply = String::new();
     let mut cycles = Vec::with_capacity(12);
     let faults = scenario == VirtualScenario::Faults;

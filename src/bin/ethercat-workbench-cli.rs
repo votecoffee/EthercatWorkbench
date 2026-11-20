@@ -72,6 +72,15 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Read and check the FMMU and SyncManager registers on the two-device virtual wire.
+    InspectVirtualGroupMapping {
+        manifest: PathBuf,
+        #[arg(long, value_enum, default_value = "clean")]
+        scenario: ethercat_workbench::input_group::preflight::GroupMappingScenario,
+        /// Save the mapping evidence and inspection to a new JSON file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Generate deterministic replies from the authored two-device virtual wire.
     GenerateGroupReplay {
         manifest: PathBuf,
@@ -493,6 +502,17 @@ fn main() -> Result<()> {
                 _ => bail!("TxPDO review requires FMMU and SyncManager evidence"),
             };
             inspection_export(&inspection, out.as_deref())
+        }
+        Command::InspectVirtualGroupMapping {
+            manifest,
+            scenario,
+            out,
+        } => {
+            use ethercat_workbench::input_group::{InputGroup, preflight};
+            shared_outputs(out.as_deref(), None)?;
+            let group = InputGroup::load(&manifest)?;
+            let report = preflight::inspect_virtual(&group, scenario)?;
+            inspection_export(&report, out.as_deref())
         }
         Command::GenerateGroupReplay {
             manifest,

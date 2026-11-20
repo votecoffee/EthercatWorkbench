@@ -160,6 +160,17 @@ pub(crate) enum GroupDownstream {
     MovedStation,
 }
 
+#[derive(Clone, Copy, Debug, Default, ValueEnum, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroupMappingScenario {
+    #[default]
+    Clean,
+    LogicalShift,
+    PhysicalShift,
+    StationMissing,
+    ExcessChannels,
+}
+
 pub(crate) struct VirtualWire {
     devices: Vec<VirtualEsc>,
     replies: VecDeque<Vec<u8>>,
@@ -266,6 +277,26 @@ impl VirtualWire {
             }
         }
         wire
+    }
+
+    pub(crate) fn apply_group_mapping_scenario(&mut self, scenario: GroupMappingScenario) {
+        let esc = &mut self.devices[1];
+        match scenario {
+            GroupMappingScenario::Clean => {}
+            GroupMappingScenario::LogicalShift => {
+                let start = GROUP_TX_BYTES as u32 - 1;
+                esc.logical_starts.0 = start;
+                esc.registers[0x0610..0x0614].copy_from_slice(&start.to_le_bytes());
+            }
+            GroupMappingScenario::PhysicalShift => esc.registers[0x0618] = 1,
+            GroupMappingScenario::StationMissing => {
+                self.set_group_downstream(GroupDownstream::MovedStation);
+            }
+            GroupMappingScenario::ExcessChannels => {
+                esc.registers[4] = u8::MAX;
+                esc.registers[5] = u8::MAX;
+            }
+        }
     }
 
     pub(crate) fn set_group_downstream(&mut self, condition: GroupDownstream) {
