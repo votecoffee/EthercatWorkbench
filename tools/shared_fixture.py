@@ -72,13 +72,29 @@ def verify_shared_memory(cli, root, destination, cli_call):
             client.request("GET", "/v1/status")
             response = client.getresponse()
             data = json.loads(response.read())
-            return data["data"]["acquisition"]["cycles"] if data["data"]["acquisition"] else None
+            if response.status == 200 and data["active"] and data["data"]["acquisition"]:
+                return data["data"]["acquisition"]["cycles"]
         except (OSError, http.client.HTTPException):
             return None
         finally:
             client.close()
 
-    def run(label, profile, seconds=2, extra=(), stalled=False, kill=False, stop_locked=False):
+    def wait_for_http_cycles(proc, errors, after=None):
+        deadline = time.monotonic() + 1
+        last = None
+        while time.monotonic() < deadline and proc.poll() is None:
+            cycles = http_cycles(errors)
+            if cycles is not None:
+                last = cycles
+                if after is None or cycles > after:
+                    return cycles
+            time.sleep(.005)
+        raise AssertionError(f"HTTP cycles failed to advance under the held mutex: before={after}, last={last}, "
+                             f"publisher exit={proc.poll()}, stderr={errors.read_text(encoding='utf-8')}")
+
+    held_mutex_observations = {}
+
+    def run(label, profile, seconds=2, extra=(), *, stalled=False, kill=False, stop_locked=False, expect_input_loss=False):
         base = destination / label
         config = base.with_suffix(".profile.json")
         config.write_text(json.dumps(profile), encoding="utf-8")
@@ -96,7 +112,9 @@ def verify_shared_memory(cli, root, destination, cli_call):
                         if reader is None:
                             reader = module.Reader(name)
                         value = reader.read()
-                        if value and value["event_index"] and value["valid"]:
+                        if (value and value["active"] and value["publisher_alive"] and value["event_index"]
+                                and (value["valid"] or (expect_input_loss and value["last_valid"]))):
+                            records.append(value)
                             break
                     except OSError:
                         pass
@@ -120,17 +138,32 @@ def verify_shared_memory(cli, root, destination, cli_call):
                 if stalled:
                     assert K.WaitForSingleObject(reader.lock, 100) == 0
                     try:
-                        before = http_cycles(errors)
-                        time.sleep(.18)
-                        stale = reader.read()  # Recursive mutex acquisition on this same reader thread.
+                        held = reader.read()  # Recursive acquisition on this same reader thread.
+                        assert held["active"] and held["publisher_alive"] and held["valid"]
+                        before = wait_for_http_cycles(proc, errors)
+                        after = wait_for_http_cycles(proc, errors, after=before)
+                        stale_after_us = profile["shared_memory"]["freshness_ms"] * 1000
+                        until = time.monotonic() + 1
+                        while time.monotonic() < until and proc.poll() is None:
+                            stale = reader.read()
+                            if stale["sample_age_us"] is not None and stale["sample_age_us"] > stale_after_us:
+                                break
+                            time.sleep(.005)
+                        else:
+                            raise AssertionError("shared input age did not cross the freshness limit while the writer was active")
+                        assert stale["active"] and stale["publisher_alive"]
+                        assert stale["valid"] and not stale["current_usable"]
+                        assert stale["publication_index"] == held["publication_index"]
                         busy = cli_call(cli, "read-shared", name)
                         assert busy["status"] == "busy" and busy["snapshot"] is None and busy["raw_sha256"] is None and not busy["current_usable"]
                         blocked = base.with_suffix(".busy.bin")
                         cli_call(cli, "read-shared", name, "--save-raw", blocked, success=False)
                         assert not blocked.exists()
-                        after = http_cycles(errors)
-                        assert stale["valid"] and not stale["current_usable"]
-                        assert after is not None and before is not None and after > before
+                        assert proc.poll() is None, "publisher exited during the held mutex probes"
+                        held_mutex_observations[label] = dict(
+                            before_cycles=before, after_cycles=after, publication_index=held["publication_index"],
+                            sample_age_us=stale["sample_age_us"], freshness_limit_us=stale_after_us,
+                        )
                     finally:
                         assert K.ReleaseMutex(reader.lock)
                 if kill:
@@ -169,6 +202,8 @@ def verify_shared_memory(cli, root, destination, cli_call):
                 assert report["http"]["queue_drops"] == 0 and report["mqtt"]["write_completions"] > 0
                 audit = cli_call(cli, "verify-capture", base.with_suffix(".json"), base.with_suffix(".csv"))
                 assert audit["rows"] == report["valid"]
+                if expect_input_loss:
+                    assert audit["last_cycle_index"] == report["input_health"]["last_valid_cycle"]
                 saved = base.with_suffix(".native.bin")
                 exported = base.with_suffix(".native.json")
                 native = cli_call(cli, "read-shared", name, "--run-report", base.with_suffix(".json"), "--save-raw", saved, "--out", exported)
@@ -209,7 +244,7 @@ def verify_shared_memory(cli, root, destination, cli_call):
             profile = settings(json.loads((root / "samples/synthetic.json").read_bytes()))
             profile["scheduler"] = schedule  # Persist the exact effective profile for typed readers.
             profile["tx"][2]["log"] = False
-            reader, report, records, descriptor = run(schedule, profile, extra=["--scheduler", schedule], stalled=True)
+            reader, report, records, descriptor = run(schedule, profile, 4, ["--scheduler", schedule], stalled=True)
             try:
                 for record in records:
                     assert record["stream_id"] == report["shared_memory"]["stream_id"]
@@ -236,10 +271,32 @@ def verify_shared_memory(cli, root, destination, cli_call):
         reader.close()
         profile = settings(json.loads((root / "samples/virtual.json").read_bytes()))
         profile["input_loss_timeout_ms"] = 0
-        reader, lost, records, _ = run("lost", profile, 1, ["--backend", "virtual", "--virtual-fault", "io-lost", "--input-loss-timeout-ms", "0"])
+        reader, lost, records, _ = run("lost", profile, 2,
+            ["--backend", "virtual", "--virtual-fault", "io-lost", "--input-loss-timeout-ms", "0"], expect_input_loss=True)
         try:
-            invalid = [r for r in records if not r["valid"]]
-            assert invalid and all(r["payload_hex"] is None and r["actual_wkc"] is None and r["al_status"] is None and r["last_valid"] and not r["current_usable"] for r in invalid)
+            invalid = [r for r in records if r["active"] and r["publisher_alive"] and not r["valid"]]
+            assert invalid, "virtual input loss was not observed while the publisher was active"
+            assert 0 < lost["valid"] <= 8 and lost["timeouts"] > 0
+            last_valid_cycle = lost["input_health"]["last_valid_cycle"]
+            last_valid_cyclic_elapsed = lost["input_health"]["last_valid_elapsed_us"]
+            assert 0 <= last_valid_cyclic_elapsed <= lost["cyclic_elapsed_us"]
+            last_valid_shared_elapsed = None
+            for sample in invalid:
+                assert not sample["current_usable"]
+                assert sample["payload_hex"] is None and sample["actual_wkc"] is None and sample["al_status"] is None
+                retained = sample["last_valid"]
+                assert retained and retained["cycle_index"] == last_valid_cycle
+                assert retained["event_index"] < sample["event_index"]
+                assert len(bytes.fromhex(retained["payload_hex"])) == profile["tx_bytes"]
+                if last_valid_shared_elapsed is None:
+                    last_valid_shared_elapsed = retained["elapsed_us"]
+                assert retained["elapsed_us"] == last_valid_shared_elapsed <= sample["elapsed_us"]
+            loss_observation = dict(
+                attached_with_valid_input=records[0]["valid"], first_event_index=records[0]["event_index"],
+                active_invalid_observations=len(invalid), valid_csv_samples=lost["capture"]["written"],
+                last_valid_cycle=last_valid_cycle, last_valid_cyclic_elapsed_us=last_valid_cyclic_elapsed,
+                last_valid_shared_elapsed_us=last_valid_shared_elapsed,
+            )
             assert lost["stopped_al"] == [1, 0]
             assert all(lost["virtual_esc"][key] == 0 for key in ["logical_writes", "physical_output_writes", "coe_downloads", "op_requests", "dc_enable_requests"])
         finally:
@@ -321,6 +378,8 @@ def verify_shared_memory(cli, root, destination, cli_call):
         cli_call(cli, "compare-runs", run_file, destination / "deadline.native.json", success=False)
         summary = dict(trials=[dict(cycles=r["cycles"], valid=r["valid"], shared_memory=r["shared_memory"], csv_overruns=r["capture"]["overruns"]) for r in reports],
             dacl=descriptor, virtual_invalid_init="passed", retained_handle_collision="passed", restart_identity="passed", writer_death="passed", abandoned_reader="passed", busy_shutdown=busy_stop["shared_memory"], native_reader_and_typed_review="passed", offline_rejections="passed")
+        summary["held_mutex_observations"] = held_mutex_observations
+        summary["virtual_loss_observation"] = loss_observation
         (destination / "shared-verification.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return summary
     finally:
