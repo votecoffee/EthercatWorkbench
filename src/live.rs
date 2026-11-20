@@ -430,7 +430,7 @@ fn safeop_configured(
 ) -> Result<()> {
     ensure!(
         dc_trial.is_none() || matches!(&port.io, PacketIo::Virtual(_)),
-        "SYNC0 rehearsal requires in-memory transport"
+        "DC rehearsal requires in-memory transport"
     );
     if stop.load(Relaxed) {
         return Ok(());
@@ -469,7 +469,7 @@ fn safeop_configured(
     );
 
     let setup = (|| {
-        let mut group = port
+        let group = port
             .drive(
                 &mut tx,
                 &mut rx,
@@ -499,13 +499,9 @@ fn safeop_configured(
         if dc_trial.is_some() {
             ensure!(
                 sd.dc_support().enhanced(),
-                "SYNC0 rehearsal requires enhanced DC"
+                "DC rehearsal requires enhanced DC"
             );
-            for mut member in group.iter_mut(&main) {
-                member.set_dc_sync(ethercrab::DcSync::Sync0);
-            }
         }
-        let sd = group.subdevice(&main, 0)?;
         let protocols = port.drive(
             &mut tx,
             &mut rx,
@@ -576,12 +572,10 @@ fn safeop_configured(
                 dc: DcReadback {
                     support: format!("{:?}", sd.dc_support()),
                     enhanced_sync_supported: sd.dc_support().enhanced(),
-                    requested_sync: if dc_trial.is_some() {
-                        "virtual SYNC0"
-                    } else {
-                        "disabled"
-                    }
-                    .into(),
+                    requested_sync: dc_trial
+                        .as_deref()
+                        .map_or("disabled", virtual_dc::Trial::sync_name)
+                        .into(),
                     initial_offset_setup_attempted: sd.dc_support().any(),
                     static_sync_iterations: 0,
                     cyclic_clock_distribution: false,
@@ -704,21 +698,21 @@ fn safeop_configured(
         );
         check_cancel(Some(stop))?;
         if let Some(trial) = dc_trial.as_deref_mut() {
-            trial.attempted_station = Some(station);
-            let group = port
-                .drive(
-                    &mut tx,
-                    &mut rx,
-                    Some(stop),
-                    group.configure_dc_sync(&main, trial.configuration()),
-                )
-                .context("configure virtual SYNC0 with EtherCrab")?;
-            port.drive(&mut tx, &mut rx, Some(stop), group.into_safe_op(&main))
-                .context("request virtual SYNC0 SAFEOP")?;
-        } else {
-            port.drive(&mut tx, &mut rx, Some(stop), group.into_safe_op(&main))
-                .context("request SAFEOP")?;
+            trial.program(
+                LiveBus {
+                    port,
+                    tx: &mut tx,
+                    rx: &mut rx,
+                    main: &main,
+                    station,
+                    input: profile.tx_bytes,
+                    timeout: Duration::ZERO,
+                },
+                stop,
+            )?;
         }
+        port.drive(&mut tx, &mut rx, Some(stop), group.into_safe_op(&main))
+            .context("request SAFEOP")?;
         let al = port.drive(
             &mut tx,
             &mut rx,

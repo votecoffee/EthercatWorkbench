@@ -337,11 +337,22 @@ enum Command {
         #[arg(long)]
         sha256: String,
     },
-    /// Rehearse SYNC0 setup, reference-clock traffic and teardown on one in-memory device.
+    /// Rehearse reviewed DC setup, reference-clock traffic and teardown on one in-memory device.
     RehearseDc {
         profile: PathBuf,
+        /// Explicit SYNC0 period in nanoseconds.
+        #[arg(
+            long,
+            required_unless_present = "from_esi",
+            conflicts_with = "from_esi"
+        )]
+        period_ns: Option<u32>,
+        /// Enable SYNC1 and set its register delay in nanoseconds. Zero enables coincident SYNC1.
+        #[arg(long, conflicts_with = "from_esi")]
+        sync1_delay_ns: Option<u32>,
+        /// Resolve timing from the profile's staged ESI mode.
         #[arg(long)]
-        period_ns: u32,
+        from_esi: bool,
         #[arg(long)]
         start_delay_ns: u32,
         #[arg(long, default_value_t = 3)]
@@ -961,20 +972,25 @@ fn main() -> Result<()> {
         Command::RehearseDc {
             profile,
             period_ns,
+            sync1_delay_ns,
+            from_esi,
             start_delay_ns,
             cycles,
             scenario,
             out,
         } => {
+            use ethercat_workbench::live::virtual_dc::{TimingRequest, run};
             shared_outputs(out.as_deref(), None)?;
             let profile = Profile::load(&profile)?;
-            let report = ethercat_workbench::live::virtual_dc::run(
-                &profile,
-                period_ns,
-                start_delay_ns,
-                cycles,
-                scenario,
-            )?;
+            let timing = if from_esi {
+                TimingRequest::StagedEsi
+            } else {
+                TimingRequest::Manual {
+                    period_ns: period_ns.context("specify --period-ns or --from-esi")?,
+                    sync1_delay_ns,
+                }
+            };
+            let report = run(&profile, timing, start_delay_ns, cycles, scenario)?;
             inspection_export(&report, out.as_deref())?;
             if let Some(error) = report.error {
                 bail!("{error}");

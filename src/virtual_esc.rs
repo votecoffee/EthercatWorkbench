@@ -16,6 +16,7 @@ pub(crate) const DC_TIME: u16 = 0x0910;
 pub(crate) const DC_ACTIVATION: u16 = 0x0981;
 pub(crate) const DC_START: u16 = 0x0990;
 pub(crate) const DC_SYNC0_CYCLE: u16 = 0x09a0;
+pub(crate) const DC_SYNC1_DELAY: u16 = 0x09a4;
 const VIRTUAL_DC_STARTING_TIME: u64 = 1_000_000_000;
 const FRMW: u8 = 0x0e;
 
@@ -131,6 +132,8 @@ pub struct VirtualStats {
     pub dc_activation_writes: u64,
     pub dc_enable_requests: u64,
     pub dc_clock_distribution: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dc_program_writes: Vec<DcProgramWrite>,
     pub sync_manager_writes: u64,
     pub fmmu_writes: u64,
     pub logical_reads: u64,
@@ -228,9 +231,17 @@ pub enum DcRehearsalCase {
     #[default]
     Normal,
     ActivationMismatch,
+    CycleWriteWkc,
     ReferenceWkc,
     InputWkc,
     DisableRejected,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DcProgramWrite {
+    register: u16,
+    payload: Vec<u8>,
+    wkc: u16,
 }
 
 struct DcRehearsal {
@@ -617,6 +628,14 @@ impl VirtualEsc {
                             });
                         u16::from(!(dc_unavailable || watchdog_unavailable))
                     }
+                    0x05 if self.dc_rehearsal.is_some()
+                        && matches!(
+                            register,
+                            DC_ACTIVATION | DC_START | DC_SYNC0_CYCLE | DC_SYNC1_DELAY
+                        ) =>
+                    {
+                        self.dc_program_write(register, data)?
+                    }
                     0x02 | 0x05 | 0x08 => {
                         self.write(usize::from(register), data)?;
                         u16::from(register != 0x0900 || self.model == VirtualModel::CoeDc)
@@ -740,11 +759,40 @@ impl VirtualEsc {
         Ok(())
     }
 
+    fn dc_program_write(&mut self, register: u16, data: &[u8]) -> Result<u16> {
+        let width = match register {
+            DC_ACTIVATION => 1,
+            DC_START => 8,
+            DC_SYNC0_CYCLE | DC_SYNC1_DELAY => 4,
+            _ => unreachable!("checked DC programming register"),
+        };
+        ensure!(
+            data.len() == width,
+            "virtual DC register {register:#06x} requires a {width}-byte write, got {}",
+            data.len()
+        );
+        let rejected = register == DC_SYNC1_DELAY
+            && self
+                .dc_rehearsal
+                .as_ref()
+                .is_some_and(|dc| dc.case == DcRehearsalCase::CycleWriteWkc);
+        if !rejected {
+            self.write(usize::from(register), data)?;
+        }
+        let wkc = u16::from(!rejected);
+        self.stats.dc_program_writes.push(DcProgramWrite {
+            register,
+            payload: data.to_vec(),
+            wkc,
+        });
+        Ok(wkc)
+    }
+
     fn reference_clock(&mut self, data: &mut [u8]) -> Result<u16> {
         ensure!(
             word(&self.registers[0x0130..]) == 4
-                && self.registers[usize::from(DC_ACTIVATION)] & 7 == 3,
-            "virtual reference clock requires active SYNC0 in SAFEOP"
+                && matches!(self.registers[usize::from(DC_ACTIVATION)] & 7, 3 | 7),
+            "virtual reference clock requires active DC in SAFEOP"
         );
         let dc = self.dc_rehearsal.as_mut().expect("checked DC rehearsal");
         if dc.case == DcRehearsalCase::ReferenceWkc && self.stats.dc_clock_distribution == 2 {
@@ -790,16 +838,17 @@ impl VirtualEsc {
                             .as_ref()
                             .context("virtual fixture rejects DC enable requests")?;
                         ensure!(
-                            data == [3]
+                            data.len() == 1
+                                && matches!(data[0], 3 | 7)
                                 && word(&self.registers[0x0130..]) == 2
                                 && dword(&self.registers[usize::from(DC_SYNC0_CYCLE)..]) != 0,
-                            "virtual DC rehearsal expects configured SYNC0 in PREOP"
+                            "virtual DC rehearsal expects a configured SYNC option in PREOP"
                         );
                         self.registers[register] = if dc.case == DcRehearsalCase::ActivationMismatch
                         {
-                            1
+                            data[0] & !2
                         } else {
-                            3
+                            data[0]
                         };
                         return Ok(());
                     }
@@ -1339,7 +1388,29 @@ fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{Datagram, FPRD, Frame};
+    use crate::wire::{Datagram, FPRD, FPWR, Frame};
+
+    #[test]
+    fn dc_rehearsal_rejects_a_cycle_write_that_reaches_latch_registers() {
+        let mut wire = VirtualWire::for_dc_rehearsal(DcRehearsalCase::Normal);
+        let sentinel = [2, 3, 0x5a, 0xa5];
+        wire.devices[0].registers[0x09a8..0x09ac].copy_from_slice(&sentinel);
+        let frame = Frame::new(1, [Datagram::register(FPRD, 0, DC_SYNC1_DELAY, 8)]);
+        let mut oversized = frame.bytes().to_vec();
+        oversized[16] = FPWR;
+        let error = wire.send(&oversized).unwrap_err();
+        assert!(error.to_string().contains("requires a 4-byte write, got 8"));
+        assert!(wire.stats().dc_program_writes.is_empty());
+
+        let frame = Frame::new(2, [Datagram::register(FPRD, 0, DC_SYNC1_DELAY, 4)]);
+        let mut exact = frame.bytes().to_vec();
+        exact[16] = FPWR;
+        exact[26..30].copy_from_slice(&500_000u32.to_le_bytes());
+        wire.send(&exact).unwrap();
+        assert_eq!(wire.stats().dc_program_writes[0].wkc, 1);
+        assert_eq!(dword(&wire.devices[0].registers[0x09a4..]), 500_000);
+        assert_eq!(wire.devices[0].registers[0x09a8..0x09ac], sentinel);
+    }
 
     #[test]
     fn two_devices_accumulate_broadcast_and_resolve_auto_increment_positions() {

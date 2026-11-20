@@ -1,6 +1,6 @@
 # ESI synchronization review
 
-Workbench imports an offline subset of `Device/Dc/OpMode` and `Device/OpMode/Dc`. Each mode retains its name, description, XML path, `AssignActivate`, cycle and shift values, factors, input flags and input/output delay annotations. Unknown children and attributes are flagged. Selecting a mode stages a review and preserves the ESI filename, SHA-256 and exact device identity. The native runtime requests disabled SYNC. A separate [virtual SYNC0 rehearsal](ethercrab-review.md#virtual-sync0-rehearsal) exercises EtherCrab with explicit fixture timing. The preview never configures device clocks, changes PDO assignments, enters OP or publishes staged outputs.
+Workbench imports an offline subset of `Device/Dc/OpMode` and `Device/OpMode/Dc`. Each mode retains its name, description, XML path, `AssignActivate`, cycle and shift values, factors, input flags and input/output delay annotations. Unknown children and attributes are flagged. Selecting a mode stages a review and preserves the ESI filename, SHA-256 and exact device identity. The native runtime requests disabled SYNC. A separate [virtual DC rehearsal](ethercrab-review.md#virtual-sync0-rehearsal) exercises EtherCrab with explicit or resolved staged ESI timing. The preview never configures device clocks, changes PDO assignments, enters OP or publishes staged outputs.
 
 The resolver follows the timing rules documented in the [ESI schema published with Synapticon's SII tool](https://github.com/synapticon/siitool/blob/c46570adb1228eada44ae1f38bd61a81fab99c98/examples/ModulesSlots_DS402_Simple/EtherCATInfo.xsd). A nonzero cycle literal takes precedence over its factor. For a zero SYNC0 literal, a positive factor multiplies the explicit sync-unit assumption and a negative factor divides it. For a zero SYNC1 literal, a positive factor multiplies the resolved SYNC0 cycle; a negative factor multiplies the sync-unit assumption by the factor's absolute value. The negative-factor rules differ between SYNC0 and SYNC1.
 
@@ -9,6 +9,17 @@ The sync-unit assumption is a separate manual profile setting. Workbench does no
 The run report keeps the selected mode and assumption in `sync_review`. Its `applied` field is always false. On enhanced-DC devices, startup reads the little-endian word at `0x0980`/`0x0981` alongside activation and the SYNC0/SYNC1 cycle registers. The review compares these three register values with staged expectations and reports matched, different, unavailable, unresolved or not declared. A match describes only those saved/read-back values; it does not establish a complete operating-mode match, clock alignment or device acceptance.
 
 `review-sync --readback` reads a saved JSON run report and requires its single-device identity to match the profile. Saved data is labeled as a saved report, not a current bus observation. Reports without the newer full assignment/activation readback retain an unavailable result rather than an inferred zero. Differences are review results and do not cause this offline command to fail. Invalid input or an identity mismatch does fail.
+
+## Rehearse a staged DC mode
+
+Use the authored fixture to import a supported mode and resolve its factor-based SYNC0 and SYNC1 timing. The explicit sync-unit assumption is independent of the host period.
+
+```powershell
+.\ethercat-workbench-cli.exe esi-import samples/sync-rehearsal.esi.xml --device 0 --dc-mode 0 --sync-unit-cycle-ns 1000000 --out .local/sync01.json
+.\ethercat-workbench-cli.exe rehearse-dc .local/sync01.json --from-esi --start-delay-ns 2000123 --out .local/sync01-run.json
+```
+
+This fixture resolves SYNC0 to 500,000 ns and the SYNC1 delay to 500,000 ns. Its assignment selects both sync signals. The rehearsal report retains the ESI hash, mode and assumption alongside register readbacks. It accepts only modes for the authored CoE/DC identity with supported activation bits, resolved timing and absent or zero shifts. Mode-specific SM settings and vendor annotations require separate handling. The [rehearsal](ethercrab-review.md#virtual-sync0-rehearsal) uses one virtual reference station. Hardware activation and physical pulse measurements remain pending.
 
 ## CoE cycle and minimum-cycle snapshots
 

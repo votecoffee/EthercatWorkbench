@@ -2351,6 +2351,7 @@ def verify_dc_rehearsal(cli, destination):
         assert report["device"]["al_status"] == 4
         trial = report["trial"]
         assert trial["period_ns"] == period and trial["start_delay_ns"] == delay
+        assert trial["sync1_delay_ns"] is None and trial["timing_origin"] == {"kind": "manual"}
         assert trial["start_register_ns"] == {"value": start_register, "unavailable": None}
         assert trial["reference_before_cycles_ns"]["value"] == reference_at_setup
         assert trial["activation_after_disable"] == {"value": disable, "unavailable": None}
@@ -2361,6 +2362,12 @@ def verify_dc_rehearsal(cli, destination):
         assert dc["cyclic_clock_distribution"] == (count > 0)
         wire = report["wire"]
         assert wire["dc_enable_requests"] == 1 and wire["dc_clock_distribution"] == count
+        expected_writes = [(0x0981, 0, 1), (0x0990, start_register, 8), (0x09A0, period, 4),
+                           (0x09A4, 0, 4), (0x0981, 3, 1), (0x0981, 0, 1)]
+        assert wire["dc_program_writes"] == [
+            {"register": offset, "payload": list(value.to_bytes(width, "little")), "wkc": 1}
+            for offset, value, width in expected_writes
+        ]
         assert wire["logical_reads"] == reads and wire["state_requests"] == [1, 2, 4, 1]
         assert wire["logical_writes"] == wire["physical_output_writes"] == wire["op_requests"] == 0
         assert len(report["cycles"]) == count
@@ -2389,6 +2396,7 @@ def verify_dc_rehearsal(cli, destination):
     stale = cli_call(cli, "rehearse-dc", profile, "--period-ns", period, "--start-delay-ns", 0, success=False)
     assert "future aligned time" in stale["error"] and stale["trial"]["activation_after_disable"]["value"] == 0
     assert stale["stopped_al"] == [1, 0] and not stale["cycles"]
+    assert stale["wire"]["dc_enable_requests"] == 0
     existing = destination / "normal.json"
     contents = existing.read_bytes()
     assert "exists" in cli_call(cli, "rehearse-dc", profile, *expected_options, "--out", existing, success=False)
@@ -2403,6 +2411,79 @@ def verify_dc_rehearsal(cli, destination):
         options[options.index(key) + 1] = value
         assert reason in cli_call(cli, "rehearse-dc", profile, *options, "--out", refused, success=False)
         assert not refused.exists()
+
+
+def verify_dc_esi_modes(cli, destination):
+    sample = ROOT / "samples"
+    raw_profile = sample / "virtual-dc.json"
+    delay = 2_000_123
+    base = ["--start-delay-ns", delay, "--cycles", 2]
+    xml = sample / "sync-rehearsal.esi.xml"
+
+    def step(report, period, sync1):
+        activation = 3 if sync1 is None else 7
+        assert report["trial"]["period_ns"] == period and report["trial"]["sync1_delay_ns"] == sync1
+        assert report["stopped_al"] == [1, 0] and report["trial"]["activation_after_disable"]["value"] == 0
+        dc = report["synchronization"]["dc"]
+        assert dc["assign_activate"]["value"] == (activation << 8)
+        assert dc["activation"]["value"] == activation
+        assert dc["sync0_cycle_ns"]["value"] == period and dc["sync1_cycle_ns"]["value"] == (sync1 or 0)
+        assert [cycle["reference_ns"] for cycle in report["cycles"]] == [1_000_000_000 + i * period for i in (1, 2)]
+        trace = report["wire"]["dc_program_writes"]
+        assert [(x["register"], len(x["payload"]), x["wkc"]) for x in trace] == (
+            [(0x0981, 1, 1), (0x0990, 8, 1), (0x09A0, 4, 1),
+             (0x09A4, 4, 1), (0x0981, 1, 1), (0x0981, 1, 1)]
+        )
+        assert int.from_bytes(bytes(trace[3]["payload"]), "little") == (sync1 or 0)
+        assert trace[4]["payload"] == [activation] and trace[5]["payload"] == [0]
+        assert report["wire"]["logical_writes"] == report["wire"]["physical_output_writes"] == report["wire"]["op_requests"] == 0
+
+    for explicit in (0, 200_000):
+        report = cli_call(cli, "rehearse-dc", raw_profile, "--period-ns", 700_000,
+                          "--sync1-delay-ns", explicit, *base, "--out", destination / f"manual-{explicit}.json")
+        assert report["scope"] == "virtual_sync01_rehearsal"
+        assert report["trial"]["timing_origin"] == {"kind": "manual"}
+        step(report, 700_000, explicit)
+
+    for index, name, period, sync1 in [(0, "Sync01-Factors", 500_000, 500_000), (1, "Fixed-Sync0", 700_000, None)]:
+        profile = destination / f"mode-{index}.json"
+        cli_call(cli, "esi-import", xml, "--device", 0, "--dc-mode", index,
+                 "--sync-unit-cycle-ns", 1_000_000, "--out", profile)
+        source = profile.read_bytes()
+        report = cli_call(cli, "rehearse-dc", profile, "--from-esi", *base, "--out", destination / f"mode-{index}-run.json")
+        assert report["trial"]["timing_origin"] == {
+            "kind": "staged_esi", "file_name": xml.name, "sha256": hashlib.sha256(xml.read_bytes()).hexdigest(),
+            "mode_index": index, "mode_name": name, "sync_unit_cycle_ns": 1_000_000,
+        }
+        assert report["host_requested_cycle_us"] == 1000
+        assert profile.read_bytes() == source
+        step(report, period, sync1)
+
+    failure = cli_call(cli, "rehearse-dc", raw_profile, "--period-ns", 700_000,
+                       "--sync1-delay-ns", 200_000, *base, "--scenario", "cycle-write-wkc", success=False)
+    assert "program SYNC1 delay register" in failure["error"]
+    assert failure["stopped_al"] == [1, 0] and failure["setup_failure_al"] == [2, 0]
+    assert failure["trial"]["activation_after_disable"]["value"] == 0 and not failure["cycles"]
+    assert failure["wire"]["dc_enable_requests"] == failure["wire"]["dc_clock_distribution"] == 0
+    trace = failure["wire"]["dc_program_writes"]
+    assert [(entry["register"], entry["wkc"]) for entry in trace] == (
+        [(0x0981, 1), (0x0990, 1), (0x09A0, 1), (0x09A4, 0), (0x0981, 1)]
+    )
+
+    refused = destination / "refused.json"
+    missing = cli_call(cli, "rehearse-dc", raw_profile, "--from-esi", *base, "--out", refused, success=False)
+    assert "requires a staged ESI DC mode" in missing and not refused.exists()
+    assert "cannot be used" in cli_call(cli, "rehearse-dc", raw_profile, "--period-ns", 700_000,
+                                      "--from-esi", *base, success=False)
+    for filename, index, marker in [
+        ("sync-rehearsal.esi.xml", 0, "SYNC0 cycle unresolved"),
+        ("sync-modes.esi.xml", 2, "resolved zero SYNC shifts"),
+        ("sync-modes.esi.xml", 0, "AssignActivate 0x0300 or 0x0700"),
+    ]:
+        profile = destination / f"unsupported-{filename}-{index}.json"
+        cli_call(cli, "esi-import", sample / filename, "--device", 0, "--dc-mode", index, "--out", profile)
+        error = cli_call(cli, "rehearse-dc", profile, "--from-esi", *base, "--out", refused, success=False)
+        assert marker in error and not refused.exists()
 
 
 def verify_output_plan(cli, destination):
@@ -3552,6 +3633,9 @@ def main():
     dc_rehearsal_destination = destination / "dc-rehearsal"
     dc_rehearsal_destination.mkdir()
     verify_dc_rehearsal(cli, dc_rehearsal_destination)
+    dc_esi_destination = destination / "dc-esi-rehearsal"
+    dc_esi_destination.mkdir()
+    verify_dc_esi_modes(cli, dc_esi_destination)
     pcap_destination = destination / "pcap"
     pcap_destination.mkdir()
     verify_pcap(cli, pcap_destination)
