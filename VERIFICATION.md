@@ -604,3 +604,11 @@ The release CLI copied the exact manifest, profiles, raw frame fixture, saved re
 Focused tests checked independent SHA-256 values, a complete unrotated three-row capture, and a partial two-row prefix that preserved an unrelated conflicting part. They also checked existing destinations, altered CSV values, changed manifest bytes with the same length, inconsistent layout metadata, missing parts and an interrupted export. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
 
 The bundle contains saved offline evidence. Live grouped acquisition and physical timing qualification remain pending.
+
+## Version 0.58.0 two-device virtual group replay (2026-11-20)
+
+The Windows x64 release CLI generated repeatable replies from the CoE and SII virtual ESCs. The virtual wire processed one logical read per ESC and cycle with zero bus writes and no state requests. Both scenarios covered 12 cycles, datagram index wrap and two modeled connection generations. The replay checked the supplied FMMU, SyncManager and TxPDO evidence and logged independent typed inputs from both positions.
+
+Every-valid replay wrote 12 clean rows and seven faulted rows. On-change replay wrote three rows for each scenario. The faulted sequence distinguished partial LRD WKC, three invalid AL observations, two unmatched cycles, and a late reply preceding the matching reply. It preserved the virtual scenario label and reported a 2,000 µs longest matched-reply gap and a 4,000 µs longest valid-input gap on the fixture clock. The audit verified the rotated CSV rows and reverified all seven faulted rows after relocation of the evidence bundle. Existing fixture output and incompatible device order were rejected.
+
+Formatting, Clippy, 181 Rust tests and the locked Windows x64 MSVC release build passed. Generation, CSV capture and verification were exercised headlessly. The virtual timestamps describe the authored fixture. Native GUI interaction, physical SAFEOP acceptance, grouped bus setup and measured bench timing remain open.

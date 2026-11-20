@@ -1,4 +1,5 @@
-//! Authored EtherCAT ESCs and in-memory transport for discovery and one-device setup.
+//! Authored EtherCAT ESCs and in-memory transport for discovery and process data.
+use crate::model::Identity;
 use crate::wire::{APRD, BRD};
 use anyhow::{Result, bail, ensure};
 use clap::ValueEnum;
@@ -23,6 +24,20 @@ pub enum VirtualModel {
 }
 
 impl VirtualModel {
+    pub(crate) fn identity(self) -> Identity {
+        Identity {
+            vendor: 0x00ff_1000,
+            product: match self {
+                Self::Coe => 1,
+                Self::Sii => 2,
+                Self::CoeDc => 3,
+                Self::CoeNormal => 4,
+                Self::CoeSegmented => 5,
+            },
+            revision: 1,
+        }
+    }
+
     pub fn has_coe(self) -> bool {
         self != Self::Sii
     }
@@ -131,6 +146,20 @@ struct Upload {
     toggle: bool,
 }
 
+pub(crate) const GROUP_STATIONS: [u16; 2] = [0x1000, 0x1001];
+pub(crate) const GROUP_MODELS: [VirtualModel; 2] = [VirtualModel::Coe, VirtualModel::Sii];
+pub(crate) const GROUP_TX_BYTES: usize = 8;
+pub(crate) const GROUP_RX_BYTES: usize = 2;
+
+#[derive(Default)]
+pub(crate) enum GroupDownstream {
+    #[default]
+    Clean,
+    Preop,
+    AlError,
+    MovedStation,
+}
+
 pub(crate) struct VirtualWire {
     devices: Vec<VirtualEsc>,
     replies: VecDeque<Vec<u8>>,
@@ -171,6 +200,85 @@ impl VirtualWire {
         let mut wire = Self::single(first);
         wire.devices.push(second);
         wire
+    }
+
+    pub(crate) fn for_group_replay() -> Self {
+        let mut wire = Self::single(VirtualEsc::for_scan(GROUP_MODELS[0], ScanCase::Normal));
+        wire.devices
+            .push(VirtualEsc::for_scan(GROUP_MODELS[1], ScanCase::Normal));
+        for (index, esc) in wire.devices.iter_mut().enumerate() {
+            // Seed the authored SAFEOP layout directly. All wire datagrams are reads.
+            let input_start = (index * GROUP_TX_BYTES) as u32;
+            let output_start =
+                (GROUP_MODELS.len() * GROUP_TX_BYTES + GROUP_RX_BYTES * index) as u32;
+            esc.logical_starts = (input_start, output_start);
+            esc.registers[0x0010..0x0012].copy_from_slice(&GROUP_STATIONS[index].to_le_bytes());
+            esc.registers[0x0130] = 4;
+            esc.logical_counter_offset = index as u16;
+            let (input_sm, output_sm, input_fmmu, output_fmmu) = if index == 0 {
+                (3, 2, 0, 1)
+            } else {
+                (1, 0, 1, 0)
+            };
+            for (sm, fmmu, logical, physical, length, mode) in [
+                (
+                    input_sm,
+                    input_fmmu,
+                    input_start,
+                    INPUTS,
+                    GROUP_TX_BYTES as u16,
+                    1,
+                ),
+                (
+                    output_sm,
+                    output_fmmu,
+                    output_start,
+                    OUTPUTS,
+                    GROUP_RX_BYTES as u16,
+                    2,
+                ),
+            ] {
+                let physical = u16::try_from(physical).unwrap().to_le_bytes();
+                let length = length.to_le_bytes();
+                let base = 0x0800 + sm * 8;
+                esc.registers[base..base + 7].copy_from_slice(&[
+                    physical[0],
+                    physical[1],
+                    length[0],
+                    length[1],
+                    if mode == 1 { 0 } else { 4 },
+                    0,
+                    1,
+                ]);
+                let base = 0x0600 + fmmu * 16;
+                esc.registers[base..base + 4].copy_from_slice(&logical.to_le_bytes());
+                esc.registers[base + 4..base + 13].copy_from_slice(&[
+                    length[0],
+                    length[1],
+                    0,
+                    7,
+                    physical[0],
+                    physical[1],
+                    0,
+                    mode,
+                    1,
+                ]);
+            }
+        }
+        wire
+    }
+
+    pub(crate) fn set_group_downstream(&mut self, condition: GroupDownstream) {
+        let esc = &mut self.devices[1];
+        let (state, code, station) = match condition {
+            GroupDownstream::Clean => (4, 0, GROUP_STATIONS[1]),
+            GroupDownstream::Preop => (2, 0, GROUP_STATIONS[1]),
+            GroupDownstream::AlError => (4, 0x1e, GROUP_STATIONS[1]),
+            GroupDownstream::MovedStation => (4, 0, GROUP_STATIONS[1] + 1),
+        };
+        esc.registers[0x0130] = state;
+        esc.registers[0x0134] = code;
+        esc.registers[0x0010..0x0012].copy_from_slice(&station.to_le_bytes());
     }
 
     pub fn stats(&self) -> VirtualStats {
@@ -214,6 +322,7 @@ pub(crate) struct VirtualEsc {
     fault: VirtualFault,
     model: VirtualModel,
     logical_starts: (u32, u32),
+    logical_counter_offset: u16,
     clock_started: Instant,
     transport_lost: bool,
     upload: Option<Upload>,
@@ -250,6 +359,7 @@ impl VirtualEsc {
             fault,
             model,
             logical_starts: (0, 8),
+            logical_counter_offset: 0,
             clock_started: Instant::now(),
             transport_lost: false,
             upload: None,
@@ -799,7 +909,8 @@ impl VirtualEsc {
         if word(&self.registers[0x0130..]) != 4 || !self.process_configuration_valid() {
             return Ok(0);
         }
-        let step = ((self.stats.logical_reads - 1) / 4) as u16;
+        let step =
+            (((self.stats.logical_reads - 1) / 4) as u16).wrapping_add(self.logical_counter_offset);
         self.registers[INPUTS..INPUTS + 2].copy_from_slice(&step.to_le_bytes());
         self.registers[INPUTS + 2] = (step & 1) as u8;
         self.registers[INPUTS + 4..INPUTS + 8]
@@ -838,19 +949,11 @@ fn dword(bytes: &[u8]) -> u32 {
 
 fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
     let mut bytes = vec![0u8; 512];
+    let identity = model.identity();
     for (offset, value) in [
-        (0x10, 0x00ff_1000u32),
-        (
-            0x14,
-            match model {
-                VirtualModel::Coe => 1,
-                VirtualModel::Sii => 2,
-                VirtualModel::CoeDc => 3,
-                VirtualModel::CoeNormal => 4,
-                VirtualModel::CoeSegmented => 5,
-            },
-        ),
-        (0x18, 1),
+        (0x10, identity.vendor),
+        (0x14, identity.product),
+        (0x18, identity.revision),
         (0x1c, 1),
     ] {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -954,56 +1057,8 @@ mod tests {
         let group = InputGroup::load(&path).unwrap();
         let plan = group.inspect(None).unwrap();
         assert_eq!((plan.input_bytes, plan.expected_wkc), (16, 2));
-        let mut wire =
-            VirtualWire::single(VirtualEsc::for_scan(VirtualModel::Coe, ScanCase::Normal));
-        wire.devices
-            .push(VirtualEsc::for_scan(VirtualModel::Sii, ScanCase::Normal));
-        let stations = [0x1000u16, 0x1001];
-        for (index, (esc, device)) in wire.devices.iter_mut().zip(&plan.devices).enumerate() {
-            // Seed the authored SAFEOP layout directly; all wire datagrams are reads.
-            let input_start = u32::try_from(device.offset.unwrap()).unwrap();
-            let output_start = u32::try_from(plan.input_bytes + 2 * index).unwrap();
-            assert_eq!(device.tx_bytes, 8);
-            esc.logical_starts = (input_start, output_start);
-            esc.registers[0x0010..0x0012].copy_from_slice(&stations[index].to_le_bytes());
-            esc.registers[0x0130] = 4;
-            esc.stats.logical_reads = (index * 4) as u64;
-            let (input_sm, output_sm, input_fmmu, output_fmmu) = if index == 0 {
-                (3, 2, 0, 1)
-            } else {
-                (1, 0, 1, 0)
-            };
-            for (sm, fmmu, logical, physical, length, mode) in [
-                (input_sm, input_fmmu, input_start, INPUTS, 8u16, 1),
-                (output_sm, output_fmmu, output_start, OUTPUTS, 2u16, 2),
-            ] {
-                let physical = u16::try_from(physical).unwrap().to_le_bytes();
-                let length = length.to_le_bytes();
-                let base = 0x0800 + sm * 8;
-                esc.registers[base..base + 7].copy_from_slice(&[
-                    physical[0],
-                    physical[1],
-                    length[0],
-                    length[1],
-                    if mode == 1 { 0 } else { 4 },
-                    0,
-                    1,
-                ]);
-                let base = 0x0600 + fmmu * 16;
-                esc.registers[base..base + 4].copy_from_slice(&logical.to_le_bytes());
-                esc.registers[base + 4..base + 13].copy_from_slice(&[
-                    length[0],
-                    length[1],
-                    0,
-                    7,
-                    physical[0],
-                    physical[1],
-                    0,
-                    mode,
-                    1,
-                ]);
-            }
-        }
+        let stations = GROUP_STATIONS;
+        let mut wire = VirtualWire::for_group_replay();
         let exchange = |wire: &mut VirtualWire, index| {
             let request = group.expected_frame(index, &stations).unwrap();
             wire.send(request.bytes()).unwrap();

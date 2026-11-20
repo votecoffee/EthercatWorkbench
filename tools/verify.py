@@ -2323,6 +2323,100 @@ def verify_input_group_replay(cli, destination):
     assert audit(nan_base, nan_receipt, source=nan_fixture)["complete"]
 
 
+def verify_generated_group_replay(cli, destination):
+    sample = ROOT / "samples"
+    manifest = sample / "input-group.json"
+    evidence = [argument for name in ("fmmu", "sync-managers", "pdo")
+                for argument in (f"--{name}", sample / f"input-group-{name}.json")]
+    for scenario in ("clean", "faults"):
+        faults = scenario == "faults"
+        expected_valid = [0, 1, 5, 8, 9, 10, 11] if faults else list(range(12))
+        fixture = destination / f"virtual-{scenario}.json"
+        generated = cli_call(cli, "generate-group-replay", manifest, "--scenario", scenario, "--out", fixture)
+        fixture_bytes = fixture.read_bytes()
+        assert generated == json.loads(fixture_bytes)
+        assert generated["schema"] == 1 and generated["stations"] == [0x1000, 0x1001]
+        assert generated["virtual_scenario"] == scenario
+        sent = generated["cycles"]
+        assert [cycle["index"] for cycle in sent] == [((254 + i) & 255) for i in range(12)]
+        assert [(cycle["connection_generation"], cycle["cycle_index"]) for cycle in sent] == (
+            [(1, i) for i in range(1, 9)] + [(2, i) for i in range(1, 5)]
+        )
+        assert "exists" in cli_call(cli, "generate-group-replay", manifest, "--out", fixture, success=False)
+        assert fixture_bytes == fixture.read_bytes()
+        if faults:
+            assert sent[4]["received_hex"] == sent[3]["received_hex"]
+            assert len(sent[5]["received_hex"]) == 2
+            assert not sent[7]["received_hex"]
+        repeat = destination / f"repeat-{scenario}.json"
+        generate_options = ["--scenario", "faults"] if faults else []
+        assert cli_call(cli, "generate-group-replay", manifest, "--out", repeat, *generate_options) == generated
+        assert repeat.read_bytes() == fixture_bytes
+
+        for mode in ("every", "change"):
+            base = destination / f"{scenario}-{mode}.csv"
+            receipt = base.with_suffix(".json")
+            expected_rows = expected_valid if mode == "every" else [0, 5 if faults else 4, 8]
+            mode_options = ["--on-change"] if mode == "change" else []
+            replay = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", base,
+                              "--rotate-rows", 2, "--out", receipt, *evidence, *mode_options)
+            assert replay["virtual_scenario"] == scenario
+            counts = replay["counts"]
+            assert counts == {
+                "cycles": 12, "valid": len(expected_valid), "matched_replies": 10 if faults else 12,
+                "unmatched_cycles": 2 if faults else 0, "wkc_mismatches": int(faults),
+                "invalid_al": 3 if faults else 0, "ignored_frames": 2 if faults else 0,
+            }
+            assert replay["error"] is None and replay["capture"]["overruns"] == 0
+            assert replay["capture"]["written"] == len(expected_rows)
+            assert replay["receive_spacing"]["longest_gap_us"] == (2000 if faults else 1000)
+            assert replay["valid_receive_spacing"]["longest_gap_us"] == (4000 if faults else 1000)
+            cycles = replay["cycles"]
+            assert [i for i, cycle in enumerate(cycles) if cycle["valid"]] == expected_valid
+            if faults:
+                assert cycles[2]["actual_wkc"] == 1 and cycles[2]["al"][1]["status"]["state"] == "PREOP"
+                assert cycles[3]["actual_wkc"] == 2 and cycles[3]["al"][1]["status"]["code"] == 0x1e
+                assert cycles[4]["actual_wkc"] is None and cycles[4]["ignored_frames"] == 1
+                assert cycles[5]["actual_wkc"] == 2 and cycles[5]["ignored_frames"] == 1
+                assert cycles[6]["actual_wkc"] == 2 and cycles[6]["al"][1]["actual_wkc"] == 0
+                assert cycles[7]["actual_wkc"] is None and cycles[7]["ignored_frames"] == 0
+            parts, observations = rows(base)
+            assert len(parts) == (len(expected_rows) + 1) // 2 and not base.exists()
+            for index, (ordinal, row) in enumerate(zip(expected_rows, observations, strict=True), 1):
+                assert row["capture_start_utc"] == generated["capture_start_utc"]
+                assert int(row["elapsed_us"]) == ordinal * 1000 and int(row["sample_index"]) == index
+                assert int(row["connection_generation"]) == sent[ordinal]["connection_generation"]
+                assert int(row["cycle_index"]) == sent[ordinal]["cycle_index"]
+                for position in (0, 1):
+                    counter = ordinal // 4 + position
+                    assert row[f"Position {position} Counter"] == str(counter)
+                    assert row[f"Position {position} Sensor active"] == ("true" if counter & 1 else "false")
+                    assert float(row[f"Position {position} Scaled counter"]) == counter / 4
+            audited = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, base, *evidence)
+            assert audited["complete"] and audited["verified_rows"] == len(expected_rows)
+            if faults and mode == "every":
+                bundle = destination / "virtual-group-bundle"
+                bundled = cli_call(cli, "bundle-group-replay", manifest, fixture, receipt, base,
+                                   "--out", bundle, *evidence)
+                relocated = bundle.rename(destination / "relocated-virtual-group-bundle")
+                reopened = cli_call(cli, "verify-group-bundle", relocated)
+                assert reopened["receipt"] == bundled and reopened["audit"]["complete"]
+                assert reopened["audit"]["verified_rows"] == len(expected_rows)
+                assert bundled["complete"] and bundled["verified_rows"] == len(expected_rows)
+                assert (relocated / "fixture.json").read_bytes() == fixture_bytes
+
+    wrong_manifest = destination / "swapped-devices.json"
+    plan = json.loads(manifest.read_bytes())
+    plan["devices"].reverse()
+    for position, device in enumerate(plan["devices"]):
+        device["position"] = position
+        device["profile"] = str((sample / device["profile"]).resolve())
+    wrong_manifest.write_text(json.dumps(plan), encoding="utf-8")
+    refused = destination / "unexpected.json"
+    error = cli_call(cli, "generate-group-replay", wrong_manifest, "--out", refused, success=False)
+    assert "authored CoE and SII identities in order" in error and not refused.exists()
+
+
 def verify_group_replay_bundle(cli, destination):
     original = destination / "source files"
     original.mkdir()
@@ -3138,6 +3232,9 @@ def main():
     group_bundle_destination = destination / "input-group-bundle"
     group_bundle_destination.mkdir()
     verify_group_replay_bundle(cli, group_bundle_destination)
+    generated_group_destination = destination / "input-group-generated"
+    generated_group_destination.mkdir()
+    verify_generated_group_replay(cli, generated_group_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

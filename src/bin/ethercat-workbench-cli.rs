@@ -72,6 +72,15 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Generate deterministic replies from the authored two-device virtual wire.
+    GenerateGroupReplay {
+        manifest: PathBuf,
+        #[arg(long, value_enum, default_value = "clean")]
+        scenario: ethercat_workbench::input_group::replay::VirtualScenario,
+        /// Save the fixture to a new JSON file.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Replay saved group replies into CSV using the recorded receive times.
     ReplayInputGroup {
         manifest: PathBuf,
@@ -484,6 +493,17 @@ fn main() -> Result<()> {
                 _ => bail!("TxPDO review requires FMMU and SyncManager evidence"),
             };
             inspection_export(&inspection, out.as_deref())
+        }
+        Command::GenerateGroupReplay {
+            manifest,
+            scenario,
+            out,
+        } => {
+            use ethercat_workbench::input_group::{InputGroup, replay};
+            shared_outputs(Some(&out), None)?;
+            let group = InputGroup::load(&manifest)?;
+            let fixture = replay::generate_virtual(&group, scenario)?;
+            inspection_export(&fixture, Some(&out))
         }
         Command::ReplayInputGroup {
             manifest,

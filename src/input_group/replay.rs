@@ -1,4 +1,7 @@
 //! Replay saved group cycles into the bounded CSV writer using the recorded receive clock.
+mod virtual_capture;
+pub use virtual_capture::{VirtualScenario, generate_virtual};
+
 use super::{
     AlRead, InputGroup, Inspection, decode_al_reads, decode_frame_hex, read_json, validate_stations,
 };
@@ -26,16 +29,18 @@ pub struct Options<'a> {
     pub pdo: Option<&'a Path>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Fixture {
+pub struct Fixture {
     schema: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    virtual_scenario: Option<VirtualScenario>,
     capture_start_utc: String,
     stations: Vec<u16>,
     cycles: Vec<RecordedCycle>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RecordedCycle {
     connection_generation: u64,
@@ -77,6 +82,8 @@ struct Counts {
 pub struct Report<'a> {
     schema: u32,
     source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    virtual_scenario: Option<VirtualScenario>,
     fixture_sha256: String,
     stations: Vec<u16>,
     pub(super) plan: Inspection<'a>,
@@ -92,6 +99,7 @@ pub struct Report<'a> {
 }
 
 pub(super) struct PreparedReplay<'a> {
+    virtual_scenario: Option<VirtualScenario>,
     pub(super) utc_start: String,
     pub(super) fixture_sha256: String,
     stations: Vec<u16>,
@@ -201,6 +209,7 @@ pub(super) fn prepare_capture<'a>(
         "select at least one TxPDO field for CSV"
     );
     Ok(PreparedReplay {
+        virtual_scenario: fixture.virtual_scenario,
         utc_start: fixture.capture_start_utc,
         fixture_sha256: hex::encode(Sha256::digest(&bytes)),
         stations: fixture.stations,
@@ -232,6 +241,7 @@ impl<'a> PreparedReplay<'a> {
         Report {
             schema: 1,
             source: "offline_group_replay",
+            virtual_scenario: self.virtual_scenario,
             fixture_sha256: self.fixture_sha256,
             stations: self.stations,
             plan: self.plan,

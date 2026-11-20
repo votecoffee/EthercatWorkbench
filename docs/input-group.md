@@ -54,6 +54,18 @@ Workbench compares descriptor widths and positions against fields with PDO refer
 
 Use all saved evidence from the same configuration. The reports retain file hashes, per-field checks and per-SyncManager placements. Live device identity, PDO readback, snapshot freshness, ESC-specific buffer allocation, and physical unit swaps still require separate evidence.
 
+## Generate a two-device replay
+
+```powershell
+.\ethercat-workbench-cli.exe generate-group-replay samples/input-group.json --scenario faults --out .local/virtual-group.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group.json .local/virtual-group.json --csv .local/virtual-group.csv --out .local/virtual-group-replay.json
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group.json .local/virtual-group.json .local/virtual-group-replay.json .local/virtual-group.csv
+```
+
+The generator uses the sample CoE and SII virtual identities in that order, each with eight TxPDO bytes and two RxPDO bytes. It sends the planned LRD and per-station AL reads through both in-memory ESCs. The fixture saves 12 cycles over two modeled connection generations and wraps the datagram index from 255 to 0. Each device produces its own counter, bit and float values. The default `clean` scenario yields 12 valid cycles. `faults` yields seven valid cycles and exercises downstream PREOP, a nonzero AL code with full LRD WKC, a changed station address, a stale candidate, a late reply and a missing reply. Replay with `--on-change` yields three rows in either scenario.
+
+Generated fixtures and replay receipts include `virtual_scenario`. The fixed UTC anchor and nominal 1,000 µs spacing are fixture data. They exercise the timing calculations. Host scheduling and physical frame spacing require a separately measured run. The generator uses memory only and requires a new output file.
+
 ## Replay group cycles to CSV
 
 ```powershell
