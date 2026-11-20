@@ -82,6 +82,8 @@ Use [CSV audits](capture-audit.md) for saved-file structure/hash/loss accounting
 
 ## Discover and qualify a physical bench
 
+Use the [first bench session guide](bench-qualification.md) for a virtual rehearsal, setup worksheet and physical trial evidence checklist.
+
 `nics` enumerates driver interface identifiers without transmitting. On the user-identified isolated NIC, `scan --nic 'identifier'` sends read datagrams for bus position, station/port and AL diagnostics. It is not initialization and does not confirm PDO meaning. [ESC diagnostics](esc-diagnostics.md) describe static snapshots and unknown codes/counters.
 
 Before native `run --backend safeop`, obtain approval for the concrete profile/NIC/device and initialization scope: EtherCrab ESC setup, SM/FMMU configuration from existing mappings, SAFEOP entry and INIT teardown. Only then use `--approve-esc-writes`. It does not authorize OP, output publishing, PDO downloads or other configuration writes. Those paths are unimplemented and need a separate reviewed contract/approval.

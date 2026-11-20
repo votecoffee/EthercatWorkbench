@@ -520,3 +520,13 @@ The contention case polls for increasing acquisition cycles while holding a sing
 The virtual loss case accepts a live snapshot with retained history if the first current samples have already passed. It requires an active invalid observation with unavailable current payload, WKC and AL, and matches the retained cycle to input health and the audited last CSV row. Each stream keeps its own elapsed-time origin.
 
 On the identical released 0.47.0 CLI, a forced reset of the first HTTP probe reproduced the prior fixture failure. The updated fixture passed with the same reset and the first loss probe delayed until event 11. It audited eight valid CSV samples and observed live invalid samples retaining cycle 8. The full offline regression passed, and a focused run checked the final timestamp assertions. Reauditing the full run matched CSV, shared memory and input health at cycle 8. The controlled repro, logs and receipts are under ignored .local/shared-fixture-20261120/. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.48.0 first bench session rehearsal (2026-11-20)
+
+The first bench session worksheet records the selected device, ESI, isolated NIC, independently observed signal, agreed setup scope and physical trial evidence. The offline PowerShell rehearsal runs the bundled virtual CoE profile on both schedulers. It saves the source profile, ordered trial set, audited comparison and a checked portable bundle. The completion receipt records the executable and profile hashes and the bundle receipt hash.
+
+Formatting, Clippy, 178 locked offline Rust tests, the Windows x64 MSVC release build and the full offline regression passed. The default rehearsal ran six three-second trials at a requested 1,000 us period. It audited 36 rotated CSV parts and confirmed INIT after each run. An independent check matched report order, CSV row counts and hashes, verified the relocated bundle and recomputed the same scheduler summaries. A repeated invocation with the same destination preserved the original receipt. Release logs and rehearsal receipts use the 0.48.0 prefix under ignored .local/.
+
+The first packaged smoke run exposed a missing utility command in a nested Windows PowerShell launch. The script now explicitly loads its built-in utility module from the active PowerShell installation. A nested source invocation exercised both schedulers and verified the resulting bundle.
+
+Native GUI review and the physical SAFEOP input and 1 ms bench qualification remain pending.

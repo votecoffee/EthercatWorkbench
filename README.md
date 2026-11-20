@@ -27,6 +27,8 @@ cargo build --locked --release --target x86_64-pc-windows-msvc
 
 ## Usage
 
+Run `powershell -NoProfile -File tools/rehearse-bench.ps1 -Output .local/rehearsal` for an offline virtual CoE rehearsal. It runs both schedulers, audits the CSV and verifies the evidence bundle. [First bench session and worksheet](docs/bench-qualification.md)
+
 In **Review → Saved comparison**, open **Source files and evidence export** to check recorded hashes or export an evidence bundle. The CLI offers the same check with `ethercat-workbench-cli.exe check-comparison .local/comparison.json`. See the [comparison evidence check](docs/desktop-review.md#check-the-source-file-hashes).
 
 Choose **Export evidence bundle** or use `ethercat-workbench-cli.exe bundle-comparison .local/comparison.json --out .local/evidence` to copy verified reports and audited CSV parts into a portable folder with a rerunnable trial set. [Bundle comparison evidence](docs/desktop-review.md#bundle-comparison-evidence)

@@ -10,6 +10,8 @@ The desktop now uses the EthernetIP Workbench workflow tabs with persistent stop
 
 ## One-device bench acceptance
 
+The [first bench session guide](docs/bench-qualification.md) includes an offline rehearsal that runs both schedulers and verifies a portable evidence bundle, plus a worksheet for the selected physical device.
+
 The desktop preflight now reviews expected identity/images, requested host cycle and capture settings, and binds its acknowledgement to those effective settings plus scoped discovery. New scans/NIC refresh invalidate it. Only successful physical snapshots on the selected NIC inform the single-device topology check; virtual, failed and other-NIC observations remain separate. Headless controls and preflight are covered; this is not native or physical acceptance.
 
 

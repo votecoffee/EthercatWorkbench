@@ -25,6 +25,8 @@ Use headless files/CLI by default. Desktop input, screenshots or recording need 
 
 ## Desktop navigation
 
+Use `powershell -NoProfile -File tools/rehearse-bench.ps1 -Output .local/rehearsal` with a new directory to practice the virtual CoE scheduler comparison and evidence workflow. Use `docs/bench-qualification.md` to record the actual target, independent input observation and agreed SAFEOP scope when the bench is selected.
+
 In **Saved comparison**, expand **Source files and evidence export** and choose **Check source hashes**, or use `check-comparison FILE [--base DIRECTORY] [--out NEW.json]` to match source bytes to saved hashes. Use the original working folder for relative paths. CLI success means the check completed. Read `all_match`, each file status and `csv_hashes_recorded` for the outcome and coverage. A new comparison performs a fresh audit.
 
 In the same section, enter a new folder and choose **Export evidence bundle**, or use `bundle-comparison FILE [--base DIRECTORY] --out NEW_DIRECTORY`. Both copy verified evidence and retain the original comparison. A readable `bundle.json` marks completion. To verify and reopen a moved bundle, expand **Open evidence bundle** in **Saved comparison** and enter its folder. The CLI equivalent is `verify-bundle DIRECTORY`, which exits with an error for an incomplete or changed bundle. For a fresh comparison bound to the bundle evidence, choose **Recompare bundled trials** or use `compare-runs --bundle DIRECTORY [--out NEW.json]`.
