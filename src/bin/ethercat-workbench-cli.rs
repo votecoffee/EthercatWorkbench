@@ -72,7 +72,7 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Read and check the FMMU and SyncManager registers on the two-device virtual wire.
+    /// Read and check the topology, FMMUs and SyncManagers of an authored virtual group.
     InspectVirtualGroupMapping {
         manifest: PathBuf,
         #[arg(long, value_enum, default_value = "clean")]
@@ -99,7 +99,7 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Generate deterministic replies from the authored two-device virtual wire.
+    /// Generate deterministic replies from an authored virtual group.
     GenerateGroupReplay {
         manifest: PathBuf,
         #[arg(long, value_enum, default_value = "clean")]

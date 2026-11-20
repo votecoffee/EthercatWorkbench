@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "Authored SII station without PDOs",
+  "expected_identity": { "vendor": 16715776, "product": 2, "revision": 1 },
+  "tx_bytes": 0,
+  "rx_bytes": 0,
+  "tx": [],
+  "rx": []
+}

@@ -101,6 +101,8 @@ In the desktop, open **Review → Grouped capture** to verify a portable group b
 
 Use `inspect-virtual-group-mapping` to check station count and order before and after register readback. Try `--scenario swapped-stations` to see a topology failure with valid mapping geometry. Use `generate-group-replay` to exercise the pair with clean replies or injected faults. The `topology-change` scenario tests a station swap during acquisition with a generation hold until a fresh setup passes. [Cyclic topology rehearsal](docs/input-group.md#rehearse-a-station-swap-during-acquisition) Use `replay-input-group` to verify the saved topology and FMMU/SyncManager replies for each connection generation and write valid grouped inputs to CSV with the fixture's receive timestamps. Run `verify-group-replay` to check values against the saved frame sequence, or `bundle-group-replay` to export evidence for rechecking after relocation. [Grouped CSV replay](docs/input-group.md#replay-group-cycles-to-csv)
 
+Use `samples/input-group-three.json` to rehearse a three-station group. Its no-PDO middle station participates in topology and AL checks without contributing input bytes. [Three-station rehearsal](docs/input-group.md#rehearse-a-group-with-a-no-pdo-station)
+
 ```powershell
 .\ethercat-workbench-cli.exe nics
 .\ethercat-workbench-cli.exe scan --nic '\Device\NPF_{your-nic-guid}'

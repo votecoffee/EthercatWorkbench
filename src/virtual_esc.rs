@@ -157,13 +157,65 @@ struct Upload {
 }
 
 pub(crate) const GROUP_STATIONS: [u16; 2] = [0x1000, 0x1001];
-pub(crate) const GROUP_MODELS: [VirtualModel; 2] = [VirtualModel::Coe, VirtualModel::Sii];
-pub(crate) const GROUP_DC_MODELS: [VirtualModel; 2] = [VirtualModel::CoeDc; 2];
-pub(crate) const GROUP_TX_BYTES: usize = 8;
-pub(crate) const GROUP_RX_BYTES: usize = 2;
+const GROUP_TX_BYTES: usize = 8;
+const GROUP_RX_BYTES: usize = 2;
+
+#[derive(Clone, Copy)]
+pub(crate) struct GroupDevice {
+    pub(crate) model: VirtualModel,
+    process_data: bool,
+}
+
+impl GroupDevice {
+    const fn with_pdos(model: VirtualModel) -> Self {
+        Self {
+            model,
+            process_data: true,
+        }
+    }
+
+    pub(crate) const fn image_lengths(self) -> (usize, usize) {
+        if self.process_data {
+            (GROUP_TX_BYTES, GROUP_RX_BYTES)
+        } else {
+            (0, 0)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct GroupFixture {
+    pub(crate) stations: &'static [u16],
+    pub(crate) devices: &'static [GroupDevice],
+}
+
+pub(crate) const GROUP_PAIR: GroupFixture = GroupFixture {
+    stations: &GROUP_STATIONS,
+    devices: &[
+        GroupDevice::with_pdos(VirtualModel::Coe),
+        GroupDevice::with_pdos(VirtualModel::Sii),
+    ],
+};
+
+pub(crate) const GROUP_THREE: GroupFixture = GroupFixture {
+    stations: &[0x1000, 0x1001, 0x1002],
+    devices: &[
+        GroupDevice::with_pdos(VirtualModel::Coe),
+        GroupDevice {
+            model: VirtualModel::Sii,
+            process_data: false,
+        },
+        GroupDevice::with_pdos(VirtualModel::Sii),
+    ],
+};
+
+pub(crate) const GROUP_DC: GroupFixture = GroupFixture {
+    stations: &GROUP_STATIONS,
+    devices: &[GroupDevice::with_pdos(VirtualModel::CoeDc); 2],
+};
 
 #[derive(Default)]
-pub(crate) enum GroupDownstream {
+pub(crate) enum GroupCycleState {
     #[default]
     Clean,
     Preop,
@@ -356,12 +408,8 @@ impl VirtualWire {
         wire
     }
 
-    pub(crate) fn for_group_replay() -> Self {
-        Self::with_group_layout(GROUP_MODELS)
-    }
-
     pub(crate) fn for_group_dc(case: GroupClockCase, period_ns: u32) -> Self {
-        let mut wire = Self::with_group_layout(GROUP_DC_MODELS);
+        let mut wire = Self::with_group_layout(GROUP_DC);
         for (index, esc) in wire.devices.iter_mut().enumerate() {
             esc.group_clock = Some(GroupClock {
                 reference: index == 0,
@@ -376,41 +424,45 @@ impl VirtualWire {
         wire
     }
 
-    fn with_group_layout(models: [VirtualModel; 2]) -> Self {
-        let mut wire = Self::single(VirtualEsc::for_scan(models[0], ScanCase::Normal));
-        wire.devices
-            .push(VirtualEsc::for_scan(models[1], ScanCase::Normal));
+    pub(crate) fn with_group_layout(fixture: GroupFixture) -> Self {
+        let mut wire = Self::single(VirtualEsc::for_scan(
+            fixture.devices[0].model,
+            ScanCase::Normal,
+        ));
+        wire.devices.extend(
+            fixture.devices[1..]
+                .iter()
+                .map(|device| VirtualEsc::for_scan(device.model, ScanCase::Normal)),
+        );
+        let mut next_input = 0u32;
+        let mut next_output = fixture
+            .devices
+            .iter()
+            .map(|device| device.image_lengths().0 as u32)
+            .sum::<u32>();
         for (index, esc) in wire.devices.iter_mut().enumerate() {
             // Seed the authored SAFEOP layout without register-write datagrams.
-            let input_start = (index * GROUP_TX_BYTES) as u32;
-            let output_start = (models.len() * GROUP_TX_BYTES + GROUP_RX_BYTES * index) as u32;
+            let (tx, rx) = fixture.devices[index].image_lengths();
+            let input_start = next_input;
+            let output_start = next_output;
+            next_input += tx as u32;
+            next_output += rx as u32;
             esc.logical_starts = (input_start, output_start);
-            esc.registers[0x0010..0x0012].copy_from_slice(&GROUP_STATIONS[index].to_le_bytes());
+            esc.registers[0x0010..0x0012].copy_from_slice(&fixture.stations[index].to_le_bytes());
             esc.registers[0x0012] = 0x42 + index as u8;
             esc.registers[0x0130] = 4;
             esc.logical_counter_offset = index as u16;
+            if tx == 0 && rx == 0 {
+                continue;
+            }
             let (input_sm, output_sm, input_fmmu, output_fmmu) = if esc.model.has_coe() {
                 (3, 2, 0, 1)
             } else {
                 (1, 0, 1, 0)
             };
             for (sm, fmmu, logical, physical, length, mode) in [
-                (
-                    input_sm,
-                    input_fmmu,
-                    input_start,
-                    INPUTS,
-                    GROUP_TX_BYTES as u16,
-                    1,
-                ),
-                (
-                    output_sm,
-                    output_fmmu,
-                    output_start,
-                    OUTPUTS,
-                    GROUP_RX_BYTES as u16,
-                    2,
-                ),
+                (input_sm, input_fmmu, input_start, INPUTS, tx as u16, 1),
+                (output_sm, output_fmmu, output_start, OUTPUTS, rx as u16, 2),
             ] {
                 let physical = u16::try_from(physical).unwrap().to_le_bytes();
                 let length = length.to_le_bytes();
@@ -442,18 +494,23 @@ impl VirtualWire {
         wire
     }
 
-    pub(crate) fn apply_group_mapping_scenario(&mut self, scenario: GroupMappingScenario) {
-        let esc = &mut self.devices[1];
+    pub(crate) fn apply_group_mapping_scenario(
+        &mut self,
+        scenario: GroupMappingScenario,
+        stations: &[u16],
+    ) {
+        let last = self.devices.len() - 1;
+        let esc = &mut self.devices[last];
         match scenario {
             GroupMappingScenario::Clean => {}
             GroupMappingScenario::LogicalShift => {
-                let start = GROUP_TX_BYTES as u32 - 1;
+                let start = esc.logical_starts.0 - 1;
                 esc.logical_starts.0 = start;
                 esc.registers[0x0610..0x0614].copy_from_slice(&start.to_le_bytes());
             }
             GroupMappingScenario::PhysicalShift => esc.registers[0x0618] = 1,
             GroupMappingScenario::StationMissing => {
-                self.set_group_downstream(GroupDownstream::MovedStation);
+                self.set_group_cycle_state(stations, last, GroupCycleState::MovedStation);
             }
             GroupMappingScenario::ExcessChannels => {
                 esc.registers[4] = u8::MAX;
@@ -463,28 +520,35 @@ impl VirtualWire {
             GroupMappingScenario::SwapDuringReadback => self.swap_after_next_frame = true,
             GroupMappingScenario::ExtraStation => {
                 let mut extra = VirtualEsc::for_scan(VirtualModel::Coe, ScanCase::Normal);
-                let address = GROUP_STATIONS[1] + 1;
+                let address = stations[last] + 1;
                 extra.registers[0x0010..0x0012].copy_from_slice(&address.to_le_bytes());
                 self.devices.push(extra);
             }
             GroupMappingScenario::DuplicateStation => {
-                esc.registers[0x0010..0x0012].copy_from_slice(&GROUP_STATIONS[0].to_le_bytes());
+                esc.registers[0x0010..0x0012].copy_from_slice(&stations[0].to_le_bytes());
             }
             GroupMappingScenario::PositionWkc => esc.scan_case = ScanCase::CoreWkc,
         }
     }
 
     pub(crate) fn swap_group_stations(&mut self) {
-        self.devices.swap(0, 1);
+        let last = self.devices.len() - 1;
+        self.devices.swap(last - 1, last);
     }
 
-    pub(crate) fn set_group_downstream(&mut self, condition: GroupDownstream) {
-        let esc = &mut self.devices[1];
+    pub(crate) fn set_group_cycle_state(
+        &mut self,
+        stations: &[u16],
+        position: usize,
+        condition: GroupCycleState,
+    ) {
+        let esc = &mut self.devices[position];
+        let planned = stations[position];
         let (state, code, station) = match condition {
-            GroupDownstream::Clean => (4, 0, GROUP_STATIONS[1]),
-            GroupDownstream::Preop => (2, 0, GROUP_STATIONS[1]),
-            GroupDownstream::AlError => (4, 0x1e, GROUP_STATIONS[1]),
-            GroupDownstream::MovedStation => (4, 0, GROUP_STATIONS[1] + 1),
+            GroupCycleState::Clean => (4, 0, planned),
+            GroupCycleState::Preop => (2, 0, planned),
+            GroupCycleState::AlError => (4, 0x1e, planned),
+            GroupCycleState::MovedStation => (4, 0, stations[stations.len() - 1] + 1),
         };
         esc.registers[0x0130] = state;
         esc.registers[0x0134] = code;
@@ -1567,7 +1631,7 @@ mod tests {
         let plan = group.inspect(None).unwrap();
         assert_eq!((plan.input_bytes, plan.expected_wkc), (16, 2));
         let stations = GROUP_STATIONS;
-        let mut wire = VirtualWire::for_group_replay();
+        let mut wire = VirtualWire::with_group_layout(GROUP_PAIR);
         let exchange = |wire: &mut VirtualWire, index| {
             let request = group.expected_frame(index, &stations).unwrap();
             wire.send(request.bytes()).unwrap();

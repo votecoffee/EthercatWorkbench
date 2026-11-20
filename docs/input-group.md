@@ -124,6 +124,21 @@ The replay receipt retains the rebuilt mapping per generation and the audit repo
 
 Optional `--fmmu` and `--sync-managers` files must describe the same register reads as the fixture in each generation. JSON formatting may differ. `inspect-virtual-group-mapping` exposes the corresponding snapshots for the authored input-only group. Optional `--pdo` evidence still has its own descriptor and placement checks. Older schema 1–3 fixtures follow their original mapping evidence rules.
 
+## Rehearse a group with a no-PDO station
+
+```powershell
+.\ethercat-workbench-cli.exe inspect-virtual-group-mapping samples/input-group-three.json
+.\ethercat-workbench-cli.exe generate-group-replay samples/input-group-three.json --scenario faults --out .local/three-station-frames.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group-three.json .local/three-station-frames.json --csv .local/three-station.csv --out .local/three-station-replay.json
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group-three.json .local/three-station-frames.json .local/three-station-replay.json .local/three-station.csv
+```
+
+The authored group contains a CoE input station at `0x1000`, an SII station with zero configured PDO bytes at `0x1001`, and an SII input station at `0x1002`. The two input stations each contribute eight bytes. The middle station keeps its place in topology and AL checks and has inactive FMMU and SyncManager slots. The setup broadcast WKC is 3 and the expected LRD WKC is 2. The CSV has fields for positions 0 and 2.
+
+`clean` accepts all 12 cycles. `faults` applies PREOP, an AL error, and a changed configured address to the middle station. Its LRD WKC stays at 2, and the replay records the three AL failures separately. This fixture accepts seven cycles. `topology-change` swaps the final two positions during generation one. Replay withholds two mismatched cycles and four later cycles held for fresh setup. The six accepted cycles include all four cycles from the newly verified second generation.
+
+The same portable bundle workflow archives and rechecks the three profiles, including the no-PDO profile. The setup and cycle evidence comes from the authored virtual wire.
+
 ## Rehearse a station swap during acquisition
 
 ```powershell

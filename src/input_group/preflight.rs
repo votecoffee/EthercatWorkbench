@@ -6,10 +6,7 @@ use super::{
 pub use crate::virtual_esc::GroupMappingScenario;
 use crate::{
     review::check_cancel,
-    virtual_esc::{
-        GROUP_MODELS, GROUP_RX_BYTES, GROUP_STATIONS, GROUP_TX_BYTES, VirtualModel, VirtualStats,
-        VirtualWire,
-    },
+    virtual_esc::{GROUP_PAIR, GROUP_THREE, GroupFixture, VirtualStats, VirtualWire},
     wire::{Datagram, FPRD, Frame},
 };
 use anyhow::{Context, Result, ensure};
@@ -31,18 +28,18 @@ pub struct Report<'a> {
 }
 
 pub fn inspect_virtual(group: &InputGroup, scenario: GroupMappingScenario) -> Result<Report<'_>> {
-    validate_virtual_group(group)?;
-    let mut wire = VirtualWire::for_group_replay();
-    wire.apply_group_mapping_scenario(scenario);
+    let fixture = virtual_group(group)?;
+    let mut wire = VirtualWire::with_group_layout(fixture);
+    wire.apply_group_mapping_scenario(scenario, fixture.stations);
     let Captured {
         fmmu: fmmu_snapshot,
         sm: sync_manager_snapshot,
         topology,
         replies: mapping_replies,
-    } = capture_registers(&mut wire, 0)?;
+    } = capture_registers(&mut wire, fixture.stations, 0)?;
     let mapping = review(
         group,
-        &GROUP_STATIONS,
+        fixture.stations,
         fmmu_snapshot.clone(),
         sync_manager_snapshot.clone(),
         Some(topology),
@@ -63,26 +60,30 @@ pub fn inspect_virtual(group: &InputGroup, scenario: GroupMappingScenario) -> Re
     })
 }
 
-pub(super) fn validate_virtual_group(group: &InputGroup) -> Result<()> {
-    ensure!(
-        matches_fixture(group, GROUP_MODELS),
-        "virtual group requires the authored CoE and SII identities in order with 8 TxPDO and 2 RxPDO bytes each"
-    );
-    Ok(())
+pub(super) fn virtual_group(group: &InputGroup) -> Result<GroupFixture> {
+    [GROUP_PAIR, GROUP_THREE]
+        .into_iter()
+        .find(|fixture| matches_fixture(group, *fixture))
+        .context("virtual group requires the authored CoE and SII identities in order with their fixture PDO lengths")
 }
 
-pub(super) fn matches_fixture(group: &InputGroup, models: [VirtualModel; 2]) -> bool {
-    group.bindings.len() == models.len()
-        && group.bindings.iter().zip(models).all(|(binding, model)| {
-            binding.entry.identity == model.identity()
-                && binding.profile.tx_bytes == GROUP_TX_BYTES
-                && binding.profile.rx_bytes == GROUP_RX_BYTES
-        })
+pub(super) fn matches_fixture(group: &InputGroup, fixture: GroupFixture) -> bool {
+    group.bindings.len() == fixture.devices.len()
+        && group
+            .bindings
+            .iter()
+            .zip(fixture.devices)
+            .all(|(binding, device)| {
+                binding.entry.identity == device.model.identity()
+                    && (binding.profile.tx_bytes, binding.profile.rx_bytes)
+                        == device.image_lengths()
+            })
 }
 
 pub(super) fn require_valid_mapping(
     group: &InputGroup,
     wire: &mut VirtualWire,
+    stations: &[u16],
     first_index: u8,
 ) -> Result<(MappingReview, Vec<String>)> {
     let Captured {
@@ -90,12 +91,12 @@ pub(super) fn require_valid_mapping(
         sm,
         topology,
         replies,
-    } = capture_registers(wire, first_index)?;
+    } = capture_registers(wire, stations, first_index)?;
     ensure!(
         topology.valid,
         "virtual group topology preflight failed before cyclic reads"
     );
-    let mapping = review(group, &GROUP_STATIONS, fmmu, sm, Some(topology))?;
+    let mapping = review(group, stations, fmmu, sm, Some(topology))?;
     ensure!(
         mapping.valid(),
         "virtual group FMMU or SyncManager preflight failed before cyclic reads"
@@ -178,16 +179,16 @@ struct Captured {
     replies: Vec<String>,
 }
 
-fn capture_registers(wire: &mut VirtualWire, mut index: u8) -> Result<Captured> {
-    let before = topology::read(wire, &mut index, &GROUP_STATIONS)?;
+fn capture_registers(wire: &mut VirtualWire, stations: &[u16], mut index: u8) -> Result<Captured> {
+    let before = topology::read(wire, &mut index, stations)?;
     let mut replies = Vec::new();
-    let (fmmu, sm) = read_registers(&GROUP_STATIONS, &mut index, &mut |frame| {
+    let (fmmu, sm) = read_registers(stations, &mut index, &mut |frame| {
         wire.send(frame.bytes())?;
         let reply = wire.receive().context("missing virtual register reply")?;
         replies.push(hex::encode(reply));
         Ok(reply.to_vec())
     })?;
-    let after = topology::read(wire, &mut index, &GROUP_STATIONS)?;
+    let after = topology::read(wire, &mut index, stations)?;
     Ok(Captured {
         fmmu,
         sm,
@@ -283,6 +284,7 @@ fn read_register<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::virtual_esc::GROUP_STATIONS;
 
     #[test]
     fn rejects_reordered_chain_even_when_mapping_and_cyclic_wkc_match() {
@@ -293,9 +295,9 @@ mod tests {
             GroupMappingScenario::SwappedStations,
             GroupMappingScenario::SwapDuringReadback,
         ] {
-            let mut wire = VirtualWire::for_group_replay();
-            wire.apply_group_mapping_scenario(scenario);
-            let Err(error) = require_valid_mapping(&group, &mut wire, 0) else {
+            let mut wire = VirtualWire::with_group_layout(GROUP_PAIR);
+            wire.apply_group_mapping_scenario(scenario, &GROUP_STATIONS);
+            let Err(error) = require_valid_mapping(&group, &mut wire, &GROUP_STATIONS, 0) else {
                 panic!("reordered chain passed the preflight");
             };
             assert!(error.to_string().contains("topology preflight failed"));
@@ -303,7 +305,7 @@ mod tests {
 
             let Captured {
                 fmmu, sm, topology, ..
-            } = capture_registers(&mut wire, 0).unwrap();
+            } = capture_registers(&mut wire, &GROUP_STATIONS, 0).unwrap();
             let mapping = review(&group, &GROUP_STATIONS, fmmu, sm, Some(topology)).unwrap();
             assert!(mapping.fmmu.valid);
             assert!(mapping.sync_managers.unwrap().valid);
@@ -323,10 +325,10 @@ mod tests {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/input-group.json");
         let group = InputGroup::load(&path).unwrap();
-        let mut wire = VirtualWire::for_group_replay();
-        wire.apply_group_mapping_scenario(GroupMappingScenario::LogicalShift);
+        let mut wire = VirtualWire::with_group_layout(GROUP_PAIR);
+        wire.apply_group_mapping_scenario(GroupMappingScenario::LogicalShift, &GROUP_STATIONS);
 
-        let Err(error) = require_valid_mapping(&group, &mut wire, 0) else {
+        let Err(error) = require_valid_mapping(&group, &mut wire, &GROUP_STATIONS, 0) else {
             panic!("shifted slot passed the preflight");
         };
         assert!(

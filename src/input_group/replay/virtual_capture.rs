@@ -1,11 +1,11 @@
-//! Produce replay candidates from an authored two-device virtual wire.
+//! Produce replay candidates from an authored virtual group.
 use super::{
     Fixture, InputGroup, MAPPING_FIXTURE_SCHEMA, MODELED_UTC, MONITORED_FIXTURE_SCHEMA,
     RecordedCycle,
 };
 use crate::{
     input_group::preflight,
-    virtual_esc::{GROUP_MODELS, GROUP_STATIONS, GroupDownstream, VirtualWire},
+    virtual_esc::{GroupCycleState, VirtualWire},
 };
 use anyhow::{Context, Result, ensure};
 use clap::ValueEnum;
@@ -21,8 +21,9 @@ pub enum VirtualScenario {
 }
 
 pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result<Fixture> {
-    preflight::validate_virtual_group(group)?;
-    let mut wire = VirtualWire::for_group_replay();
+    let fixture = preflight::virtual_group(group)?;
+    let stations = fixture.stations;
+    let mut wire = VirtualWire::with_group_layout(fixture);
     let mut setup_topology = Vec::new();
     let mut previous_reply = String::new();
     let mut cycles = Vec::with_capacity(12);
@@ -35,12 +36,12 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
         }
         if faults {
             let condition = match ordinal {
-                2 => GroupDownstream::Preop,
-                3 => GroupDownstream::AlError,
-                6 => GroupDownstream::MovedStation,
-                _ => GroupDownstream::Clean,
+                2 => GroupCycleState::Preop,
+                3 => GroupCycleState::AlError,
+                6 => GroupCycleState::MovedStation,
+                _ => GroupCycleState::Clean,
             };
-            wire.set_group_downstream(condition);
+            wire.set_group_cycle_state(stations, 1, condition);
         }
         let (connection_generation, cycle_index) = if ordinal < 8 {
             (1, u64::from(ordinal) + 1)
@@ -51,13 +52,13 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
             // Leave a distinct index range for the register reads in each generation.
             let first_index = if connection_generation == 1 { 0 } else { 32 };
             let (mapping, replies) =
-                preflight::require_valid_mapping(group, &mut wire, first_index)?;
+                preflight::require_valid_mapping(group, &mut wire, stations, first_index)?;
             let topology = mapping
                 .topology
                 .context("missing verified setup topology")?;
             setup_topology.push(topology.recording(connection_generation, replies));
         }
-        let frame = group.cyclic_frame(index, &GROUP_STATIONS, monitored)?;
+        let frame = group.cyclic_frame(index, stations, monitored)?;
         wire.send(frame.bytes())?;
         let reply = wire.receive().context("virtual wire produced no reply")?;
         ensure!(
@@ -84,7 +85,7 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
     }
     let audits = wire.chain_audits();
     ensure!(
-        audits.len() == GROUP_MODELS.len()
+        audits.len() == stations.len()
             && audits.iter().all(|audit| {
                 audit.logical_reads == cycles.len() as u64
                     && audit.register_writes == 0
@@ -103,7 +104,7 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
         virtual_scenario: Some(scenario),
         virtual_dc: None,
         capture_start_utc: MODELED_UTC.into(),
-        stations: GROUP_STATIONS.to_vec(),
+        stations: stations.to_vec(),
         setup_topology: Some(setup_topology),
         cycles,
     })

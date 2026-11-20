@@ -3322,6 +3322,92 @@ def verify_cyclic_topology_guard(cli, destination):
     assert "differs from the rebuilt cycles" in failed
 
 
+def verify_three_station_group(cli, destination):
+    sample = ROOT / "samples"
+    manifest = sample / "input-group-three.json"
+    plan = cli_call(cli, "inspect-input-group", manifest)
+    assert plan["input_bytes"] == 16 and plan["expected_wkc"] == 2
+    assert [item["offset"] for item in plan["devices"]] == [0, None, 8]
+    assert [item["tx_bytes"] for item in plan["devices"]] == [8, 0, 8]
+    setup = cli_call(cli, "inspect-virtual-group-mapping", manifest, "--out", destination / "preflight.json")
+    assert setup["valid"] and len(setup["wire_audit"]) == 3
+    assert all(audit["logical_reads"] == audit["register_writes"] == 0 for audit in setup["wire_audit"])
+    topology = setup["inspection"]["topology"]
+    assert topology["expected_count"] == topology["before_mapping"]["count_wkc"] == 3
+    for key in ("fmmu_snapshot", "sync_manager_snapshot"):
+        slots = setup[key]["devices"][1]["slots"]
+        assert len(slots) == 2 and all(slot["wkc"] == 1 and not any(slot["value"]) for slot in slots)
+    swapped = cli_call(cli, "inspect-virtual-group-mapping", manifest, "--scenario", "swap-during-readback")
+    assert not swapped["valid"] and swapped["inspection"]["fmmu"]["valid"]
+    assert swapped["inspection"]["sync_managers"]["valid"]
+    assert [p["station_address"] for p in swapped["inspection"]["topology"]["after_mapping"]["positions"]] == [4096, 4098, 4097]
+
+    for scenario, accepted in (
+        ("clean", list(range(12))),
+        ("faults", [0, 1, 5, 8, 9, 10, 11]),
+        ("topology-change", [0, 1, 8, 9, 10, 11]),
+    ):
+        fixture = destination / f"{scenario}-frames.json"
+        raw = cli_call(cli, "generate-group-replay", manifest, "--scenario", scenario, "--out", fixture)
+        assert raw["schema"] == (5 if scenario == "topology-change" else 4)
+        assert raw["stations"] == [4096, 4097, 4098]
+        assert [g["connection_generation"] for g in raw["setup_topology"]] == [1, 2]
+        assert all(len(g["mapping_replies"]) == 20 for g in raw["setup_topology"])
+        csv_base = destination / f"{scenario}.csv"
+        receipt = destination / f"{scenario}-replay.json"
+        report = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", csv_base,
+                          "--rotate-rows", 2, "--out", receipt)
+        assert all(g["expected_count"] == 3 and g["mapping"]["fmmu"]["valid"] for g in report["setup_topology"])
+        matched = [item for item in report["cycles"] if item["actual_wkc"] is not None]
+        assert all(item["actual_wkc"] == 2 and len(item["al"]) == 3 for item in matched)
+        assert [i for i, item in enumerate(report["cycles"]) if item["valid"]] == accepted
+        assert report["counts"]["wkc_mismatches"] == 0
+        if scenario == "faults":
+            cycles = report["cycles"]
+            assert report["counts"]["invalid_al"] == 3
+            assert cycles[2]["al"][1]["status"]["state"] == "PREOP"
+            assert cycles[3]["al"][1]["status"]["code"] == 0x001e
+            assert cycles[6]["al"][1]["actual_wkc"] == 0 and cycles[6]["al"][1]["status"] is None
+            for index in (2, 3, 6):
+                assert all(cycles[index]["al"][position]["clean_safeop"] for position in (0, 2))
+        if scenario == "topology-change":
+            assert report["counts"]["topology_rejections"] == 2
+            assert report["counts"]["topology_hold_rejections"] == 4
+            failed = report["cycles"][2]["cyclic_topology"]
+            assert failed["count_wkc"] == 3 and not failed["matches_setup"]
+            assert [p["station_address"] for p in failed["positions"]] == [4096, 4098, 4097]
+
+        _, csv_rows = rows(csv_base)
+        assert len(csv_rows) == len(accepted)
+        for row, ordinal in zip(csv_rows, accepted, strict=True):
+            assert int(row["elapsed_us"]) == ordinal * 1000
+            assert int(row["Position 0 Counter"]) == ordinal // 4
+            assert int(row["Position 2 Counter"]) == ordinal // 4 + 2
+            assert not any(name.startswith("Position 1 ") for name in row)
+        checked = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, csv_base)
+        assert checked["verified_rows"] == len(accepted)
+        assert checked["verified_topology_generations"] == checked["verified_mapping_generations"] == 2
+        if scenario == "faults":
+            bundle = destination / "three-station-bundle"
+            cli_call(cli, "bundle-group-replay", manifest, fixture, receipt, csv_base, "--out", bundle)
+            relocated = bundle.rename(destination / "relocated-three-station-bundle")
+            reopened = cli_call(cli, "verify-group-bundle", relocated)
+            assert reopened["audit"]["verified_rows"] == 7
+            assert json.loads((relocated / "profiles/01.json").read_bytes())["tx_bytes"] == 0
+            assert json.loads((relocated / "profiles/02.json").read_bytes())["tx_bytes"] == 8
+
+    wrong_manifest = destination / "wrong-pdo-layout.json"
+    wrong = json.loads(manifest.read_bytes())
+    for device in wrong["devices"]:
+        device["profile"] = str((sample / device["profile"]).resolve())
+    wrong["devices"][1]["profile"] = wrong["devices"][2]["profile"]
+    wrong_manifest.write_text(json.dumps(wrong), encoding="utf-8")
+    refusal = destination / "wrong-pdo-layout-frames.json"
+    assert "authored CoE and SII identities in order" in cli_call(
+        cli, "generate-group-replay", wrong_manifest, "--out", refusal, success=False)
+    assert not refusal.exists()
+
+
 def verify_generated_group_replay(cli, destination):
     sample = ROOT / "samples"
     manifest = sample / "input-group.json"
@@ -4261,6 +4347,9 @@ def main():
     cyclic_topology_destination = destination / "input-group-cyclic-topology"
     cyclic_topology_destination.mkdir()
     verify_cyclic_topology_guard(cli, cyclic_topology_destination)
+    three_station_destination = destination / "input-group-three-stations"
+    three_station_destination.mkdir()
+    verify_three_station_group(cli, three_station_destination)
     virtual_group_mapping_destination = destination / "input-group-virtual-mapping"
     virtual_group_mapping_destination.mkdir()
     verify_virtual_group_mapping(cli, virtual_group_mapping_destination)

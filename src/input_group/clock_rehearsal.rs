@@ -6,8 +6,8 @@ use super::{
 pub use crate::virtual_esc::GroupClockCase;
 use crate::{
     virtual_esc::{
-        DC_ACTIVATION, DC_SYNC0_CYCLE, DC_TIME, DC_TIME_DIFFERENCE, GROUP_DC_MODELS,
-        GROUP_STATIONS, VirtualStats, VirtualWire,
+        DC_ACTIVATION, DC_SYNC0_CYCLE, DC_TIME, DC_TIME_DIFFERENCE, GROUP_DC, GROUP_STATIONS,
+        VirtualStats, VirtualWire,
     },
     wire::{Datagram, FPRD, Frame},
 };
@@ -195,7 +195,7 @@ pub fn generate_replay(group: &InputGroup, options: Options) -> Result<Fixture> 
 
 fn validate(group: &InputGroup, period_ns: u32, cycles: usize) -> Result<()> {
     ensure!(
-        preflight::matches_fixture(group, GROUP_DC_MODELS),
+        preflight::matches_fixture(group, GROUP_DC),
         "group clock rehearsal requires two authored CoE/DC identities with 8 TxPDO and 2 RxPDO bytes each"
     );
     ensure!(period_ns > 0, "SYNC0 period must be positive");
@@ -214,7 +214,8 @@ fn rehearse(
     validate(group, options.period_ns, options.cycles as usize)?;
     let mut wire = VirtualWire::for_group_dc(options.scenario, options.period_ns);
     let mut plan = group.inspect(None)?;
-    let (mapping, replies) = preflight::require_valid_mapping(group, &mut wire, 0)?;
+    let (mapping, replies) =
+        preflight::require_valid_mapping(group, &mut wire, &GROUP_STATIONS, 0)?;
     mapping.attach(&mut plan);
     let sync0 = exchange(&mut wire, &sync0_request())?;
     let configured_sync0 = read_sync0(sync0, options.period_ns)?;
