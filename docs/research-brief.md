@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.46.0** adds direct recomparison of a verified evidence bundle from Review and the CLI. The desktop SAFEOP plan still ties acknowledgement to the reviewed settings and scoped discovery. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
+Version **0.47.0** hardens virtual ESC setup against short host scheduling pauses at EEPROM reads. The desktop SAFEOP plan ties acknowledgement to the reviewed settings and scoped discovery. Native GUI acceptance and physical bench qualification remain open. See the [verification record](../VERIFICATION.md) and each portable package's `BUILD.txt` for checked source and binary identity.
 
 ## Decisions to retain
 

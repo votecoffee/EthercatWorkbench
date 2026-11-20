@@ -8,7 +8,9 @@ use crate::{
     sync::{DcReadback, RegisterRead, Synchronization},
 };
 use anyhow::{Context, Result, bail, ensure};
-use ethercrab::{Command, MainDevice, MainDeviceConfig, PduRx, PduStorage, PduTx, Timeouts};
+use ethercrab::{
+    Command, MainDevice, MainDeviceConfig, PduRx, PduStorage, PduTx, ReceiveAction, Timeouts,
+};
 use pcap::{Active, Capture, Device, Linktype};
 use serde::Serialize;
 use std::{
@@ -33,6 +35,19 @@ const AL_CONTROL: u16 = 0x0120;
 const AL_STATUS: u16 = 0x0130;
 const MAX_DISCOVERY: u16 = 16;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
+const VIRTUAL_EEPROM_TIMEOUT: Duration = Duration::from_millis(100);
+
+fn setup_timeouts(virtual_io: bool) -> Timeouts {
+    let mut timeouts = Timeouts {
+        pdu: Duration::from_millis(15),
+        wait_loop_delay: Duration::ZERO,
+        ..Timeouts::default()
+    };
+    if virtual_io {
+        timeouts.eeprom = VIRTUAL_EEPROM_TIMEOUT;
+    }
+    timeouts
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Nic {
@@ -241,6 +256,7 @@ impl Transport {
         let mut future = std::pin::pin!(future);
         let mut cx = PollContext::from_waker(Waker::noop());
         let start = Instant::now();
+        let virtual_io = matches!(&self.io, PacketIo::Virtual(_));
         loop {
             check_cancel(cancel)?;
             if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
@@ -272,18 +288,23 @@ impl Transport {
                 }
                 sent?;
             }
+            let mut received = false;
             for _ in 0..64 {
                 match self.io.receive()? {
                     Some(packet) if packet.get(6..12) == Some(&ETHERCRAB_REPLY) => {
                         // Delayed or duplicate replies can target an expired PDU slot.
                         // The pending command's own WKC and timeout still determine success.
-                        let _ = rx.receive_frame(packet);
+                        received |=
+                            matches!(rx.receive_frame(packet), Ok(ReceiveAction::Processed));
                     }
                     Some(_) => {}
                     None => break,
                 }
             }
-            std::thread::yield_now();
+            // An in-memory reply can advance the future on this thread immediately.
+            if !virtual_io || !received {
+                std::thread::yield_now();
+            }
         }
     }
 }
@@ -420,11 +441,7 @@ fn safeop_on(
         .map_err(|_| anyhow::anyhow!("PDU storage in use"))?;
     let main = MainDevice::new(
         pdu,
-        Timeouts {
-            pdu: Duration::from_millis(15),
-            wait_loop_delay: Duration::ZERO,
-            ..Timeouts::default()
-        },
+        setup_timeouts(matches!(&port.io, PacketIo::Virtual(_))),
         MainDeviceConfig {
             dc_static_sync_iterations: 0,
             ..MainDeviceConfig::default()
@@ -880,6 +897,80 @@ mod cancellation_tests {
         run::{self, Mode, RunOptions},
         virtual_esc::{VirtualFault, VirtualModel},
     };
+
+    fn virtual_port_with_sii_stall() -> Transport {
+        let mut esc = crate::virtual_esc::VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
+        esc.stall_first_sii_status(Duration::from_millis(30));
+        Transport {
+            io: PacketIo::Virtual(Box::new(esc)),
+            seq: 0,
+            ignored_frames: 0,
+            mailbox_watch: None,
+            mailbox_counter: None,
+        }
+    }
+
+    #[test]
+    fn eeprom_status_stall_expires_with_the_native_setup_budget() {
+        let mut port = virtual_port_with_sii_stall();
+        let storage = PduStorage::<8, { PduStorage::element_size(1400) }>::new();
+        let (mut tx, mut rx, pdu) = storage.try_split().unwrap();
+        let main = MainDevice::new(pdu, setup_timeouts(false), MainDeviceConfig::default());
+        let error = port
+            .drive(
+                &mut tx,
+                &mut rx,
+                None,
+                main.init_single_group::<2, 2048>(ethercat_now),
+            )
+            .err()
+            .expect("a 30 ms stall should expire the native EEPROM deadline");
+        assert!(
+            matches!(
+                error.downcast_ref::<ethercrab::error::Error>(),
+                Some(ethercrab::error::Error::Timeout(
+                    ethercrab::error::TimeoutError::Eeprom
+                ))
+            ),
+            "{error:#}"
+        );
+        assert_eq!(
+            request_init(&mut port, &mut tx, &mut rx, &main).unwrap(),
+            (1, 0)
+        );
+    }
+
+    #[test]
+    fn virtual_safeop_accepts_the_same_eeprom_status_stall() {
+        let profile = serde_json::from_str(include_str!("../samples/virtual.json")).unwrap();
+        let mut port = virtual_port_with_sii_stall();
+        let mut report = Report::default();
+        safeop_on(
+            &profile,
+            &AtomicBool::new(false),
+            &Mutex::new(Snapshot::default()),
+            &mut report,
+            &mut port,
+            |mut bus, report| {
+                let input = bus.exchange(1)?.context("missing virtual cyclic reply")?;
+                assert_eq!(input.status, Some((4, 0)));
+                assert_eq!(input.wkc, report.expected_wkc);
+                report.stopped_al = bus.stop()?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(report.stopped_al, Some((1, 0)));
+        let PacketIo::Virtual(esc) = &port.io else {
+            unreachable!("in-memory transport")
+        };
+        let stats = esc.stats();
+        assert_eq!(stats.state_requests, [1, 2, 4, 1]);
+        assert_eq!(
+            stats.logical_writes + stats.physical_output_writes + stats.op_requests,
+            0
+        );
+    }
 
     #[test]
     fn discovery_diagnostics_use_only_reads_and_keep_optional_failures_explicit() {

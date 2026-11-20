@@ -506,3 +506,9 @@ Review runs a fresh comparison from a verified evidence bundle on the existing c
 Formatting, Clippy, 176 locked offline Rust tests (134 library and 42 GUI), and the Windows x64 MSVC release build passed. The headless desktop test rejected an edited receipt, kept the verified result available, then successfully recomputed after the receipt was restored. CLI checks on relocated audited and report-only 0.45.0 bundles and fresh fixtures covered trial-set parity, protected output, conflicting arguments, and rejection of changed report and CSV bytes that still parse.
 
 The first full offline regression hit a virtual CoE EEPROM timeout before cyclic exchange. The isolated case reached cyclic I/O and returned to INIT, and the full retry passed. The 0.46.0 logs and delivery receipts are under ignored .local/. Native GUI review and physical bench qualification remain pending.
+
+## Version 0.47.0 virtual EEPROM setup timing (2026-11-20)
+
+A 30 ms pause on the first requested EEPROM status read reproduced EtherCrab's typed EEPROM timeout using the native 10 ms deadline on the in-memory transport. Under the virtual 100 ms budget the same fixture reached SAFEOP, returned input with expected WKC and clean AL status, and confirmed INIT cleanup. The virtual setup loop processes ready in-memory replies before yielding. The 15 ms setup PDU deadline and cyclic reply policy are independent of the virtual EEPROM budget.
+
+Formatting, Clippy, 178 offline Rust tests (136 library and 42 GUI), sixteen consecutive pairs of the injected-pause tests, and the Windows x64 MSVC release build passed. The first full offline release regression passed, including deliberate PDU timeout, injected cyclic transport faults, CoE/SII setup, and saved-evidence checks. The reproduction, repeated-run receipt and release logs use the 0.47.0 prefix under ignored .local/. Native GUI review and physical bench qualification remain pending.

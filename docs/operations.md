@@ -68,6 +68,8 @@ Use fresh paths. Runs reserve new report paths before starting; CSV rotation pre
 
 For saved PCAPNG containing several capture interfaces, use `inspect-pcap .local/bench.json .local/capture.pcapng --interface 1 --out .local/interface-1.json`, or select **PCAPNG interface** in desktop saved-file review. Choose the actual Ethernet interface ID from the file, not a Windows adapter index. A sole interface can be selected automatically; multiple descriptors require an explicit choice. The [capture guide](pcap-inspection.md) defines schema-4 inventory/excluded counts, original packet indexes, declared capture statistics and timing isolation. Capture-tool snapshots remain separate; missing counters mean unavailable and are not zero. Malformed excluded records still fail validation.
 
+The virtual backend allows 100 ms per EEPROM wait to absorb short host scheduling pauses during setup. The native EEPROM deadline is 10 ms. The 15 ms setup PDU deadline is shared and an injected `setup-timeout` still fails before cyclic input. See [Virtual EEPROM setup timing](ethercrab-review.md#virtual-eeprom-setup-timing).
+
 ## Interpret timing, quality and losses
 
 Optional `synchronization.coe_cycle` values are setup-only CoE cycle/minimum snapshots, in nanoseconds, with exact object indexes and explicit unavailable reasons. They are not refreshed by cyclic I/O and do not automatically change host timing. The [timing guide](esi-sync-review.md#coe-cycle-and-minimum-cycle-snapshots) covers zero, missing values, optional aborts and malformed-reply cleanup.

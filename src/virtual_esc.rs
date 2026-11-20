@@ -143,6 +143,8 @@ pub(crate) struct VirtualEsc {
     upload: Option<Upload>,
     last_request: Option<Vec<u8>>,
     last_response: Option<[u8; MAILBOX_BYTES]>,
+    #[cfg(test)]
+    sii_status_stall: Option<std::time::Duration>,
 }
 
 impl VirtualEsc {
@@ -178,7 +180,14 @@ impl VirtualEsc {
             upload: None,
             last_request: None,
             last_response: None,
+            #[cfg(test)]
+            sii_status_stall: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stall_first_sii_status(&mut self, duration: std::time::Duration) {
+        self.sii_status_stall = Some(duration);
     }
 
     pub fn for_scan(model: VirtualModel, case: ScanCase) -> Self {
@@ -324,6 +333,14 @@ impl VirtualEsc {
     }
 
     fn read(&mut self, register: usize, data: &mut [u8]) -> Result<()> {
+        #[cfg(test)]
+        if register == 0x0502
+            && self.stats.sii_reads > 0
+            && let Some(duration) = self.sii_status_stall.take()
+        {
+            std::thread::sleep(duration);
+        }
+
         let end = register
             .checked_add(data.len())
             .filter(|end| *end <= self.registers.len());
