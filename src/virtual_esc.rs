@@ -326,12 +326,14 @@ pub enum GroupClockCase {
     ReferenceRegression,
     MiddleFollowerStale,
     TopologyChange,
+    TopologyReconnect,
 }
 
 struct GroupClock {
     reference: bool,
     case: GroupClockCase,
     nominal_difference_ns: i32,
+    fault_cycle: u64,
 }
 
 struct DcRehearsal {
@@ -427,6 +429,7 @@ impl VirtualWire {
         fixture: GroupFixture,
         case: GroupClockCase,
         period_ns: u32,
+        fault_cycle: u64,
     ) -> Self {
         let mut wire = Self::with_group_layout(fixture);
         let fault_station = match case {
@@ -443,6 +446,7 @@ impl VirtualWire {
                     GroupClockCase::Normal
                 },
                 nominal_difference_ns: if index == 2 { 350 } else { -250 },
+                fault_cycle,
             });
             esc.registers[usize::from(DC_ACTIVATION)] = 3;
             let cycle = usize::from(DC_SYNC0_CYCLE);
@@ -789,9 +793,10 @@ impl VirtualEsc {
                                 output.case == OutputRehearsalCase::WatchdogUnavailable
                             });
                         let difference_unavailable = register == DC_TIME_DIFFERENCE
-                            && self.stats.dc_clock_distribution == 2
                             && self.group_clock.as_ref().is_some_and(|clock| {
-                                !clock.reference && clock.case == GroupClockCase::DifferenceReadWkc
+                                !clock.reference
+                                    && clock.case == GroupClockCase::DifferenceReadWkc
+                                    && self.stats.dc_clock_distribution == clock.fault_cycle
                             });
                         u16::from(
                             !(dc_unavailable || watchdog_unavailable || difference_unavailable),
@@ -965,10 +970,11 @@ impl VirtualEsc {
         );
         let clock = self.group_clock.as_ref().expect("group clock configured");
         let cycle = self.stats.dc_clock_distribution;
+        let fault_cycle = cycle == clock.fault_cycle;
         let time = usize::from(DC_TIME);
         if clock.reference {
             let period = u64::from(dword(&self.registers[usize::from(DC_SYNC0_CYCLE)..]));
-            let timestamp = if cycle == 2 && clock.case == GroupClockCase::ReferenceRegression {
+            let timestamp = if fault_cycle && clock.case == GroupClockCase::ReferenceRegression {
                 VIRTUAL_DC_STARTING_TIME + period - 1
             } else {
                 VIRTUAL_DC_STARTING_TIME + period * cycle
@@ -976,7 +982,7 @@ impl VirtualEsc {
             self.registers[time..time + 8].copy_from_slice(&timestamp.to_le_bytes());
             data.copy_from_slice(&timestamp.to_le_bytes());
         } else {
-            if cycle == 2 {
+            if fault_cycle {
                 match clock.case {
                     GroupClockCase::FollowerWkc => return Ok(0),
                     GroupClockCase::FollowerStale | GroupClockCase::MiddleFollowerStale => {
@@ -986,7 +992,8 @@ impl VirtualEsc {
                 }
             }
             // The follower's local reading and filter result are authored responses.
-            let difference_ns: i32 = if cycle == 2 && clock.case == GroupClockCase::FollowerOffset {
+            let difference_ns: i32 = if fault_cycle && clock.case == GroupClockCase::FollowerOffset
+            {
                 2_500
             } else {
                 clock.nominal_difference_ns

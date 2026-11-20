@@ -712,3 +712,11 @@ The three-station topology-change fixture saved an LRD, three fixed-address AL r
 The Windows release CLI and replay agreed on one clock rejection, two topology rejections and three held cycles. Two rotated CSV parts held cycles one and three, and the relocated bundle verified both rows. A changed schema, missing setup, unverified generation and input timestamp on the skipped cycle each blocked replay before CSV creation. The unchanged 0.73.0 DC bundle still verified.
 
 Formatting, locked Clippy, 189 Rust tests, the locked Windows x64 MSVC release build and the full Windows headless regression passed. Headless desktop review displayed the three distinct outcomes in the same capture. The new fixture models one connection generation. DC requalification after reconnection, native desktop acceptance and the physical bench remain open.
+
+## Version 0.75.0 virtual DC reconnect (2026-11-20)
+
+The 12-cycle fixture held generation one after the modeled swap and verified fresh topology, FMMU, SyncManager and SYNC0 replies for generation two. Cycle one in generation two returned FRMW WKC 2 of 3 and skipped the PDO request. Cycle two passed even though the restarted local clock was below the last observation in generation one. The saved elapsed timestamps continued from the original capture start.
+
+Every-valid logging produced five rows in three CSV parts. On-change logging retained the first accepted row of each generation with identical selected values. The relocated bundle verified all five rows and both generations of each setup check. Replay blocked missing setup, missing or copied SYNC0 evidence, an old clock frame, a reset elapsed timestamp and a timestamp attached to the rejected first exchange. The unchanged 0.73.0 and 0.74.0 DC bundles still verified.
+
+Formatting, locked Clippy, 190 Rust tests, the locked Windows x64 MSVC release build and the full Windows headless regression passed. The headless desktop showed the hold, first-cycle clock rejection and two verified SYNC0 setups. This fixture uses an authored reset of an in-memory ESC chain. Physical reconnect, synchronization and 1 ms timing remain pending.

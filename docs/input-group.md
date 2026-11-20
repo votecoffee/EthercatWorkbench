@@ -124,7 +124,22 @@ This three-station scenario defaults to eight cycles and requires at least six. 
 
 The clock checks pass during the modeled station swap in cycles four and five. The LRD WKC is 2 and all three AL reads show clean SAFEOP, while the position reads show the last two stations reversed. This latches the hold for the rest of the generation. From cycle six the original order is visible again and the hold stays active. The CSV contains only cycles one and three. A clock rejection has no cyclic topology observation because it skips the entire input frame.
 
-The scenario records one setup and uses schema 5. The receipt and desktop review show the clock rejection, the two order rejections and the three held cycles separately. Replay and bundle verification reconstruct those decisions from the saved frames before accepting CSV. Run a fresh setup to start a new DC rehearsal. The authored DC fixture has no reconnect sequence, and physical topology and clock qualification remain separate bench work.
+The scenario records one setup and uses schema 5. The receipt and desktop review show the clock rejection, the two order rejections and the three held cycles separately. Replay and bundle verification reconstruct those decisions from the saved frames before accepting CSV. Use the reconnect scenario below to rehearse a second setup in the same capture.
+
+## Requalify the clocks after a modeled reconnect
+
+```powershell
+.\ethercat-workbench-cli.exe rehearse-group-dc samples/input-group-dc-three.json --scenario topology-reconnect
+.\ethercat-workbench-cli.exe generate-group-dc-replay samples/input-group-dc-three.json --scenario topology-reconnect --period-ns 700000 --out .local/dc-reconnect-frames.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group-dc-three.json .local/dc-reconnect-frames.json --csv .local/dc-reconnect.csv --out .local/dc-reconnect-replay.json
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group-dc-three.json .local/dc-reconnect-frames.json .local/dc-reconnect-replay.json .local/dc-reconnect.csv
+```
+
+The 12-cycle default runs eight cycles in generation one and four in generation two. Use `--cycles` from 10 to 64 to vary the length of generation two. Generation one matches the topology-change fault schedule. Old station order returns after the swap, and the hold persists until generation one ends.
+
+A new virtual wire starts generation two. Replay requires its own topology probes, FMMU and SyncManager replies, and SYNC0 activation and period readback for all three stations. The readback follows that generation's last setup probe in the datagram index sequence. A replaced or missing setup reply blocks replay before creation of the CSV. The first clock distribution reply in generation two has WKC 2 of 3, so it produces no PDO request or row. The next cycle passes and resumes input using that generation's clock history. The model's clock values restart while elapsed capture microseconds keep their original capture-wide schedule.
+
+Schema 6 carries both raw SYNC0 replies in `virtual_dc.sync0_by_generation`. The receipt has the decoded `configured_sync0` observations with each verified setup. The direct rehearsal shows generation one's setup and audit at the top level and generation two's under `reconnected_setup`. The default every-valid capture logs generation one's cycles one and three and generation two's cycles two through four. Audit reports `verified_clock_setup_generations`, which counts setup readbacks. **Review → Grouped capture → Verified source** displays the same count. Physical reconnect and clock behavior require a bench run.
 
 ## Generate a two-device replay
 
@@ -140,7 +155,7 @@ Generated fixtures and replay receipts include `virtual_scenario`. The fixed UTC
 
 ## Verify saved setup topology
 
-Schema 4 fixtures and the monitored schema 5 fixtures include setup topology. Each entry in `setup_topology` binds a connection generation to two raw replies, one before and one after its mapping reads. Replay requires one pair for every generation in the cycle stream, in the same order. It checks the raw datagram structure and increasing probe indexes, broadcast and per-position WKC, configured station addresses, and stability of observed addresses and aliases. Copies of one probe cannot serve as both observations.
+Fixtures in schema 4 through 6 include setup topology. Each entry in `setup_topology` binds a connection generation to two raw replies, one before and one after its mapping reads. Replay requires one pair for every generation in the cycle stream, in the same order. It checks the raw datagram structure and increasing probe indexes, broadcast and per-position WKC, configured station addresses, and stability of observed addresses and aliases. Copies of one probe cannot serve as both observations.
 
 A missing or invalid pair stops replay before it creates the CSV. The receipt retains the rebuilt observations. Group audit requires agreement with the original fixture bytes and the rebuilt receipt, and reports `verified_topology_generations`. Portable bundle verification repeats this check using the copied fixture. The setup probes record evidence at those observations. The saved mapping snapshots and individual cyclic replies have their own checks.
 
@@ -148,7 +163,7 @@ Schema 3 fixtures keep the same topology checks. Schema 1 input-only and schema 
 
 ## Verify saved setup mapping
 
-In schema 4 and 5 fixtures, each `setup_topology` entry also contains `mapping_replies`. The list holds the FMMU and SyncManager register replies between that generation's two setup probes. Replay rebuilds the expected sequence from the station order and the reported channel counts. It checks each reply against its expected datagram index, station address, register offset, and width. It then checks WKC and the logical and physical mapping geometry before creating a CSV.
+In schema 4 through 6 fixtures, each `setup_topology` entry also contains `mapping_replies`. The list holds the FMMU and SyncManager register replies between that generation's two setup probes. Replay rebuilds the expected sequence from the station order and the reported channel counts. It checks each reply against its expected datagram index, station address, register offset, and width. It then checks WKC and the logical and physical mapping geometry before creating a CSV.
 
 The replay receipt retains the rebuilt mapping per generation and the audit reports `verified_mapping_generations`. A missing reply, changed mapping or invalid register WKC can stop replay while the recorded cyclic replies still look healthy. The verified portable bundle retains the original fixture bytes.
 

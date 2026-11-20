@@ -31,6 +31,9 @@ pub(in crate::input_group) struct GenerationCheck {
     pub(in crate::input_group) topology: Check,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(in crate::input_group) mapping: Option<RegisterReview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::input_group) configured_sync0:
+        Option<Vec<crate::input_group::clock_rehearsal::Sync0>>,
 }
 
 impl Recording {
@@ -63,6 +66,7 @@ impl Recording {
             connection_generation: self.connection_generation,
             topology,
             mapping: None,
+            configured_sync0: None,
         })
     }
 }
@@ -86,6 +90,10 @@ impl Check {
             after_mapping,
             unchanged,
         }
+    }
+
+    pub(in crate::input_group) fn probe_indexes(&self) -> [u8; 2] {
+        [self.before_mapping.raw.index, self.after_mapping.raw.index]
     }
 
     pub(crate) fn recording(

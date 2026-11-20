@@ -2375,6 +2375,108 @@ def verify_clock_and_topology(cli, destination):
     assert "at least 6 cycles" in cli_call(cli, "rehearse-group-dc", manifest, *arguments, "--cycles", 5, success=False)
 
 
+def verify_clock_reconnect(cli, destination):
+    sample = ROOT / "samples"
+    manifest = sample / "input-group-dc-three.json"
+    args = ("--scenario", "topology-reconnect", "--period-ns", 700_000)
+    direct = cli_call(cli, "rehearse-group-dc", manifest, *args, "--out", destination / "direct.json")
+    assert direct["clock_rejections"] == 2 and direct["valid_input_cycles"] == 5
+    assert direct["configured_sync0"] == direct["reconnected_setup"]["configured_sync0"]
+    for setup, expected in ((direct, 8), (direct["reconnected_setup"], 4)):
+        assert len(setup["wire_audit"]) == 3
+        for esc in setup["wire_audit"]:
+            assert esc["dc_clock_distribution"] == expected and esc["logical_reads"] == expected - 1
+            assert esc["register_writes"] == esc["logical_writes"] == esc["physical_output_writes"] == 0
+            assert not esc["state_requests"]
+
+    fixture = destination / "reconnect-frames.json"
+    saved = cli_call(cli, "generate-group-dc-replay", manifest, *args, "--out", fixture)
+    assert saved["schema"] == 6 and len(saved["cycles"]) == 12
+    clock_policy = saved["virtual_dc"]
+    assert clock_policy["scenario"] == "topology-reconnect" and "sync0_hex" not in clock_policy
+    for generation, setup, sync0 in zip((1, 2), saved["setup_topology"], clock_policy["sync0_by_generation"], strict=True):
+        assert generation == setup["connection_generation"] == sync0["connection_generation"]
+        assert setup["before_mapping"]["index"] == (0 if generation == 1 else 56)
+        assert len(setup["mapping_replies"]) == 24
+        raw_sync0 = bytes.fromhex(sync0["reply_hex"])
+        assert raw_sync0[17] == setup["after_mapping"]["index"] + 1
+        first_cycle = saved["cycles"][0 if generation == 1 else 8]
+        assert first_cycle["index"] == raw_sync0[17] + 3
+        assert bytes.fromhex(first_cycle["clock_frames"]["distribution_hex"])[17] == raw_sync0[17] + 1
+        assert bytes.fromhex(first_cycle["clock_frames"]["readback_hex"])[17] == raw_sync0[17] + 2
+
+    csv_base = destination / "capture.csv"
+    receipt = destination / "replay.json"
+    report = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", csv_base, "--rotate-rows", 2, "--out", receipt)
+    assert report["counts"] == {
+        "cycles": 12, "matched_replies": 10, "valid": 5, "unmatched_cycles": 0,
+        "clock_rejections": 2, "topology_rejections": 2, "topology_hold_rejections": 3,
+        "wkc_mismatches": 0, "invalid_al": 0, "ignored_frames": 0,
+    }
+    setups = report["setup_topology"]
+    assert [setup["connection_generation"] for setup in setups] == [1, 2]
+    assert setups[0]["configured_sync0"] == setups[1]["configured_sync0"] == direct["configured_sync0"]
+    for recorded, read, rehearsal in zip(saved["cycles"], report["cycles"], direct["cycles"], strict=True):
+        assert recorded["connection_generation"] == read["connection_generation"] == rehearsal["connection_generation"]
+        assert recorded["cycle_index"] == read["cycle_index"] == rehearsal["cycle_index"]
+        assert read["clock"] == rehearsal["clock"]
+        assert read.get("cyclic_topology") == rehearsal.get("cyclic_topology")
+    before, first, recovered = report["cycles"][7:10]
+    assert before["cyclic_topology"]["held_for_setup"]
+    assert first["connection_generation"] == 2 and first["cycle_index"] == 1
+    assert first["clock"]["actual_distribution_wkc"] == 2 and first["clock"]["issues"] == ["distribution_wkc"]
+    assert first["elapsed_us"] is None and first["actual_wkc"] is None
+    assert "cyclic_topology" not in first and not saved["cycles"][8]["received_hex"]
+    assert recovered["valid"] and recovered["clock"]["valid"]
+    assert recovered["clock"]["reference"]["time_ns"] < before["clock"]["reference"]["time_ns"]
+    assert recovered["cyclic_topology"]["matches_setup"] and not recovered["cyclic_topology"]["held_for_setup"]
+    assert report["valid_receive_spacing"]["count"] == 3 and report["valid_receive_spacing"]["longest_gap_us"] == 1400
+
+    parts, logged = rows(csv_base)
+    assert len(parts) == 3
+    assert [tuple(int(row[key]) for key in ("connection_generation", "cycle_index", "elapsed_us")) for row in logged] == [
+        (1, 1, 0), (1, 3, 1400), (2, 2, 6300), (2, 3, 7000), (2, 4, 7700),
+    ]
+    on_change = destination / "on-change.csv"
+    on_change_receipt = destination / "on-change.json"
+    cli_call(cli, "replay-input-group", manifest, fixture, "--csv", on_change, "--on-change", "--out", on_change_receipt)
+    with on_change.open(encoding="utf-8", newline="") as stream:
+        changed_rows = list(csv.DictReader(stream, strict=True))
+    assert [(row["connection_generation"], row["cycle_index"]) for row in changed_rows] == [("1", "1"), ("2", "2")]
+    assert all(changed_rows[0][key] == changed_rows[1][key] for key in changed_rows[0] if key.startswith("Position "))
+    assert cli_call(cli, "verify-group-replay", manifest, fixture, on_change_receipt, on_change)["verified_rows"] == 2
+    checked = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, csv_base)
+    assert checked["complete"] and checked["verified_rows"] == 5
+    assert checked["verified_clock_setup_generations"] == checked["verified_mapping_generations"] == checked["verified_topology_generations"] == 2
+    bundle = destination / "reconnect-bundle"
+    cli_call(cli, "bundle-group-replay", manifest, fixture, receipt, csv_base, "--out", bundle)
+    verified = cli_call(cli, "verify-group-bundle", bundle.rename(destination / "moved-reconnect-bundle"))["audit"]
+    assert verified["verified_rows"] == 5 and verified["verified_clock_setup_generations"] == 2
+
+    def rejected(name, mutate, message):
+        changed = json.loads(fixture.read_bytes())
+        mutate(changed)
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        blocked = destination / f"{name}.csv"
+        error = cli_call(cli, "replay-input-group", manifest, path, "--csv", blocked, success=False)
+        assert message in error, (name, error)
+        assert not blocked.exists()
+
+    rejected("old-schema", lambda d: d.update(schema=5), "requires a schema 6")
+    rejected("setup-missing", lambda d: d["setup_topology"].pop(), "missing setup topology for generation 2")
+    rejected("sync0-missing", lambda d: d["virtual_dc"].pop("sync0_by_generation"), "requires the SYNC0 evidence")
+    rejected("sync0-wrong-generation", lambda d: d["virtual_dc"]["sync0_by_generation"][1].update(connection_generation=1),
+             "setup evidence does not match generation 2")
+    rejected("old-sync0", lambda d: d["virtual_dc"]["sync0_by_generation"][1].update(
+        reply_hex=d["virtual_dc"]["sync0_by_generation"][0]["reply_hex"]), "SYNC0 setup for generation 2")
+    rejected("old-clock-reply", lambda d: d["cycles"][8].update(clock_frames=d["cycles"][0]["clock_frames"]), "DC replay cycle 9")
+    rejected("restarted-elapsed", lambda d: d["cycles"][9].update(elapsed_us=700), "differs from the authored SYNC0 schedule")
+    rejected("stale-input", lambda d: d["cycles"][8].update(elapsed_us=5600), "clock-rejected replay cycle 9")
+    assert "at least 10 cycles" in cli_call(cli, "rehearse-group-dc", manifest, *args, "--cycles", 9, success=False)
+    assert "three-station DC fixture" in cli_call(cli, "rehearse-group-dc", sample / "input-group-dc.json", *args, success=False)
+
+
 def verify_group_dc_replay(cli, destination):
     manifest = ROOT / "samples/input-group-dc.json"
     fixture = destination / "stale.json"
@@ -4553,6 +4655,9 @@ def main():
     clock_topology_destination = destination / "group-clock-topology"
     clock_topology_destination.mkdir()
     verify_clock_and_topology(cli, clock_topology_destination)
+    clock_reconnect_destination = destination / "group-clock-reconnect"
+    clock_reconnect_destination.mkdir()
+    verify_clock_reconnect(cli, clock_reconnect_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

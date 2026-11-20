@@ -1590,7 +1590,11 @@ mod tests {
                     clock_rehearsal::Options {
                         period_ns: 700_000,
                         difference_limit_ns: 500,
-                        cycles: 8,
+                        cycles: if clock_case == GroupClockCase::TopologyReconnect {
+                            12
+                        } else {
+                            8
+                        },
                         scenario: clock_case,
                     },
                 )
@@ -1874,6 +1878,40 @@ mod tests {
         ] {
             assert!(text.contains(label), "missing {label} in {text}");
         }
+    }
+
+    #[test]
+    fn grouped_review_shows_verified_clock_setup_after_reconnect() {
+        let scratch = GroupScratch::create();
+        let bundle = scratch.archived_group(GroupReviewFixture::ThreeClocks(
+            GroupClockCase::TopologyReconnect,
+        ));
+        let mut panel = Panel {
+            page: Page::Grouped,
+            ..Default::default()
+        };
+        panel.start(Task::ReviewGroupBundle { directory: bundle });
+        wait_for_saved_job(&mut panel);
+        assert_eq!(
+            panel.controller.state(),
+            State::Complete,
+            "{:?}",
+            panel.controller.error()
+        );
+        let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+        for label in [
+            "5 of 5 selected CSV rows verified",
+            "Saved SYNC0 readback verified · 2 generations",
+            "Generation 1 · Cycle 6 · Held for fresh setup",
+            "Generation 2 · Cycle 1 · Clock rejected",
+            "FRMW WKC 2/3",
+        ] {
+            assert!(text.contains(label), "missing {label} in {text}");
+        }
+        assert!(
+            !text.contains("Generation 2 · Cycle 2 · Held for fresh setup"),
+            "{text}"
+        );
     }
 
     // Pure egui layout: no native window, desktop input, screenshot or GPU.

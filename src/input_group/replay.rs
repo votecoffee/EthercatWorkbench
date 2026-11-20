@@ -5,7 +5,7 @@ pub use virtual_capture::{VirtualScenario, generate_virtual};
 
 use super::{
     AlRead, InputGroup, Inspection,
-    clock_rehearsal::{ClockCheck, ClockFrames, ClockRecording},
+    clock_rehearsal::{ClockCheck, ClockFrames, ClockRecording, ClockTracker, modeled_elapsed_us},
     decode_al_reads, decode_frame_hex,
     preflight::{
         self,
@@ -31,6 +31,7 @@ const MAX_CANDIDATES: usize = 64;
 const TOPOLOGY_FIXTURE_SCHEMA: u32 = 3;
 pub(super) const MAPPING_FIXTURE_SCHEMA: u32 = 4;
 pub(super) const MONITORED_FIXTURE_SCHEMA: u32 = 5;
+pub(super) const DC_RECONNECT_FIXTURE_SCHEMA: u32 = 6;
 pub(super) const MODELED_UTC: &str = "2026-01-01T00:00:00.000000Z";
 
 pub struct Options<'a> {
@@ -206,7 +207,15 @@ pub(super) fn prepare_capture<'a>(
     check_cancel(stop)?;
     let (fixture, bytes) = read_json::<Fixture>(file, MAX_FIXTURE_BYTES)?;
     check_cancel(stop)?;
-    let monitor_topology = fixture.schema == MONITORED_FIXTURE_SCHEMA;
+    let dc_reconnect = fixture
+        .virtual_dc
+        .as_ref()
+        .is_some_and(ClockRecording::reconnects);
+    ensure!(
+        dc_reconnect == (fixture.schema == DC_RECONNECT_FIXTURE_SCHEMA),
+        "topology-reconnect requires a schema 6 DC replay fixture"
+    );
+    let monitor_topology = fixture.schema == MONITORED_FIXTURE_SCHEMA || dc_reconnect;
     let dc_monitored = fixture
         .virtual_dc
         .as_ref()
@@ -214,7 +223,7 @@ pub(super) fn prepare_capture<'a>(
     let monitored_source =
         dc_monitored || fixture.virtual_scenario == Some(VirtualScenario::TopologyChange);
     ensure!(
-        !monitored_source || monitor_topology,
+        !monitored_source || fixture.schema == MONITORED_FIXTURE_SCHEMA,
         "topology-change requires a monitored group replay fixture"
     );
     match (
@@ -223,6 +232,10 @@ pub(super) fn prepare_capture<'a>(
         fixture.virtual_scenario,
         &fixture.setup_topology,
     ) {
+        (DC_RECONNECT_FIXTURE_SCHEMA, Some(_), None, Some(_)) => {}
+        (DC_RECONNECT_FIXTURE_SCHEMA, Some(_), None, None) => {
+            bail!("DC reconnect requires setup topology probes")
+        }
         (MONITORED_FIXTURE_SCHEMA, None, Some(VirtualScenario::TopologyChange), Some(_)) => {}
         (MONITORED_FIXTURE_SCHEMA, Some(_), None, Some(_)) if dc_monitored => {}
         (MONITORED_FIXTURE_SCHEMA, _, _, None) if monitored_source => {
@@ -262,7 +275,7 @@ pub(super) fn prepare_capture<'a>(
         "group replay requires 1–{MAX_CYCLES} cycles"
     );
     validate_stations(&fixture.stations, group.bindings.len())?;
-    let setup_topology = fixture
+    let mut setup_topology = fixture
         .setup_topology
         .as_ref()
         .map(|probes| {
@@ -276,6 +289,19 @@ pub(super) fn prepare_capture<'a>(
             )
         })
         .transpose()?;
+    let clock_trackers = fixture
+        .virtual_dc
+        .as_ref()
+        .map(|dc| {
+            dc.trackers(
+                group,
+                &fixture.stations,
+                fixture.cycles.len(),
+                setup_topology.as_deref_mut(),
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
     ensure!(
         options.sync_managers.is_none() || options.fmmu.is_some(),
         "SyncManager review requires FMMU evidence"
@@ -304,6 +330,7 @@ pub(super) fn prepare_capture<'a>(
         &fixture.stations,
         fixture.cycles,
         fixture.virtual_dc.as_ref(),
+        clock_trackers,
         setup_topology.as_deref().filter(|_| monitor_topology),
         stop,
     )?;
@@ -495,13 +522,13 @@ fn prepare(
     stations: &[u16],
     cycles: Vec<RecordedCycle>,
     dc: Option<&ClockRecording>,
+    clock_trackers: Vec<ClockTracker>,
     monitored_setup: Option<&[GenerationCheck]>,
     stop: Option<&AtomicBool>,
 ) -> Result<Vec<PreparedCycle>> {
     check_cancel(stop)?;
-    let mut tracker = dc
-        .map(|dc| dc.tracker(group, stations, cycles.len()))
-        .transpose()?;
+    let mut clock_trackers = clock_trackers.into_iter();
+    let mut tracker = None;
     let mut previous_cycle = (0, 0);
     let mut previous_received = None;
     let mut verified_generations = monitored_setup.into_iter().flatten();
@@ -518,9 +545,16 @@ fn prepare(
                 order.0 > 0 && order.1 > 0 && order > previous_cycle,
                 "replay cycle {label} needs positive, increasing generation/cycle order"
             );
-            if order.0 != previous_cycle.0 && monitored_setup.is_some() {
-                setup = Some(verified_generations.next().context("verified topology missing for monitored generation")?);
-                topology_latched = false;
+            ensure!(
+                dc.is_none_or(|dc| order == dc.cycle_position(label as u64)),
+                "DC replay cycle {label} does not match the authored generation or frame order"
+            );
+            if order.0 != previous_cycle.0 {
+                tracker = clock_trackers.next();
+                if monitored_setup.is_some() {
+                    setup = Some(verified_generations.next().context("verified topology missing for monitored generation")?);
+                    topology_latched = false;
+                }
             }
             previous_cycle = order;
             ensure!(
@@ -530,7 +564,7 @@ fn prepare(
             let clock = match (&mut tracker, cycle.clock_frames) {
                 (Some(tracker), Some(frames)) => {
                     ensure!(
-                        order == (1, label as u64) && cycle.index == tracker.input_slot(),
+                        cycle.index == tracker.input_slot(),
                         "DC replay cycle {label} does not match the authored generation or frame order"
                     );
                     let clock = tracker.inspect_recorded(frames)
@@ -597,7 +631,7 @@ fn prepare(
             );
             if let Some(received) = receipt.elapsed_us {
                 ensure!(
-                    dc.is_none_or(|dc| received == dc.modeled_elapsed_us(order.1)),
+                    dc.is_none_or(|dc| received == modeled_elapsed_us(label as u64, dc.period_ns)),
                     "replay cycle {label} timestamp differs from the authored SYNC0 schedule"
                 );
                 ensure!(

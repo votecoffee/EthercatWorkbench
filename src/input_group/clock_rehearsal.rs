@@ -1,9 +1,10 @@
 //! Rehearse clock distribution and clock-qualified inputs on the authored virtual groups.
 use super::{
     InputGroup, Inspection, decode_frame_hex, preflight,
-    preflight::topology::RuntimeCheck,
+    preflight::topology::{GenerationCheck, Recording, RuntimeCheck},
     replay::{
-        Fixture, MAPPING_FIXTURE_SCHEMA, MODELED_UTC, MONITORED_FIXTURE_SCHEMA, RecordedCycle,
+        DC_RECONNECT_FIXTURE_SCHEMA, Fixture, MAPPING_FIXTURE_SCHEMA, MODELED_UTC,
+        MONITORED_FIXTURE_SCHEMA, RecordedCycle,
     },
 };
 pub use crate::virtual_esc::GroupClockCase;
@@ -22,6 +23,9 @@ const MAX_READBACK_DATAGRAMS: usize = MAX_SYNC0_DATAGRAMS - 1;
 const MAX_CYCLES: usize = 64;
 const SWAP_CYCLE: u32 = 4;
 const RESTORE_CYCLE: u32 = 6;
+const FIRST_GENERATION_CYCLES: u32 = 8;
+// Leave room for topology, register readback, SYNC0 and eight cycles before generation two.
+const SECOND_SETUP_INDEX: u8 = 56;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -29,7 +33,17 @@ pub struct ClockRecording {
     pub scenario: GroupClockCase,
     pub period_ns: u32,
     pub difference_limit_ns: u32,
-    sync0_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync0_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync0_by_generation: Option<[RecordedSync0; 2]>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecordedSync0 {
+    connection_generation: u64,
+    reply_hex: String,
 }
 
 impl ClockRecording {
@@ -37,30 +51,83 @@ impl ClockRecording {
         self.scenario == GroupClockCase::TopologyChange
     }
 
-    pub(super) fn tracker(
+    pub(super) fn reconnects(&self) -> bool {
+        self.scenario == GroupClockCase::TopologyReconnect
+    }
+
+    pub(super) fn cycle_position(&self, ordinal: u64) -> (u64, u64) {
+        let first_count = u64::from(FIRST_GENERATION_CYCLES);
+        if self.reconnects() && ordinal > first_count {
+            (2, ordinal - first_count)
+        } else {
+            (1, ordinal)
+        }
+    }
+
+    pub(super) fn trackers(
         &self,
         group: &InputGroup,
         stations: &[u16],
         cycles: usize,
-    ) -> Result<ClockTracker> {
+        setup: Option<&mut [GenerationCheck]>,
+    ) -> Result<Vec<ClockTracker>> {
         let fixture = validate(group, self.period_ns, cycles, self.scenario)?;
         ensure!(
             stations == fixture.stations,
             "DC replay requires the authored station order"
         );
-        read_sync0(
-            fixture.stations,
-            &decode_frame_hex(&self.sync0_hex)?,
-            self.period_ns,
-        )?;
-        Ok(ClockTracker::new(
-            fixture.stations,
-            self.difference_limit_ns,
-        ))
-    }
-
-    pub(super) fn modeled_elapsed_us(&self, cycle: u64) -> u64 {
-        (cycle - 1) * u64::from(self.period_ns) / 1_000
+        match (
+            self.reconnects(),
+            self.sync0_hex.as_deref(),
+            &self.sync0_by_generation,
+        ) {
+            (false, Some(legacy), None) => {
+                read_sync0(stations, 0, &decode_frame_hex(legacy)?, self.period_ns)?;
+                Ok(vec![ClockTracker::new(
+                    fixture.stations,
+                    self.difference_limit_ns,
+                    0,
+                )])
+            }
+            (true, None, Some(readbacks)) => {
+                let setup = setup.context("DC reconnect requires two verified setups")?;
+                ensure!(
+                    setup.len() == 2,
+                    "DC reconnect requires two verified setups"
+                );
+                readbacks
+                    .iter()
+                    .zip(setup)
+                    .enumerate()
+                    .map(|(index, (saved, checked))| {
+                        let generation = index as u64 + 1;
+                        let [before, after] = checked.topology.probe_indexes();
+                        ensure!(
+                            saved.connection_generation == generation
+                                && checked.connection_generation == generation
+                                && before == setup_index(generation),
+                            "DC setup evidence does not match generation {generation}"
+                        );
+                        let slot = after.checked_add(1).context("missing SYNC0 frame slot")?;
+                        checked.configured_sync0 = Some(
+                            read_sync0(
+                                stations,
+                                slot,
+                                &decode_frame_hex(&saved.reply_hex)?,
+                                self.period_ns,
+                            )
+                            .with_context(|| format!("SYNC0 setup for generation {generation}"))?,
+                        );
+                        Ok(ClockTracker::new(
+                            fixture.stations,
+                            self.difference_limit_ns,
+                            slot,
+                        ))
+                    })
+                    .collect()
+            }
+            _ => anyhow::bail!("DC replay requires the SYNC0 evidence for its fixture schema"),
+        }
     }
 }
 
@@ -79,9 +146,9 @@ pub(super) struct ClockTracker {
 }
 
 impl ClockTracker {
-    fn new(stations: &'static [u16], difference_limit_ns: u32) -> Self {
+    fn new(stations: &'static [u16], difference_limit_ns: u32, sync0_index: u8) -> Self {
         Self {
-            input_slot: 3,
+            input_slot: sync0_index.wrapping_add(3),
             stations,
             previous: vec![None; stations.len()],
             difference_limit_ns,
@@ -93,7 +160,7 @@ impl ClockTracker {
     }
 
     fn distribution_request(&self) -> Frame<1> {
-        Frame::clock_request(self.input_slot - 2, self.stations[0], DC_TIME)
+        Frame::clock_request(self.input_slot.wrapping_sub(2), self.stations[0], DC_TIME)
     }
 
     fn readback_request(&self) -> Frame<MAX_READBACK_DATAGRAMS> {
@@ -107,7 +174,7 @@ impl ClockTracker {
             ]);
             used += 2;
         }
-        Frame::with_count(self.input_slot - 1, parts, used)
+        Frame::with_count(self.input_slot.wrapping_sub(1), parts, used)
     }
 
     pub(super) fn inspect_recorded(&mut self, frames: ClockFrames) -> Result<ClockCheck> {
@@ -144,7 +211,7 @@ impl ClockTracker {
                 *previous = follower.follower.time_ns;
             }
         }
-        self.input_slot += 2 + u8::from(result.valid);
+        self.input_slot = self.input_slot.wrapping_add(2 + u8::from(result.valid));
         Ok(result)
     }
 }
@@ -163,16 +230,24 @@ pub struct Report<'a> {
     scenario: GroupClockCase,
     period_ns: u32,
     difference_limit_ns: u32,
-    configured_sync0: Vec<Sync0>,
-    plan: Inspection<'a>,
+    #[serde(flatten)]
+    initial_setup: Setup<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reconnected_setup: Option<Setup<'a>>,
     clock_rejections: usize,
     valid_input_cycles: usize,
     cycles: Vec<Cycle<'a>>,
+}
+
+#[derive(Serialize)]
+struct Setup<'a> {
+    configured_sync0: Vec<Sync0>,
+    plan: Inspection<'a>,
     wire_audit: Vec<VirtualStats>,
 }
 
 #[derive(Serialize)]
-struct Sync0 {
+pub(super) struct Sync0 {
     station: u16,
     activation: u8,
     period_ns: u32,
@@ -180,6 +255,8 @@ struct Sync0 {
 
 #[derive(Serialize)]
 struct Cycle<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_generation: Option<u64>,
     cycle_index: u32,
     clock: ClockCheck,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -338,7 +415,37 @@ fn validate(
             "topology-change requires at least {RESTORE_CYCLE} cycles"
         );
     }
+    if scenario == GroupClockCase::TopologyReconnect {
+        ensure!(
+            fixture.stations.len() == 3,
+            "topology-reconnect requires the three-station DC fixture"
+        );
+        let minimum = FIRST_GENERATION_CYCLES + 2;
+        ensure!(
+            cycles >= minimum as usize,
+            "topology-reconnect requires at least {minimum} cycles"
+        );
+    }
     Ok(fixture)
+}
+
+fn setup_index(generation: u64) -> u8 {
+    if generation == 1 {
+        0
+    } else {
+        SECOND_SETUP_INDEX
+    }
+}
+
+pub(super) fn modeled_elapsed_us(ordinal: u64, period_ns: u32) -> u64 {
+    (ordinal - 1) * u64::from(period_ns) / 1_000
+}
+
+#[derive(Default)]
+struct RecordingBuffers {
+    topology: Vec<Recording>,
+    sync0: Vec<RecordedSync0>,
+    cycles: Vec<RecordedCycle>,
 }
 
 fn rehearse(
@@ -352,109 +459,77 @@ fn rehearse(
         options.cycles as usize,
         options.scenario,
     )?;
-    let stations = layout.stations;
-    let monitored = options.scenario == GroupClockCase::TopologyChange;
-    let clock_case = if monitored {
-        GroupClockCase::MiddleFollowerStale
+    let reconnects = options.scenario == GroupClockCase::TopologyReconnect;
+    let mut recording = record.then(RecordingBuffers::default);
+    let mut cycles = Vec::with_capacity(options.cycles as usize);
+    let initial_setup =
+        rehearse_generation(group, layout, &options, 1, &mut cycles, &mut recording)?;
+    let reconnected_setup = if reconnects {
+        Some(rehearse_generation(
+            group,
+            layout,
+            &options,
+            2,
+            &mut cycles,
+            &mut recording,
+        )?)
     } else {
-        options.scenario
+        None
     };
-    let mut wire = VirtualWire::for_group_dc(layout, clock_case, options.period_ns);
-    let mut plan = group.inspect(None)?;
-    let (mapping, replies) = preflight::require_valid_mapping(group, &mut wire, stations, 0)?;
-    mapping.attach(&mut plan);
-    let sync0 = exchange(&mut wire, &sync0_request(stations))?;
-    let configured_sync0 = read_sync0(stations, sync0, options.period_ns)?;
-    let topology = plan
-        .topology
-        .as_ref()
-        .context("missing verified setup topology")?;
-    let mut fixture = if record {
-        Some(Fixture {
-            schema: if monitored {
-                MONITORED_FIXTURE_SCHEMA
-            } else {
-                MAPPING_FIXTURE_SCHEMA
-            },
+    let fixture = recording.map(|recorded| {
+        let (schema, sync0_hex, sync0_by_generation) = if reconnects {
+            (
+                DC_RECONNECT_FIXTURE_SCHEMA,
+                None,
+                Some(
+                    recorded
+                        .sync0
+                        .try_into()
+                        .expect("two recorded SYNC0 replies"),
+                ),
+            )
+        } else {
+            (
+                if options.scenario == GroupClockCase::TopologyChange {
+                    MONITORED_FIXTURE_SCHEMA
+                } else {
+                    MAPPING_FIXTURE_SCHEMA
+                },
+                Some(
+                    recorded
+                        .sync0
+                        .into_iter()
+                        .next()
+                        .expect("recorded SYNC0 reply")
+                        .reply_hex,
+                ),
+                None,
+            )
+        };
+        Fixture {
+            schema,
             virtual_scenario: None,
             virtual_dc: Some(ClockRecording {
                 scenario: options.scenario,
                 period_ns: options.period_ns,
                 difference_limit_ns: options.difference_limit_ns,
-                sync0_hex: hex::encode(sync0),
+                sync0_hex,
+                sync0_by_generation,
             }),
             capture_start_utc: MODELED_UTC.into(),
-            stations: stations.to_vec(),
-            setup_topology: Some(vec![topology.recording(1, replies)]),
-            cycles: Vec::with_capacity(options.cycles as usize),
-        })
-    } else {
-        None
-    };
-    let mut tracker = ClockTracker::new(stations, options.difference_limit_ns);
-    let mut cycles = Vec::with_capacity(options.cycles as usize);
-    let mut topology_latched = false;
-    for cycle_index in 1..=options.cycles {
-        let index = tracker.input_slot();
-        let distribution = exchange(&mut wire, &tracker.distribution_request())?.to_vec();
-        let readback = exchange(&mut wire, &tracker.readback_request())?;
-        let clock = tracker.inspect(&distribution, readback)?;
-        let clock_frames = record.then(|| ClockFrames {
-            distribution_hex: hex::encode(&distribution),
-            readback_hex: hex::encode(readback),
-        });
-
-        if monitored && matches!(cycle_index, SWAP_CYCLE | RESTORE_CYCLE) {
-            wire.swap_group_stations();
+            stations: layout.stations.to_vec(),
+            setup_topology: Some(recorded.topology),
+            cycles: recorded.cycles,
         }
-        let mut received_hex = Vec::new();
-        let (input, cyclic_topology) = if clock.valid {
-            let frame = group.cyclic_frame(index, stations, monitored)?;
-            let reply = exchange(&mut wire, &frame)?;
-            if record {
-                received_hex.push(hex::encode(reply));
-            }
-            let guard = monitored.then_some((topology, topology_latched));
-            let (input, observation) =
-                group.inspect_cyclic_reply(index, stations, reply, None, guard)?;
-            topology_latched |= observation
-                .as_ref()
-                .is_some_and(|check| !check.matches_setup);
-            (Some(input), observation)
-        } else {
-            (None, None)
-        };
-        if let Some(fixture) = &mut fixture {
-            let cycle = u64::from(cycle_index);
-            let policy = fixture
-                .virtual_dc
-                .as_ref()
-                .expect("recorded clock settings");
-            fixture.cycles.push(RecordedCycle {
-                connection_generation: 1,
-                cycle_index: cycle,
-                index,
-                elapsed_us: input.as_ref().map(|_| policy.modeled_elapsed_us(cycle)),
-                received_hex,
-                clock_frames,
-            });
-        }
-        cycles.push(Cycle {
-            cycle_index,
-            clock,
-            cyclic_topology,
-            input,
-        });
-    }
-
+    });
     let report = Report {
         schema: 1,
         source: "virtual_group_dc_rehearsal",
         scenario: options.scenario,
         period_ns: options.period_ns,
         difference_limit_ns: options.difference_limit_ns,
-        configured_sync0,
-        plan,
+        initial_setup,
+        reconnected_setup,
         clock_rejections: cycles.iter().filter(|cycle| !cycle.clock.valid).count(),
         valid_input_cycles: cycles
             .iter()
@@ -467,9 +542,127 @@ fn rehearse(
             })
             .count(),
         cycles,
-        wire_audit: wire.chain_audits(),
     };
     Ok((report, fixture))
+}
+
+fn rehearse_generation<'a>(
+    group: &'a InputGroup,
+    layout: GroupFixture,
+    options: &Options,
+    generation: u64,
+    cycles: &mut Vec<Cycle<'a>>,
+    recording: &mut Option<RecordingBuffers>,
+) -> Result<Setup<'a>> {
+    let stations = layout.stations;
+    let reconnects = options.scenario == GroupClockCase::TopologyReconnect;
+    let monitored = reconnects || options.scenario == GroupClockCase::TopologyChange;
+    let (clock_case, fault_cycle) = if generation == 2 {
+        (GroupClockCase::FollowerWkc, 1)
+    } else if monitored {
+        (GroupClockCase::MiddleFollowerStale, 2)
+    } else {
+        (options.scenario, 2)
+    };
+    let mut wire = VirtualWire::for_group_dc(layout, clock_case, options.period_ns, fault_cycle);
+    let mut plan = group.inspect(None)?;
+    let (mapping, replies) =
+        preflight::require_valid_mapping(group, &mut wire, stations, setup_index(generation))?;
+    mapping.attach(&mut plan);
+    let topology = plan
+        .topology
+        .as_ref()
+        .context("missing verified setup topology")?;
+    let sync0_index = if reconnects {
+        topology.probe_indexes()[1] + 1
+    } else {
+        0
+    };
+    let sync0 = exchange(&mut wire, &sync0_request(stations, sync0_index))?;
+    let configured_sync0 = read_sync0(stations, sync0_index, sync0, options.period_ns)?;
+    if let Some(recorded) = recording {
+        recorded
+            .topology
+            .push(topology.recording(generation, replies));
+        recorded.sync0.push(RecordedSync0 {
+            connection_generation: generation,
+            reply_hex: hex::encode(sync0),
+        });
+    }
+    let mut tracker = ClockTracker::new(stations, options.difference_limit_ns, sync0_index);
+    let (offset, count) = if generation == 2 {
+        (
+            FIRST_GENERATION_CYCLES,
+            options.cycles - FIRST_GENERATION_CYCLES,
+        )
+    } else {
+        (
+            0,
+            if reconnects {
+                FIRST_GENERATION_CYCLES
+            } else {
+                options.cycles
+            },
+        )
+    };
+    let mut topology_latched = false;
+    for cycle_index in 1..=count {
+        let index = tracker.input_slot();
+        let distribution = exchange(&mut wire, &tracker.distribution_request())?.to_vec();
+        let readback = exchange(&mut wire, &tracker.readback_request())?;
+        let clock = tracker.inspect(&distribution, readback)?;
+        let clock_frames = recording.as_ref().map(|_| ClockFrames {
+            distribution_hex: hex::encode(&distribution),
+            readback_hex: hex::encode(readback),
+        });
+
+        if monitored && generation == 1 && matches!(cycle_index, SWAP_CYCLE | RESTORE_CYCLE) {
+            wire.swap_group_stations();
+        }
+        let mut received_hex = Vec::new();
+        let (input, cyclic_topology) = if clock.valid {
+            let frame = group.cyclic_frame(index, stations, monitored)?;
+            let reply = exchange(&mut wire, &frame)?;
+            if recording.is_some() {
+                received_hex.push(hex::encode(reply));
+            }
+            let guard = monitored.then_some((topology, topology_latched));
+            let (input, observation) =
+                group.inspect_cyclic_reply(index, stations, reply, None, guard)?;
+            topology_latched |= observation
+                .as_ref()
+                .is_some_and(|check| !check.matches_setup);
+            (Some(input), observation)
+        } else {
+            (None, None)
+        };
+        if let Some(recorded) = recording {
+            let ordinal = u64::from(offset + cycle_index);
+            recorded.cycles.push(RecordedCycle {
+                connection_generation: generation,
+                cycle_index: u64::from(cycle_index),
+                index,
+                elapsed_us: input
+                    .as_ref()
+                    .map(|_| modeled_elapsed_us(ordinal, options.period_ns)),
+                received_hex,
+                clock_frames,
+            });
+        }
+        cycles.push(Cycle {
+            connection_generation: reconnects.then_some(generation),
+            cycle_index,
+            clock,
+            cyclic_topology,
+            input,
+        });
+    }
+
+    Ok(Setup {
+        configured_sync0,
+        plan,
+        wire_audit: wire.chain_audits(),
+    })
 }
 
 fn exchange<'a, const N: usize>(wire: &'a mut VirtualWire, frame: &Frame<N>) -> Result<&'a [u8]> {
@@ -477,7 +670,7 @@ fn exchange<'a, const N: usize>(wire: &'a mut VirtualWire, frame: &Frame<N>) -> 
     wire.receive().context("missing clock rehearsal reply")
 }
 
-fn sync0_request(stations: &[u16]) -> Frame<MAX_SYNC0_DATAGRAMS> {
+fn sync0_request(stations: &[u16], index: u8) -> Frame<MAX_SYNC0_DATAGRAMS> {
     let mut parts = [Datagram::register(FPRD, stations[0], DC_ACTIVATION, 1); MAX_SYNC0_DATAGRAMS];
     for (&station, pair) in stations.iter().zip(parts.as_chunks_mut::<2>().0) {
         pair.copy_from_slice(&[
@@ -485,11 +678,16 @@ fn sync0_request(stations: &[u16]) -> Frame<MAX_SYNC0_DATAGRAMS> {
             Datagram::register(FPRD, station, DC_SYNC0_CYCLE, 4),
         ]);
     }
-    Frame::with_count(0, parts, 2 * stations.len())
+    Frame::with_count(index, parts, 2 * stations.len())
 }
 
-fn read_sync0(stations: &[u16], reply: &[u8], expected_period_ns: u32) -> Result<Vec<Sync0>> {
-    let parts = sync0_request(stations)
+fn read_sync0(
+    stations: &[u16],
+    index: u8,
+    reply: &[u8],
+    expected_period_ns: u32,
+) -> Result<Vec<Sync0>> {
+    let parts = sync0_request(stations, index)
         .reply(reply)
         .context("FPRD reply does not match the expected SYNC0 register request")?;
     let mut settings = Vec::with_capacity(stations.len());

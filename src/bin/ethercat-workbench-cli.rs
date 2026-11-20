@@ -456,11 +456,12 @@ struct GroupDcArgs {
     /// Maximum absolute filtered follower time difference in nanoseconds.
     #[arg(long, default_value_t = 500)]
     difference_limit_ns: u32,
-    /// Number of modeled cycles. The topology-change scenario defaults to eight.
+    /// Total modeled cycles. Topology-change defaults to eight and topology-reconnect to twelve.
     #[arg(
         long,
         default_value_t = 4,
-        default_value_if("scenario", "topology-change", "8")
+        default_value_if("scenario", "topology-change", "8"),
+        default_value_if("scenario", "topology-reconnect", "12")
     )]
     cycles: u32,
     #[arg(long, value_enum, default_value = "normal")]
