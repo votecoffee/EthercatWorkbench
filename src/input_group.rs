@@ -132,13 +132,13 @@ pub(crate) struct Device<'a> {
     pub(crate) input: Option<DecodedInput<'a>>,
 }
 
-#[derive(Serialize)]
-pub(crate) struct AlRead {
-    station_address: u16,
+#[derive(Debug, Serialize)]
+pub struct AlRead {
+    pub station_address: u16,
     expected_wkc: u16,
-    pub(crate) actual_wkc: u16,
-    clean_safeop: bool,
-    pub(crate) status: Option<AlStatus>,
+    pub actual_wkc: u16,
+    pub clean_safeop: bool,
+    pub status: Option<AlStatus>,
 }
 
 #[derive(Serialize)]

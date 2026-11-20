@@ -97,6 +97,8 @@ Run `ethercat-workbench-cli.exe rehearse-group-dc samples/input-group-dc.json` t
 
 Use `generate-group-dc-replay` to save the raw clock and input replies for CSV replay and audit. The receipt preserves clock rejections and the resulting gaps between valid samples. [Clock-qualified CSV replay](docs/input-group.md#replay-clock-qualified-inputs)
 
+In the desktop, open **Review → Grouped capture** to verify a portable group bundle and inspect its cycle faults and saved timing. [Grouped capture review](docs/desktop-review.md#review-a-grouped-capture-bundle)
+
 Use `inspect-virtual-group-mapping` to check register readback from the two virtual SubDevices before replay. Use `generate-group-replay` to exercise the pair with clean replies or injected faults. Use `replay-input-group` to write valid grouped inputs to CSV with the fixture's receive timestamps. Run `verify-group-replay` to check values against the saved frame sequence, or `bundle-group-replay` to export evidence for rechecking after relocation. [Grouped CSV replay](docs/input-group.md#replay-group-cycles-to-csv)
 
 ```powershell

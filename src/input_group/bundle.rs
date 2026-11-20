@@ -3,10 +3,12 @@ use super::{
     InputGroup, MAX_DEVICES,
     audit::{self, Audit, Evidence},
     read_json,
+    replay::ReplayDetails,
 };
 use crate::{
     capture::part_path,
     comparison_bundle::{copy_checked, json_bytes, require_entry, write_new},
+    review::check_cancel,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -42,7 +44,7 @@ struct Stamp {
     sha256: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
     schema: u32,
@@ -61,12 +63,19 @@ pub struct Receipt {
     complete: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct VerifiedBundle {
-    directory: PathBuf,
-    receipt_sha256: String,
+    pub directory: PathBuf,
+    pub receipt_sha256: String,
     receipt: Receipt,
-    audit: Audit,
+    pub audit: Audit,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Review {
+    #[serde(flatten)]
+    pub verified: VerifiedBundle,
+    pub replay: ReplayDetails,
 }
 
 impl Receipt {
@@ -203,6 +212,11 @@ pub fn create(sources: Sources<'_>, output: &Path) -> Result<Receipt> {
 }
 
 pub fn verify(directory: &Path) -> Result<VerifiedBundle> {
+    Ok(review(directory, None)?.verified)
+}
+
+pub(crate) fn review(directory: &Path, stop: Option<&AtomicBool>) -> Result<Review> {
+    check_cancel(stop)?;
     let directory = std::path::absolute(directory).context("resolve group bundle directory")?;
     require_entry(&directory, true)?;
     let completion = directory.join(COMPLETION);
@@ -224,6 +238,7 @@ pub fn verify(directory: &Path) -> Result<VerifiedBundle> {
     require_entry(&directory.join("csv"), true)?;
     let entries = receipt.entries()?;
     for (path, stamp) in &entries {
+        check_cancel(stop)?;
         let path = directory.join(path);
         require_entry(&path, false)?;
         ensure!(
@@ -254,14 +269,16 @@ pub fn verify(directory: &Path) -> Result<VerifiedBundle> {
     let profiles: Vec<_> = (0..receipt.profiles.len())
         .map(|i| directory.join(profile_path(i)))
         .collect();
+    check_cancel(stop)?;
     let group = InputGroup::load_profiles(sources.manifest, Some(&profiles))?;
-    let checked = audit::verify_with_layout(
+    let (checked, replay) = audit::verify_with_layout(
         &group,
         sources.fixture,
         sources.replay,
         sources.csv,
         sources.evidence,
         Some((receipt.csv.len() as u64, receipt.rotated)),
+        stop,
     )?;
     let observed = Receipt::from_audit(&sources, &group, &checked)?;
     ensure!(
@@ -280,11 +297,15 @@ pub fn verify(directory: &Path) -> Result<VerifiedBundle> {
         entries == observed.entries()?,
         "bundle SHA-256 or file length differs from audited evidence"
     );
-    Ok(VerifiedBundle {
-        directory,
-        receipt_sha256: hex::encode(Sha256::digest(&bytes)),
-        receipt,
-        audit: checked,
+    check_cancel(stop)?;
+    Ok(Review {
+        verified: VerifiedBundle {
+            directory,
+            receipt_sha256: hex::encode(Sha256::digest(&bytes)),
+            receipt,
+            audit: checked,
+        },
+        replay,
     })
 }
 

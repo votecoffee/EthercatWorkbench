@@ -10,13 +10,14 @@ use super::{
 use crate::{
     capture::{Capture, CaptureStats},
     model::{LogMode, MAX_PAYLOAD, Profile},
+    review::check_cancel,
     run::Spacing,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::{path::Path, sync::atomic::AtomicBool};
 
 const MAX_FIXTURE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CYCLES: usize = 4096;
@@ -62,31 +63,44 @@ pub(super) struct PreparedCycle {
     pub(super) payload: Option<Vec<u8>>,
 }
 
-#[derive(Serialize)]
-pub(super) struct Cycle {
-    pub(super) connection_generation: u64,
-    pub(super) cycle_index: u64,
+#[derive(Debug, Serialize)]
+pub struct Cycle {
+    pub connection_generation: u64,
+    pub cycle_index: u64,
     index: u8,
-    pub(super) elapsed_us: Option<u64>,
-    actual_wkc: Option<u16>,
-    al: Vec<AlRead>,
-    ignored_frames: usize,
+    pub elapsed_us: Option<u64>,
+    pub actual_wkc: Option<u16>,
+    pub al: Vec<AlRead>,
+    pub ignored_frames: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    clock: Option<ClockCheck>,
-    valid: bool,
+    pub clock: Option<ClockCheck>,
+    pub valid: bool,
 }
 
-#[derive(Default, Serialize)]
-struct Counts {
-    cycles: usize,
-    matched_replies: usize,
-    valid: usize,
-    unmatched_cycles: usize,
+#[derive(Debug, Default, Serialize)]
+pub struct Counts {
+    pub cycles: usize,
+    pub matched_replies: usize,
+    pub valid: usize,
+    pub unmatched_cycles: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    clock_rejections: Option<usize>,
-    wkc_mismatches: usize,
-    invalid_al: usize,
-    ignored_frames: usize,
+    pub clock_rejections: Option<usize>,
+    pub wkc_mismatches: usize,
+    pub invalid_al: usize,
+    pub ignored_frames: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReplayDetails {
+    pub utc_start: String,
+    pub virtual_scenario: Option<VirtualScenario>,
+    pub virtual_dc: Option<ClockRecording>,
+    pub stations: Vec<u16>,
+    pub expected_wkc: u16,
+    pub counts: Counts,
+    pub receive_spacing: Spacing,
+    pub valid_receive_spacing: Spacing,
+    pub cycles: Vec<Cycle>,
 }
 
 #[derive(Serialize)]
@@ -111,6 +125,22 @@ pub struct Report<'a> {
     pub error: Option<String>,
 }
 
+impl Report<'_> {
+    pub(super) fn into_details(self) -> ReplayDetails {
+        ReplayDetails {
+            utc_start: self.capture.utc_start,
+            virtual_scenario: self.virtual_scenario,
+            virtual_dc: self.virtual_dc,
+            stations: self.stations,
+            expected_wkc: self.plan.expected_wkc,
+            counts: self.counts,
+            receive_spacing: self.receive_spacing,
+            valid_receive_spacing: self.valid_receive_spacing,
+            cycles: self.cycles,
+        }
+    }
+}
+
 pub(super) struct PreparedReplay<'a> {
     virtual_scenario: Option<VirtualScenario>,
     virtual_dc: Option<ClockRecording>,
@@ -123,7 +153,7 @@ pub(super) struct PreparedReplay<'a> {
 }
 
 pub fn run<'a>(group: &'a InputGroup, file: &Path, options: Options<'_>) -> Result<Report<'a>> {
-    let prepared = prepare_capture(group, file, &options)?;
+    let prepared = prepare_capture(group, file, &options, None)?;
     let mut capture = Capture::start_replay(options.csv, &prepared.profile, &prepared.utc_start)?;
     for PreparedCycle { receipt, payload } in &prepared.cycles {
         if let Some(payload) = payload {
@@ -150,8 +180,11 @@ pub(super) fn prepare_capture<'a>(
     group: &'a InputGroup,
     file: &Path,
     options: &Options<'_>,
+    stop: Option<&AtomicBool>,
 ) -> Result<PreparedReplay<'a>> {
+    check_cancel(stop)?;
     let (fixture, bytes) = read_json::<Fixture>(file, MAX_FIXTURE_BYTES)?;
+    check_cancel(stop)?;
     match (
         fixture.schema,
         &fixture.virtual_dc,
@@ -204,6 +237,7 @@ pub(super) fn prepare_capture<'a>(
         &fixture.stations,
         fixture.cycles,
         fixture.virtual_dc.as_ref(),
+        stop,
     )?;
     let queue_capacity = prepared.len(); // At most one CSV row per supplied cycle.
     let profile = Profile {
@@ -298,7 +332,9 @@ fn prepare(
     stations: &[u16],
     cycles: Vec<RecordedCycle>,
     dc: Option<&ClockRecording>,
+    stop: Option<&AtomicBool>,
 ) -> Result<Vec<PreparedCycle>> {
+    check_cancel(stop)?;
     let mut tracker = dc
         .map(|dc| dc.tracker(group, stations, cycles.len()))
         .transpose()?;
@@ -308,6 +344,7 @@ fn prepare(
         .into_iter()
         .enumerate()
         .map(|(position, cycle)| {
+            check_cancel(stop)?;
             let label = position + 1;
             let order = (cycle.connection_generation, cycle.cycle_index);
             ensure!(
@@ -350,6 +387,7 @@ fn prepare(
             };
             let mut payload = None;
             for (index, candidate) in cycle.received_hex.iter().enumerate() {
+                check_cancel(stop)?;
                 let bytes = decode_frame_hex(candidate)
                     .with_context(|| format!("replay cycle {label} candidate {}", index + 1))?;
                 if let Some(parts) = expected.reply(&bytes) {

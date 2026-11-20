@@ -1,17 +1,21 @@
 //! Reconstruct selected rows from the raw replay and match them to the saved CSV parts.
 use super::{
     InputGroup, read_json,
-    replay::{Options, PreparedReplay, prepare_capture},
+    replay::{Options, PreparedReplay, ReplayDetails, prepare_capture},
 };
 use crate::{
     capture::{CaptureStats, METADATA, part_path, selects_sample},
     capture_audit::{MAX_BYTES, Part, inspect_part},
     model::LogMode,
+    review::check_cancel,
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
+};
 
 const MAX_RECEIPT_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -33,7 +37,7 @@ struct SavedReplay {
     error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Audit {
     schema: u32,
     source: &'static str,
@@ -41,12 +45,12 @@ pub struct Audit {
     pub(super) receipt_sha256: String,
     pub(super) fixture_sha256: String,
     csv_base: PathBuf,
-    mode: LogMode,
-    pub(super) expected_rows: u64,
-    pub(super) verified_rows: u64,
-    pub(super) complete: bool,
-    capture_error: Option<String>,
-    pub(super) parts: Vec<Part>,
+    pub mode: LogMode,
+    pub expected_rows: u64,
+    pub verified_rows: u64,
+    pub complete: bool,
+    pub capture_error: Option<String>,
+    pub parts: Vec<Part>,
     #[serde(skip)]
     pub(super) rotated: bool,
     #[serde(skip)]
@@ -60,7 +64,7 @@ pub fn verify(
     csv: &Path,
     evidence: Evidence<'_>,
 ) -> Result<Audit> {
-    verify_with_layout(group, fixture, receipt, csv, evidence, None)
+    verify_with_layout(group, fixture, receipt, csv, evidence, None, None).map(|(audit, _)| audit)
 }
 
 pub(super) fn verify_with_layout(
@@ -70,7 +74,9 @@ pub(super) fn verify_with_layout(
     csv: &Path,
     evidence: Evidence<'_>,
     layout: Option<(u64, bool)>,
-) -> Result<Audit> {
+    stop: Option<&AtomicBool>,
+) -> Result<(Audit, ReplayDetails)> {
+    check_cancel(stop)?;
     ensure!(
         csv.extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("csv")),
@@ -98,6 +104,7 @@ pub(super) fn verify_with_layout(
             sync_managers: evidence.sync_managers,
             pdo: evidence.pdo,
         },
+        stop,
     )?;
     ensure!(
         prepared.fixture_sha256 == saved.fixture_sha256,
@@ -132,7 +139,8 @@ pub(super) fn verify_with_layout(
         "replay receipt part count differs from rotation and written rows"
     );
 
-    let parts = verify_parts(csv, &prepared, &indexes, cap)?;
+    let parts = verify_parts(csv, &prepared, &indexes, cap, stop)?;
+    check_cancel(stop)?;
     let expected = prepared.into_report(saved.capture.clone(), saved.error.clone());
     let evidence_hashes = [
         expected.plan.fmmu.as_ref().map(|r| r.source_sha256.clone()),
@@ -146,10 +154,10 @@ pub(super) fn verify_with_layout(
     let recorded: serde_json::Value =
         serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))?;
     ensure!(
-        serde_json::to_value(expected)? == recorded,
+        serde_json::to_value(&expected)? == recorded,
         "replay receipt differs from the rebuilt cycles, timing or profile/mapping evidence"
     );
-    Ok(Audit {
+    let audit = Audit {
         schema: 1,
         source: "group_replay_csv_audit",
         receipt: receipt.to_owned(),
@@ -164,7 +172,9 @@ pub(super) fn verify_with_layout(
         parts,
         rotated: rotate != 0,
         evidence_hashes,
-    })
+    };
+    check_cancel(stop)?;
+    Ok((audit, expected.into_details()))
 }
 
 fn expected_selection(prepared: &PreparedReplay<'_>) -> Vec<usize> {
@@ -188,6 +198,7 @@ fn verify_parts(
     prepared: &PreparedReplay<'_>,
     selection: &[usize],
     cap: &CaptureStats,
+    stop: Option<&AtomicBool>,
 ) -> Result<Vec<Part>> {
     let fields = &prepared.profile.tx;
     let header: Vec<_> = METADATA
@@ -200,7 +211,7 @@ fn verify_parts(
     let mut bytes_left = MAX_BYTES;
     for index in 1..=cap.parts {
         let path = part_path(base, index, rotate)?;
-        let part = inspect_part(&path, &header, bytes_left, None, |row_number, row| {
+        let part = inspect_part(&path, &header, bytes_left, stop, |row_number, row| {
             (|| {
                 ensure!(sample < cap.written, "CSV has extra rows");
                 let entry = &prepared.cycles[selection[sample as usize]];

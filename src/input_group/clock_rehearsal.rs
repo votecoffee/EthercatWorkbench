@@ -19,12 +19,12 @@ const FOLLOWER: u16 = GROUP_STATIONS[1];
 const DISTRIBUTION_WKC: u16 = GROUP_STATIONS.len() as u16;
 const MAX_CYCLES: usize = 64;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ClockRecording {
-    scenario: GroupClockCase,
-    period_ns: u32,
-    difference_limit_ns: u32,
+pub struct ClockRecording {
+    pub scenario: GroupClockCase,
+    pub period_ns: u32,
+    pub difference_limit_ns: u32,
     sync0_hex: String,
 }
 
@@ -157,31 +157,31 @@ struct Cycle<'a> {
     input: Option<Inspection<'a>>,
 }
 
-#[derive(Serialize)]
-pub(super) struct ClockCheck {
-    expected_distribution_wkc: u16,
-    actual_distribution_wkc: u16,
+#[derive(Debug, Serialize)]
+pub struct ClockCheck {
+    pub expected_distribution_wkc: u16,
+    pub actual_distribution_wkc: u16,
     frmw_payload_ns: u64,
     reference: ClockRead,
     follower: ClockRead,
-    difference: DifferenceRead,
+    pub difference: DifferenceRead,
     raw_follower_minus_reference_ns: Option<i128>,
-    issues: Vec<&'static str>,
-    pub(super) valid: bool,
+    pub issues: Vec<&'static str>,
+    pub valid: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct ClockRead {
     station: u16,
     wkc: u16,
     time_ns: Option<u64>,
 }
 
-#[derive(Serialize)]
-struct DifferenceRead {
+#[derive(Debug, Serialize)]
+pub struct DifferenceRead {
     wkc: u16,
     raw: Option<u32>,
-    received_minus_local_ns: Option<i64>,
+    pub received_minus_local_ns: Option<i64>,
 }
 
 pub fn run(group: &InputGroup, options: Options) -> Result<Report<'_>> {

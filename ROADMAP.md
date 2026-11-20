@@ -1,6 +1,6 @@
 # EtherCAT Workbench roadmap
 
-The desktop now uses the EthernetIP Workbench workflow tabs with persistent stop/status controls, focused connection/profile/decoder dialogs and separate saved-review pages. [Navigation](docs/desktop-workspace.md) and headless workflow checks are implemented; native visual/usability acceptance remains pending.
+The desktop now uses the EthernetIP Workbench workflow tabs with persistent stop/status controls, focused connection/profile/decoder dialogs and separate saved-review pages. The grouped capture page verifies portable replay bundles and shows saved timing, per-cycle clock and PDO quality, and CSV completion. [Navigation](docs/desktop-workspace.md) and headless workflow checks are implemented; native visual/usability acceptance remains pending.
 
 ## Software interfaces, documentation and skills
 

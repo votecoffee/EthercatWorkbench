@@ -1,7 +1,7 @@
 //! Background saved-file review, shared with the desktop without owning any bus state.
 use crate::{
-    benchmark, capture_audit, comparison_bundle, model::Profile, pcap_inspect,
-    shared_memory::reader,
+    benchmark, capture_audit, comparison_bundle, input_group::bundle as group_bundle,
+    model::Profile, pcap_inspect, shared_memory::reader,
 };
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -64,6 +64,9 @@ pub enum Task {
     VerifyBundle {
         directory: PathBuf,
     },
+    ReviewGroupBundle {
+        directory: PathBuf,
+    },
     CompareBundle {
         directory: PathBuf,
         expected_receipt_sha256: String,
@@ -80,7 +83,9 @@ pub enum Task {
 impl Task {
     pub fn validate(&self) -> Result<()> {
         let (inputs, csv) = match self {
-            Self::VerifyBundle { directory } | Self::CompareBundle { directory, .. } => {
+            Self::VerifyBundle { directory }
+            | Self::CompareBundle { directory, .. }
+            | Self::ReviewGroupBundle { directory } => {
                 ensure!(
                     !directory.as_os_str().is_empty(),
                     "enter an evidence bundle folder"
@@ -244,6 +249,9 @@ impl Task {
             Self::VerifyBundle { directory } => {
                 Outcome::VerifiedBundle(Box::new(comparison_bundle::verify(directory, stop)?))
             }
+            Self::ReviewGroupBundle { directory } => {
+                Outcome::GroupBundle(Box::new(group_bundle::review(directory, Some(stop))?))
+            }
             Self::CompareBundle {
                 directory,
                 expected_receipt_sha256,
@@ -268,6 +276,7 @@ pub enum Outcome {
     ComparisonFiles(Box<crate::comparison_files::CheckedComparison>),
     ComparisonBundle(Box<CompletedBundle>),
     VerifiedBundle(Box<comparison_bundle::VerifiedBundle>),
+    GroupBundle(Box<group_bundle::Review>),
     BundleComparisonResult(Box<benchmark::Comparison>),
     Pcap(Box<pcap_inspect::Report>),
 }

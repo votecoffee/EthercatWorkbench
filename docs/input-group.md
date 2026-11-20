@@ -142,4 +142,6 @@ Supply the same optional FMMU, SyncManager and PDO files used for the original r
 
 Use `verify-group-bundle` with the folder at its new location. It loads the copied profiles by manifest position, checks the fixed inventory and reruns the group audit using the copies. The original manifest and receipt retain their path strings as saved evidence. Completed captures and verified prefixes of interrupted captures can be exported. Check `complete`, `verified_rows` and `expected_rows` in the receipt.
 
+The desktop opens these same bundles in [Review → Grouped capture](desktop-review.md#review-a-grouped-capture-bundle), with verified row counts, saved timing and problem-cycle details.
+
 Live SAFEOP sessions require exactly one isolated SubDevice. Live grouped acquisition remains on the [roadmap](../ROADMAP.md).

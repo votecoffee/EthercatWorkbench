@@ -1,3 +1,5 @@
+mod grouped;
+
 use eframe::egui;
 use ethercat_workbench::{
     benchmark::Comparison,
@@ -18,6 +20,7 @@ enum Page {
     SavedComparison,
     Pcap,
     Shared,
+    Grouped,
 }
 
 pub struct Panel {
@@ -41,6 +44,7 @@ pub struct Panel {
     shared_path: String,
     shared_mapping: SharedMapping,
     shared_report: String,
+    grouped: grouped::Panel,
 }
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum SharedMapping {
@@ -72,6 +76,7 @@ impl Default for Panel {
             shared_path: String::new(),
             shared_mapping: SharedMapping::Raw,
             shared_report: String::new(),
+            grouped: grouped::Panel::default(),
         }
     }
 }
@@ -252,9 +257,7 @@ impl Panel {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui, bus_busy: bool, profile: &Profile) {
-        ui.label(
-            "Review saved run reports, CSV, Ethernet PCAP or shared-input snapshots. These actions do not access the bus.",
-        );
+        ui.label("Review saved captures, reports and input snapshots.");
         if bus_busy {
             ui.label("Stop the active bus or discovery job, or wait for host metadata work, before starting a file review.");
         }
@@ -280,10 +283,24 @@ impl Panel {
             ui.selectable_value(&mut self.page, Page::SavedComparison, "Saved comparison");
             ui.selectable_value(&mut self.page, Page::Pcap, "Ethernet PCAP");
             ui.selectable_value(&mut self.page, Page::Shared, "Saved input snapshot");
+            ui.selectable_value(&mut self.page, Page::Grouped, "Grouped capture");
         });
         ui.separator();
         if self.page == Page::SavedComparison {
             self.saved_comparison_controls(ui, !self.is_running() && !bus_busy);
+            return;
+        }
+        if self.page == Page::Grouped {
+            let enabled = !self.is_running() && !bus_busy;
+            if let Some(task) = self.grouped.controls(ui, enabled) {
+                self.start(task);
+            }
+            if let Some(Outcome::GroupBundle(result)) =
+                self.controller.completed().map(|job| &job.outcome)
+            {
+                self.grouped.show(ui, result);
+                self.result_export(ui, enabled);
+            }
             return;
         }
         if self.page == Page::Pcap {
@@ -406,6 +423,7 @@ impl Panel {
                 | Task::CheckComparisonFiles { .. }
                 | Task::BundleComparison { .. }
                 | Task::VerifyBundle { .. }
+                | Task::ReviewGroupBundle { .. }
                 | Task::CompareBundle { .. } => &[],
             };
             ui.collapsing("Inputs used", |ui| {
@@ -453,8 +471,9 @@ impl Panel {
                 | Outcome::ComparisonFiles(_)
                 | Outcome::ComparisonBundle(_)
                 | Outcome::VerifiedBundle(_)
-                | Outcome::BundleComparisonResult(_) => {
-                    unreachable!("saved comparison has its own page")
+                | Outcome::BundleComparisonResult(_)
+                | Outcome::GroupBundle(_) => {
+                    unreachable!("this outcome has its own review page")
                 }
             }
             let enabled = !self.is_running() && !bus_busy;
@@ -1492,6 +1511,7 @@ mod tests {
             Page::SavedComparison,
             Page::Pcap,
             Page::Shared,
+            Page::Grouped,
         ] {
             panel.page = page;
             let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
@@ -1508,10 +1528,231 @@ mod tests {
                 text.contains("Inspect saved snapshot"),
                 page == Page::Shared
             );
+            assert_eq!(
+                text.contains("Verify grouped capture"),
+                page == Page::Grouped
+            );
             assert_eq!(panel.pcap_path, "retained.pcap");
             assert_eq!(panel.shared_path, "retained.bin");
             assert!(!panel.is_running());
         }
+    }
+
+    struct GroupScratch(PathBuf);
+
+    impl GroupScratch {
+        fn create() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "ethercat-group-review-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn archived_group(&self, dc: bool) -> PathBuf {
+            use ethercat_workbench::input_group::{
+                InputGroup, audit::Evidence, bundle, clock_rehearsal, replay,
+            };
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join(if dc {
+                "samples/input-group-dc.json"
+            } else {
+                "samples/input-group.json"
+            });
+            let group = InputGroup::load(&manifest).unwrap();
+            let generated = if dc {
+                clock_rehearsal::generate_replay(
+                    &group,
+                    clock_rehearsal::Options {
+                        period_ns: 700_000,
+                        difference_limit_ns: 500,
+                        cycles: 8,
+                        scenario: clock_rehearsal::GroupClockCase::FollowerStale,
+                    },
+                )
+            } else {
+                replay::generate_virtual(&group, replay::VirtualScenario::Faults)
+            }
+            .unwrap();
+            let fixture = self.0.join("frames.json");
+            std::fs::write(&fixture, serde_json::to_vec(&generated).unwrap()).unwrap();
+            let csv = self.0.join("capture.csv");
+            let report = replay::run(
+                &group,
+                &fixture,
+                replay::Options {
+                    csv: &csv,
+                    mode: ethercat_workbench::model::LogMode::Every,
+                    rotate_rows: 2,
+                    fmmu: None,
+                    sync_managers: None,
+                    pdo: None,
+                },
+            )
+            .unwrap();
+            assert!(report.error.is_none());
+            let saved = self.0.join("replay.json");
+            std::fs::write(&saved, serde_json::to_vec(&report).unwrap()).unwrap();
+            let bundle = self.0.join("source-bundle");
+            bundle::create(
+                bundle::Sources {
+                    manifest: &manifest,
+                    fixture: &fixture,
+                    replay: &saved,
+                    csv: &csv,
+                    evidence: Evidence {
+                        fmmu: None,
+                        sync_managers: None,
+                        pdo: None,
+                    },
+                },
+                &bundle,
+            )
+            .unwrap();
+            let moved = self.0.join("moved-bundle");
+            std::fs::rename(bundle, &moved).unwrap();
+            moved
+        }
+    }
+
+    impl Drop for GroupScratch {
+        fn drop(&mut self) {
+            if let (Ok(root), Ok(parent)) =
+                (self.0.canonicalize(), std::env::temp_dir().canonicalize())
+                && root.parent() == Some(parent.as_path())
+                && root.file_name() == self.0.file_name()
+            {
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+    }
+
+    fn wait_for_saved_job(panel: &mut Panel) {
+        use std::time::{Duration, Instant};
+        let until = Instant::now() + Duration::from_secs(4);
+        while panel.is_running() && Instant::now() < until {
+            panel.controller.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!panel.is_running(), "saved review worker did not finish");
+    }
+
+    #[test]
+    fn grouped_review_verifies_relocated_dc_capture_and_freezes_its_source() {
+        let scratch = GroupScratch::create();
+        let bundle = scratch.archived_group(true);
+        let mut panel = Panel {
+            page: Page::Grouped,
+            ..Default::default()
+        };
+        panel.grouped.path = bundle.display().to_string();
+        let task = panel.grouped.task();
+        panel.start(task.clone());
+        panel.grouped.path = "future-bundle".into();
+        wait_for_saved_job(&mut panel);
+        assert_eq!(
+            panel.controller.state(),
+            State::Complete,
+            "{:?}",
+            panel.controller.error()
+        );
+        let completed = panel.controller.completed().unwrap();
+        assert_eq!(completed.task, task);
+        let Outcome::GroupBundle(result) = &completed.outcome else {
+            panic!("expected the verified grouped capture result");
+        };
+        assert_eq!(result.verified.directory, bundle);
+        assert_eq!(result.verified.audit.verified_rows, 7);
+        assert_eq!(result.replay.counts.clock_rejections, Some(1));
+        assert_eq!(
+            result.replay.valid_receive_spacing.longest_gap_us,
+            Some(1400)
+        );
+
+        let export = scratch.0.join("group-review.json");
+        panel.controller.save_new(&export).unwrap();
+        let bytes = std::fs::read(&export).unwrap();
+        let exported: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(exported["audit"]["verified_rows"], 7);
+        assert_eq!(exported["replay"]["cycles"][1]["clock"]["valid"], false);
+        assert!(panel.controller.save_new(&export).is_err());
+        assert_eq!(bytes, std::fs::read(export).unwrap());
+
+        let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+        for label in [
+            "7 of 7 selected CSV rows verified",
+            "Virtual DC",
+            "Modeled SYNC0 700000 ns",
+            "Clock rejections 1",
+            "Unanswered inputs 0",
+            "Longest 1400 µs",
+            "Generation 1 · Cycle 2 · Clock rejected",
+            "FRMW WKC 2/2",
+            "Follower clock did not advance",
+            "moved-bundle",
+        ] {
+            assert!(text.contains(label), "missing {label} in {text}");
+        }
+        assert!(!text.contains("Cycle 1 · Valid input"));
+        panel.page = Page::Shared;
+        let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+        assert!(!text.contains("Clock rejections 1"));
+    }
+
+    #[test]
+    fn grouped_review_distinguishes_legacy_faults_and_rejects_changed_csv() {
+        use std::sync::atomic::AtomicBool;
+        let scratch = GroupScratch::create();
+        let bundle = scratch.archived_group(false);
+        let task = Task::ReviewGroupBundle {
+            directory: bundle.clone(),
+        };
+        assert!(
+            task.execute(&AtomicBool::new(true))
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        let mut panel = Panel {
+            page: Page::Grouped,
+            ..Default::default()
+        };
+        panel.start(task.clone());
+        wait_for_saved_job(&mut panel);
+        let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
+        for label in [
+            "WKC mismatches",
+            "AL faults",
+            "PREOP",
+            "No matching input reply",
+        ] {
+            assert!(text.contains(label), "missing {label} in {text}");
+        }
+        assert!(!text.contains("Clock rejections"));
+
+        let original = bundle.join("csv/capture.0001.csv");
+        let bytes = std::fs::read(&original).unwrap();
+        let mut changed = bytes.clone();
+        let utf8 = std::str::from_utf8(&bytes).unwrap();
+        let data = utf8.find("\n2026-").unwrap() + 1;
+        changed[data] = b'9'; // Keep the same length so verification reaches the CSV audit.
+        std::fs::write(&original, &changed).unwrap();
+        panel.start(task);
+        wait_for_saved_job(&mut panel);
+        assert_eq!(panel.controller.state(), State::Failed);
+        assert!(
+            panel
+                .controller
+                .error()
+                .unwrap()
+                .contains("capture_start_utc")
+        );
+        assert!(panel.controller.completed().is_none());
+        assert_eq!(std::fs::read(original).unwrap(), changed);
     }
 
     // Pure egui layout: no native window, desktop input, screenshot or GPU.
