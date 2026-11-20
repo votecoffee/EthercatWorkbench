@@ -3006,13 +3006,18 @@ def main():
         verify_csv(report, base, generation, change="--on-change" in flags, faults="--simulate-faults" in flags)
         reports[scheduler] = report
 
+    fixture = ROOT / "samples/synthetic-replay.json"
     collision = destination / "collision.0002.csv"
     collision.write_bytes(b"preserve existing part\n")
-    report = cli_call(cli, "run", profile, "--seconds", 2, "--csv", destination / "collision.csv", success=False)
+    collision_profile = destination / "collision-profile.json"
+    collision_profile.write_text(
+        json.dumps({**json.loads(profile.read_bytes()), "rotate_rows": 2}), encoding="utf-8",
+    )
+    report = cli_call(cli, "run", collision_profile, "--backend", "replay", "--replay", fixture,
+                      "--seconds", 10, "--csv", destination / "collision.csv", success=False)
     assert collision.read_bytes() == b"preserve existing part\n"
-    assert report["capture"]["written"] == 500 and "CSV capture incomplete" in report["error"]
+    assert report["capture"]["written"] == 2 and "CSV capture incomplete" in report["error"]
 
-    fixture = ROOT / "samples/synthetic-replay.json"
     for on_change in (False, True):
         case = destination / ("replay-change.csv" if on_change else "replay-every.csv")
         flags = ["--on-change"] if on_change else []

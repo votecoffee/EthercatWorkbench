@@ -594,3 +594,5 @@ The verifier rebuilt the selected rows from saved group Ethernet frames and meta
 The on-change audit accepted two distinct NaN bit patterns rendered as identical text. The header-only capture verified with no selected rows. After a rotation collision, the audit verified the exact two-row saved prefix, reported the incomplete six-row capture and preserved the conflicting file. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
 
 The audit reconstructs the supplied offline evidence. Native GUI interaction, live grouped acquisition and physical bench timing remain pending.
+
+The first full regression reached 430 rows during a two-second synthetic capture, below the existing 500-row rotation collision. The regression fixture now uses the authored replay and a two-row rotation so it exercises the same second-part create-new failure without requiring 500 cycles in a short host interval.
