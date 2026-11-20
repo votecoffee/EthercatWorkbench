@@ -56,6 +56,9 @@ enum Command {
         /// Actual LRD Working Counter supplied with the sample.
         #[arg(long, requires = "hex")]
         wkc: Option<u16>,
+        /// Inspect a saved Workbench Ethernet reply with its ordered station addresses.
+        #[arg(long, conflicts_with_all = ["hex", "wkc"])]
+        frame: Option<PathBuf>,
         /// Export inspection JSON to a new file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -381,11 +384,16 @@ fn main() -> Result<()> {
             manifest,
             hex,
             wkc,
+            frame,
             out,
         } => {
             let group = ethercat_workbench::input_group::InputGroup::load(&manifest)?;
-            let payload = hex.as_deref().map(payload_hex).transpose()?;
-            let inspection = group.inspect(payload.as_deref().zip(wkc))?;
+            let inspection = if let Some(path) = frame {
+                group.inspect_frame_file(&path)?
+            } else {
+                let payload = hex.as_deref().map(payload_hex).transpose()?;
+                group.inspect(payload.as_deref().zip(wkc))?
+            };
             inspection_export(&inspection, out.as_deref())
         }
         Command::ReadShared {

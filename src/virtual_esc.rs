@@ -947,8 +947,8 @@ mod tests {
     }
 
     #[test]
-    fn group_plan_decodes_two_read_contributions_and_rejects_a_partial_lrd() {
-        use crate::{input_group::InputGroup, wire::LRD};
+    fn grouped_lrd_and_al_reads_gate_scope_to_one_matching_reply() {
+        use crate::input_group::InputGroup;
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/input-group.json");
         let group = InputGroup::load(&path).unwrap();
@@ -958,12 +958,14 @@ mod tests {
             VirtualWire::single(VirtualEsc::for_scan(VirtualModel::Coe, ScanCase::Normal));
         wire.devices
             .push(VirtualEsc::for_scan(VirtualModel::Sii, ScanCase::Normal));
+        let stations = [0x1000u16, 0x1001];
         for (index, (esc, device)) in wire.devices.iter_mut().zip(&plan.devices).enumerate() {
-            // Seed the authored SAFEOP layout directly. Only the LRD goes through the wire.
+            // Seed the authored SAFEOP layout directly; all wire datagrams are reads.
             let input_start = u32::try_from(device.offset.unwrap()).unwrap();
             let output_start = u32::try_from(plan.input_bytes + 2 * index).unwrap();
             assert_eq!(device.tx_bytes, 8);
             esc.logical_starts = (input_start, output_start);
+            esc.registers[0x0010..0x0012].copy_from_slice(&stations[index].to_le_bytes());
             esc.registers[0x0130] = 4;
             esc.stats.logical_reads = (index * 4) as u64;
             let (input_sm, output_sm, input_fmmu, output_fmmu) = if index == 0 {
@@ -1002,10 +1004,21 @@ mod tests {
                 ]);
             }
         }
-        let request = Frame::new(1, [Datagram::register(LRD, 0, 0, plan.input_bytes)]);
-        wire.send(request.bytes()).unwrap();
-        let [(payload, wkc)] = request.reply(wire.receive().unwrap()).unwrap();
-        let decoded = group.inspect(Some((payload, wkc))).unwrap();
+        let exchange = |wire: &mut VirtualWire, index| {
+            let request = group.expected_frame(index, &stations).unwrap();
+            wire.send(request.bytes()).unwrap();
+            group
+                .inspect_reply(index, &stations, wire.receive().unwrap())
+                .unwrap()
+        };
+        let decoded = exchange(&mut wire, 1);
+        assert!(decoded.frame.unwrap().valid);
+        assert!(
+            decoded
+                .devices
+                .iter()
+                .all(|device| device.al.as_ref().unwrap().actual_wkc == 1)
+        );
         assert_eq!(
             decoded.devices[0].input.as_ref().unwrap().raw_hex,
             "0000000000000000"
@@ -1015,11 +1028,50 @@ mod tests {
             "010001000000803e"
         );
 
+        wire.devices[1].registers[0x0134] = 0x1e;
+        let dirty = exchange(&mut wire, 2);
+        let frame = dirty.frame.unwrap();
+        assert!(frame.lrd_wkc_matches && !frame.valid);
+        assert_eq!(
+            dirty.devices[1]
+                .al
+                .as_ref()
+                .unwrap()
+                .status
+                .as_ref()
+                .unwrap()
+                .code,
+            0x1e
+        );
+        assert!(dirty.devices.iter().all(|device| device.input.is_none()));
+
+        wire.devices[1].registers[0x0134] = 0;
         wire.devices[1].registers[0x0130] = 2; // The downstream ESC stops contributing process data.
-        wire.send(request.bytes()).unwrap();
-        let [(partial, wkc)] = request.reply(wire.receive().unwrap()).unwrap();
-        assert_eq!(wkc, 1);
-        assert!(group.inspect(Some((partial, wkc))).is_err());
+        let partial = exchange(&mut wire, 3);
+        let frame = partial.frame.unwrap();
+        assert!(!frame.lrd_wkc_matches && !frame.valid);
+        assert_eq!(
+            partial.devices[1]
+                .al
+                .as_ref()
+                .unwrap()
+                .status
+                .as_ref()
+                .unwrap()
+                .state,
+            "PREOP"
+        );
+        assert!(partial.devices.iter().all(|device| device.input.is_none()));
+
+        wire.devices[1].registers[0x0130] = 4;
+        wire.devices[1].registers[0x0010] = 2; // The requested station no longer answers.
+        let missing = exchange(&mut wire, 4);
+        let frame = missing.frame.unwrap();
+        assert!(frame.lrd_wkc_matches && !frame.valid);
+        let al = missing.devices[1].al.as_ref().unwrap();
+        assert_eq!(al.actual_wkc, 0);
+        assert!(al.status.is_none());
+        assert!(missing.devices.iter().all(|device| device.input.is_none()));
         for audit in wire.chain_audits() {
             assert_eq!(
                 audit.register_writes + audit.logical_writes + audit.physical_output_writes,

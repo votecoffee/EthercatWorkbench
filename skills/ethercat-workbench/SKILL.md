@@ -25,6 +25,8 @@ Use `scan-virtual --case two-devices` to exercise read-only bus ordering and per
 
 Use `inspect-input-group samples/input-group.json` to plan one byte-aligned input read from ordered, exact-identity profile references. The report includes position, source profile SHA-256, byte offset and expected LRD WKC; a zero-length TxPDO contributes no bytes or WKC. Supply both `--hex` and `--wkc` for offline typed decoding, and choose a new path for optional `--out`. Keep supplied bytes and WKC separate from identity, mapping and AL evidence. See `docs/input-group.md`.
 
+Use `inspect-input-group MANIFEST --frame FILE` for a saved single Workbench reply. The file declares the expected datagram index, unique station addresses in bus order and raw Ethernet reply hex. Check `frame.valid` and each device's `al` record even when the command succeeds. WKC mismatches, missing AL reads or unclean SAFEOP withhold all decoded inputs. Treat the declaration and reply as offline evidence. `--frame` cannot be combined with `--hex` and `--wkc`.
+
 Use headless files/CLI by default. Desktop input, screenshots or recording need an explicit request in the current chat. Do not run the verification script's optional native GUI mode automatically.
 
 ## Desktop navigation

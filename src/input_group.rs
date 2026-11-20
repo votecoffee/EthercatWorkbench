@@ -1,5 +1,9 @@
 //! Offline planning and decoding for a byte-aligned, input-only logical read.
-use crate::model::{Identity, MAX_PAYLOAD, Profile, Source};
+use crate::{
+    esc::{AlStatus, al_status, clean_safeop},
+    model::{Identity, MAX_PAYLOAD, Profile, Source},
+    wire::{Datagram, FPRD, Frame, LRD, MAX_FRAME_BYTES, al_readback},
+};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -12,6 +16,8 @@ use std::{
 const MAX_DEVICES: usize = 16;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_PROFILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_FRAME_FILE_BYTES: u64 = 16 * 1024;
+const MAX_DATAGRAMS: usize = MAX_DEVICES + 1;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +32,15 @@ struct Entry {
     position: usize,
     profile: PathBuf,
     identity: Identity,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrameSample {
+    schema: u32,
+    index: u8,
+    stations: Vec<u16>,
+    reply_hex: String,
 }
 
 struct Binding {
@@ -49,7 +64,17 @@ pub struct Inspection<'a> {
     pub(crate) input_bytes: usize,
     pub(crate) expected_wkc: u16,
     actual_wkc: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) frame: Option<FrameCheck>,
     pub(crate) devices: Vec<Device<'a>>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct FrameCheck {
+    index: u8,
+    reply_sha256: String,
+    pub(crate) lrd_wkc_matches: bool,
+    pub(crate) valid: bool,
 }
 
 #[derive(Serialize)]
@@ -61,7 +86,18 @@ pub(crate) struct Device<'a> {
     name: &'a str,
     pub(crate) offset: Option<usize>,
     pub(crate) tx_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) al: Option<AlRead>,
     pub(crate) input: Option<DecodedInput<'a>>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct AlRead {
+    station_address: u16,
+    expected_wkc: u16,
+    pub(crate) actual_wkc: u16,
+    clean_safeop: bool,
+    pub(crate) status: Option<AlStatus>,
 }
 
 #[derive(Serialize)]
@@ -162,12 +198,110 @@ impl InputGroup {
                 self.expected_wkc
             );
         }
+        Ok(self.inspection(
+            sample.map(|(payload, _)| payload),
+            sample.map(|(_, wkc)| wkc),
+        ))
+    }
+
+    pub fn inspect_frame_file(&self, path: &Path) -> Result<Inspection<'_>> {
+        let (sample, _) = read_json::<FrameSample>(path, MAX_FRAME_FILE_BYTES)?;
+        ensure!(
+            sample.schema == 1,
+            "unsupported group frame schema {}",
+            sample.schema
+        );
+        let hex: String = sample
+            .reply_hex
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .take(MAX_FRAME_BYTES * 2 + 1)
+            .collect();
+        ensure!(
+            hex.len() <= MAX_FRAME_BYTES * 2,
+            "frame exceeds {MAX_FRAME_BYTES} bytes"
+        );
+        let reply = hex::decode(hex).context("group frame reply must contain hex byte pairs")?;
+        self.inspect_reply(sample.index, &sample.stations, &reply)
+    }
+
+    pub(crate) fn expected_frame(
+        &self,
+        index: u8,
+        stations: &[u16],
+    ) -> Result<Frame<MAX_DATAGRAMS>> {
+        ensure!(
+            stations.len() == self.bindings.len(),
+            "expected one station address per position ({}), got {}",
+            self.bindings.len(),
+            stations.len()
+        );
+        let mut parts = [Datagram::register(LRD, 0, 0, self.input_bytes); MAX_DATAGRAMS];
+        for (position, &station) in stations.iter().enumerate() {
+            ensure!(
+                station != 0,
+                "station address at position {position} must be nonzero"
+            );
+            ensure!(
+                !stations[..position].contains(&station),
+                "duplicate station address {station:#06x}"
+            );
+            parts[position + 1] = Datagram::register(FPRD, station, 0x0130, 6);
+        }
+        Ok(Frame::with_count(index, parts, 1 + stations.len()))
+    }
+
+    pub(crate) fn inspect_reply(
+        &self,
+        index: u8,
+        stations: &[u16],
+        reply: &[u8],
+    ) -> Result<Inspection<'_>> {
+        ensure!(
+            reply.len() <= MAX_FRAME_BYTES,
+            "frame exceeds {MAX_FRAME_BYTES} bytes"
+        );
+        let frame = self.expected_frame(index, stations)?;
+        let parts = frame
+            .reply(reply)
+            .context("frame does not match the expected grouped LRD and ordered AL reads")?;
+        let (payload, wkc) = parts[0];
+        let al_reads: Vec<_> = stations
+            .iter()
+            .zip(&parts[1..])
+            .map(|(&station, &(bytes, status_wkc))| {
+                let raw = al_readback(bytes, status_wkc);
+                AlRead {
+                    station_address: station,
+                    expected_wkc: 1,
+                    actual_wkc: status_wkc,
+                    clean_safeop: raw.is_some_and(|(status, code)| clean_safeop(status, code)),
+                    status: raw.map(|(status, code)| al_status(status, code)),
+                }
+            })
+            .collect();
+        let lrd_wkc_matches = wkc == self.expected_wkc;
+        let valid = lrd_wkc_matches && al_reads.iter().all(|al| al.clean_safeop);
+        let mut inspection = self.inspection(valid.then_some(payload), Some(wkc));
+        inspection.frame = Some(FrameCheck {
+            index,
+            reply_sha256: hex::encode(Sha256::digest(reply)),
+            lrd_wkc_matches,
+            valid,
+        });
+        for (device, al) in inspection.devices.iter_mut().zip(al_reads) {
+            device.al = Some(al);
+        }
+        Ok(inspection)
+    }
+
+    fn inspection(&self, payload: Option<&[u8]>, actual_wkc: Option<u16>) -> Inspection<'_> {
         let devices = self
             .bindings
             .iter()
             .map(|binding| {
                 let profile = &binding.profile;
-                let input = sample.zip(binding.offset).map(|((payload, _), offset)| {
+                let input = payload.zip(binding.offset).map(|(payload, offset)| {
                     let bytes = &payload[offset..offset + profile.tx_bytes];
                     DecodedInput {
                         raw_hex: hex::encode(bytes),
@@ -192,19 +326,21 @@ impl InputGroup {
                     name: &profile.name,
                     offset: binding.offset,
                     tx_bytes: profile.tx_bytes,
+                    al: None,
                     input,
                 }
             })
             .collect();
-        Ok(Inspection {
+        Inspection {
             schema: 1,
             source: "offline_profiles",
             logical_start: 0,
             input_bytes: self.input_bytes,
             expected_wkc: self.expected_wkc,
-            actual_wkc: sample.map(|(_, wkc)| wkc),
+            actual_wkc,
+            frame: None,
             devices,
-        })
+        }
     }
 }
 

@@ -1545,6 +1545,7 @@ def verify_input_group(cli, destination):
     plan = cli_call(cli, "inspect-input-group", manifest)
     assert (plan["schema"], plan["source"], plan["logical_start"]) == (1, "offline_profiles", 0)
     assert (plan["input_bytes"], plan["expected_wkc"], plan["actual_wkc"]) == (16, 2, None)
+    assert "frame" not in plan and all("al" not in device for device in plan["devices"])
     for index, device in enumerate(plan["devices"]):
         assert (device["position"], device["offset"], device["tx_bytes"]) == (index, index * 8, 8)
         assert device["input"] is None
@@ -1610,6 +1611,113 @@ def verify_input_group(cli, destination):
         invalid_manifest = write_manifest(name + ".json", devices, schema)
         assert message in cli_call(cli, "inspect-input-group", invalid_manifest, success=False)
     (destination / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+
+def verify_input_group_frame(cli, destination):
+    manifest = ROOT / "samples/input-group.json"
+    sample = ROOT / "samples/input-group-frame.json"
+    reference = json.loads(sample.read_bytes())
+    reply = bytes.fromhex(reference["reply_hex"])
+    result = cli_call(cli, "inspect-input-group", manifest, "--frame", sample)
+    assert (result["input_bytes"], result["expected_wkc"], result["actual_wkc"]) == (16, 2, 2)
+    assert result["frame"] == {
+        "index": 42, "reply_sha256": hashlib.sha256(reply).hexdigest(),
+        "lrd_wkc_matches": True, "valid": True,
+    }
+    legacy = cli_call(cli, "inspect-input-group", manifest, "--hex", reply[26:42].hex(), "--wkc", 2)
+    for device, previous, station in zip(result["devices"], legacy["devices"], reference["stations"], strict=True):
+        assert device["input"] == previous["input"]
+        assert device["al"] == {
+            "station_address": station, "expected_wkc": 1, "actual_wkc": 1, "clean_safeop": True,
+            "status": {"raw": 4, "state": "SAFEOP", "error": False, "uninterpreted_flags": 0,
+                       "code": 0, "description": "No reported AL error"},
+        }
+
+    def case(name, packet=reply, **changes):
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps({**reference, "reply_hex": packet.hex(), **changes}), encoding="utf-8")
+        return path
+
+    for name, offset, replacement in [
+        ("error-flag", 72, 0x14), ("al-code", 76, 0x1e), ("preop", 72, 2), ("op", 72, 8),
+        ("missing-al", 78, 0), ("ambiguous-al", 78, 2), ("partial-lrd", 42, 1),
+    ]:
+        altered = bytearray(reply)
+        altered[offset] = replacement
+        saved = case(name, altered)
+        receipt = destination / f"{name}-receipt.json"
+        report = cli_call(cli, "inspect-input-group", manifest, "--frame", saved, "--out", receipt)
+        assert json.loads(receipt.read_bytes()) == report
+        assert report["frame"]["valid"] is False and all(d["input"] is None for d in report["devices"])
+        assert report["frame"]["lrd_wkc_matches"] == (name != "partial-lrd")
+        al = report["devices"][1]["al"]
+        if name in ("missing-al", "ambiguous-al"):
+            assert al["actual_wkc"] == replacement and al["status"] is None
+        elif offset == 72:
+            assert al["status"]["raw"] == replacement and not al["clean_safeop"]
+        elif offset == 76:
+            assert al["status"]["code"] == replacement and not al["clean_safeop"]
+        else:
+            assert al["clean_safeop"] and report["actual_wkc"] == 1
+
+    flagged = bytearray(reply)
+    flagged[72] = 0x24
+    special = cli_call(cli, "inspect-input-group", manifest, "--frame", case("upper-flag", flagged))
+    assert special["frame"]["valid"] and special["devices"][1]["al"]["status"]["uninterpreted_flags"] == 0x20
+    for name, offset, replacement in [
+        ("request-source", 6, 0x10), ("wrong-index", 63, 43), ("wrong-station", 64, 2),
+        ("wrong-command", 62, 5), ("wrong-more-flag", 69, 0x80),
+    ]:
+        altered = bytearray(reply)
+        altered[offset] = replacement
+        failed = cli_call(cli, "inspect-input-group", manifest, "--frame", case(name, altered), success=False)
+        assert "does not match" in failed
+    for name, path, expected_error in [
+        ("truncated", case("truncated", reply[:-1]), "does not match"),
+        ("reordered", case("reordered", stations=[4097, 4096]), "does not match"),
+        ("duplicate", case("duplicate", stations=[4096, 4096]), "duplicate station"),
+        ("missing", case("missing", stations=[4096]), "one station address per position"),
+        ("zero", case("zero", stations=[4096, 0]), "must be nonzero"),
+        ("version", case("version", schema=2), "unsupported group frame schema"),
+        ("hex", case("bad-hex", reply_hex="00z"), "hex byte pairs"),
+        ("length", case("oversized", reply + b"\0" * 1514), "frame exceeds 1514 bytes"),
+    ]:
+        out = destination / f"{name}-no-output.json"
+        assert expected_error in cli_call(cli, "inspect-input-group", manifest, "--frame", path, "--out", out,
+                                          success=False)
+        assert not out.exists()
+    assert "cannot be used" in cli_call(cli, "inspect-input-group", manifest, "--frame", sample,
+                                       "--hex", reply[26:42].hex(), "--wkc", 2, success=False)
+
+    # A zero-input position still needs its own AL reply. Fill all 16 positions and
+    # the 1024-byte LRD limit to exercise the complete datagram chain.
+    authored_identity = {"vendor": 1, "product": 1, "revision": 1}
+    full = destination / "full.json"
+    full.write_text(json.dumps({"expected_identity": authored_identity, "tx_bytes": 1024}), encoding="utf-8")
+    zero = destination / "zero.json"
+    zero.write_text(json.dumps({"expected_identity": authored_identity}), encoding="utf-8")
+    group_path = destination / "max-group.json"
+    group_path.write_text(json.dumps({"schema": 1, "devices": [
+        {"position": i, "profile": full.name if i == 0 else zero.name, "identity": authored_identity}
+        for i in range(16)
+    ]}), encoding="utf-8")
+    stations = list(range(4096, 4112))
+    body = struct.pack("<BBIHH", 0x0a, 42, 0, 0x8400, 0) + bytes(1024) + struct.pack("<H", 1)
+    for i, station in enumerate(stations):
+        flags = 0x8006 if i < 15 else 6
+        body += struct.pack("<BBHHHHHHHH", 4, 42, station, 0x130, flags, 0, 4, 0, 0, 1)
+    packet = reply[:14] + struct.pack("<H", 0x1000 | len(body)) + body
+    max_sample = case("max-frame", packet, stations=stations)
+    full_group = cli_call(cli, "inspect-input-group", group_path, "--frame", max_sample)
+    assert full_group["frame"]["valid"] and full_group["expected_wkc"] == 1
+    assert full_group["devices"][0]["input"]["raw_hex"] == "00" * 1024
+    assert all(d["input"] is None and d["al"]["clean_safeop"] for d in full_group["devices"][1:])
+    no_last_al = case("max-missing-last", packet[:-2] + bytes(2), stations=stations)
+    partial = cli_call(cli, "inspect-input-group", group_path, "--frame", no_last_al)
+    assert partial["frame"]["lrd_wkc_matches"] and not partial["frame"]["valid"]
+    assert partial["devices"][-1]["al"]["status"] is None
+    assert all(d["input"] is None for d in partial["devices"])
+    (destination / "healthy-receipt.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
 
 
 def verify_pcap(cli, destination):
@@ -2270,6 +2378,9 @@ def main():
     group_destination = destination / "input-group"
     group_destination.mkdir()
     verify_input_group(cli, group_destination)
+    frame_destination = destination / "input-group-frame"
+    frame_destination.mkdir()
+    verify_input_group_frame(cli, frame_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

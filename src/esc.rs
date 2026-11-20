@@ -40,6 +40,11 @@ pub struct AlStatus {
     pub code: u16,
     pub description: &'static str,
 }
+
+pub(crate) fn clean_safeop(raw: u16, code: u16) -> bool {
+    raw & 0x001f == 4 && code == 0
+}
+
 pub fn al_status(raw: u16, code: u16) -> AlStatus {
     let state = match raw & 0x0f {
         1 => "INIT",

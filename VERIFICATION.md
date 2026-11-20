@@ -546,3 +546,11 @@ The sample manifest bound two profile identities by position and planned a 16-by
 The focused release CLI checks matched each typed value to the single-profile decoder and source profile SHA-256 to file bytes. Tests covered a zero-input position, the 1,024-byte group boundary, excessive payload size or device count, wrong WKC or length, inconsistent identity, wrong position order, unknown schema and protected JSON exports. Formatting, Clippy, 181 offline Rust tests (139 library and 42 desktop), and the Windows x64 MSVC release build passed.
 
 The group uses offline manifests and supplied bytes. Live grouped setup, per-device AL and mapping verification, cyclic logging and physical bench qualification remain pending. Live SAFEOP setup continues to require one isolated SubDevice.
+
+## Version 0.51.0 grouped Ethernet reply checks (2026-11-20)
+
+The virtual two-ESC frame returned two distinct input images and one AL reply at WKC 1 per station. A nonzero downstream AL code withheld all inputs while the LRD WKC still matched. The PREOP case lost the downstream LRD contribution. Changing the downstream address retained the LRD count and lost the corresponding AL reply. The fixture recorded no writes or state requests.
+
+The focused release CLI checks validated the authored saved reply, independent hashes and typed decoder parity. They covered missing and ambiguous AL replies, flags and codes, OP/PREOP, partial LRD, incorrect index/address/command/chain, truncated or oversized frames, malformed declarations and a 1,024-byte LRD plus 16 AL replies. A zero-input position still needed a clean AL reply. Planning and payload-only decoding kept their existing report shape. Formatting, Clippy, 181 offline Rust tests (139 library and 42 desktop) and the Windows x64 MSVC release build passed.
+
+The saved-frame assessment covers the declared frame and profiles. Native GUI interaction, physical SAFEOP input and timing, grouped setup and live grouped acquisition remain open.

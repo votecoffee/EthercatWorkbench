@@ -7,6 +7,7 @@ const SOURCE: [u8; 6] = [0x10, 0x45, 0x43, 0x57, 0x42, 0x31];
 pub const CUSTOM_REPLY: [u8; 6] = [0x12, 0x45, 0x43, 0x57, 0x42, 0x31];
 pub const ETHERCRAB_REPLY: [u8; 6] = [0x12, 0x10, 0x10, 0x10, 0x10, 0x10];
 const ETHERTYPE: [u8; 2] = [0x88, 0xa4];
+pub const MAX_FRAME_BYTES: usize = 1514;
 
 #[derive(Clone, Copy)]
 pub struct Datagram {
@@ -28,30 +29,40 @@ impl Datagram {
 }
 
 pub struct Frame<const N: usize> {
-    bytes: [u8; 1514],
+    bytes: [u8; MAX_FRAME_BYTES],
     end: usize,
     parts: [Datagram; N],
+    used: usize,
 }
 
 impl<const N: usize> Frame<N> {
     pub fn new(seq: u8, parts: [Datagram; N]) -> Self {
-        let mut bytes = [0; 1514];
+        Self::with_count(seq, parts, N)
+    }
+
+    pub(crate) fn with_count(seq: u8, parts: [Datagram; N], used: usize) -> Self {
+        let mut bytes = [0; MAX_FRAME_BYTES];
         bytes[..6].fill(0xff);
         bytes[6..12].copy_from_slice(&SOURCE);
         bytes[12..14].copy_from_slice(&ETHERTYPE);
         let mut end = 16;
-        for (i, p) in parts.iter().enumerate() {
+        for (i, p) in parts[..used].iter().enumerate() {
             assert!(matches!(p.command, APRD | FPRD | BRD | LRD));
             bytes[end] = p.command;
             bytes[end + 1] = seq;
             bytes[end + 2..end + 6].copy_from_slice(&p.address);
-            let more = if i + 1 < N { 0x8000 } else { 0 };
+            let more = if i + 1 < used { 0x8000 } else { 0 };
             bytes[end + 6..end + 8].copy_from_slice(&(more | p.len as u16).to_le_bytes());
             end += 12 + p.len;
         }
         bytes[14..16].copy_from_slice(&(0x1000 | (end - 16) as u16).to_le_bytes());
         assert!(end <= bytes.len());
-        Self { bytes, end, parts }
+        Self {
+            bytes,
+            end,
+            parts,
+            used,
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -67,7 +78,7 @@ impl<const N: usize> Frame<N> {
         }
         let mut result = [(&[][..], 0); N];
         let mut offset = 16;
-        for (i, part) in self.parts.iter().enumerate() {
+        for (i, part) in self.parts[..self.used].iter().enumerate() {
             if bytes[offset..offset + 2] != self.bytes[offset..offset + 2]
                 || bytes[offset + 4..offset + 7] != self.bytes[offset + 4..offset + 7]
                 || bytes[offset + 7] & 0x87 != self.bytes[offset + 7]
@@ -107,13 +118,17 @@ pub struct InputReply {
 pub fn input_reply([(input, wkc), (al, status_wkc)]: [(&[u8], u16); 2]) -> InputReply {
     let mut data = [0; crate::model::MAX_PAYLOAD];
     data[..input.len()].copy_from_slice(input);
-    let status = (status_wkc == 1).then(|| {
+    let status = al_readback(al, status_wkc);
+    InputReply { data, wkc, status }
+}
+
+pub(crate) fn al_readback(al: &[u8], wkc: u16) -> Option<(u16, u16)> {
+    (wkc == 1).then(|| {
         (
             u16::from_le_bytes([al[0], al[1]]),
             u16::from_le_bytes([al[4], al[5]]),
         )
-    });
-    InputReply { data, wkc, status }
+    })
 }
 
 #[cfg(test)]

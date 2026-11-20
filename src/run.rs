@@ -549,7 +549,7 @@ fn cycle(
             report.actual_wkc = exchange.received.map(|_| exchange.wkc);
             let status_ok = exchange
                 .status
-                .is_some_and(|(status, code)| status & 0x1f == 4 && code == 0);
+                .is_some_and(|(status, code)| crate::esc::clean_safeop(status, code));
             if exchange.received.is_some()
                 && let Some((status, code)) = exchange.status
                 && let Some(device) = report.devices.first_mut()

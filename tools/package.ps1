@@ -76,6 +76,7 @@ try {
         'samples/synthetic.json' = 'samples/synthetic.json'
         'samples/virtual.json' = 'samples/virtual.json'
         'samples/input-group.json' = 'samples/input-group.json'
+        'samples/input-group-frame.json' = 'samples/input-group-frame.json'
         'samples/virtual-sii.json' = 'samples/virtual-sii.json'
         'samples/virtual-dc.json' = 'samples/virtual-dc.json'
         'samples/virtual-normal.json' = 'samples/virtual-normal.json'
