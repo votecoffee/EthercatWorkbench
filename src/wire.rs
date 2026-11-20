@@ -120,14 +120,15 @@ impl Frame<1> {
         Self::encode(seq, [Datagram::register(FRMW, station, register, 8)], 1)
     }
 
-    pub(crate) fn write(seq: u8, command: u8, adp: u16, ado: u16, payload: &[u8; 2]) -> Self {
+    pub(crate) fn write(seq: u8, command: u8, adp: u16, ado: u16, payload: &[u8]) -> Self {
         assert!(matches!(command, FPWR | LWR));
+        assert!(!payload.is_empty() && payload.len() <= MAX_FRAME_BYTES - 28);
         let mut frame = Self::encode(
             seq,
             [Datagram::register(command, adp, ado, payload.len())],
             1,
         );
-        frame.bytes[26..28].copy_from_slice(payload);
+        frame.bytes[26..26 + payload.len()].copy_from_slice(payload);
         frame
     }
 }

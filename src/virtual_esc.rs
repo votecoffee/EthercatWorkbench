@@ -249,6 +249,8 @@ pub enum GroupMappingScenario {
     ExtraStation,
     DuplicateStation,
     PositionWkc,
+    CoePdoOrder,
+    SiiPdoOrder,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
@@ -527,6 +529,24 @@ impl VirtualWire {
         wire
     }
 
+    pub(crate) fn prepare_group_pdo_readback(&mut self) {
+        for esc in &mut self.devices {
+            esc.pdo_readback = true;
+            if !esc.model.has_coe() {
+                continue;
+            }
+            for (base, address, control) in
+                [(0x0800, MAILBOX_IN, 0x26), (0x0808, MAILBOX_OUT, 0x22)]
+            {
+                esc.registers[base..base + 2].copy_from_slice(&(address as u16).to_le_bytes());
+                esc.registers[base + 2..base + 4]
+                    .copy_from_slice(&(MAILBOX_BYTES as u16).to_le_bytes());
+                esc.registers[base + 4] = control;
+                esc.registers[base + 6] = 1;
+            }
+        }
+    }
+
     pub(crate) fn apply_group_mapping_scenario(
         &mut self,
         scenario: GroupMappingScenario,
@@ -561,6 +581,10 @@ impl VirtualWire {
                 esc.registers[0x0010..0x0012].copy_from_slice(&stations[0].to_le_bytes());
             }
             GroupMappingScenario::PositionWkc => esc.scan_case = ScanCase::CoreWkc,
+            GroupMappingScenario::CoePdoOrder => self.devices[0].fault = VirtualFault::PdoOrder,
+            GroupMappingScenario::SiiPdoOrder => {
+                esc.eeprom = eeprom(esc.model, VirtualFault::PdoOrder);
+            }
         }
     }
 
@@ -625,6 +649,7 @@ impl VirtualWire {
 pub(crate) struct VirtualEsc {
     scan_case: ScanCase,
     read_only: bool,
+    pdo_readback: bool,
     registers: Box<[u8; 65_536]>,
     eeprom: Vec<u8>,
     mailbox: Option<[u8; MAILBOX_BYTES]>,
@@ -662,6 +687,7 @@ impl VirtualEsc {
         Self {
             scan_case: ScanCase::Normal,
             read_only: false,
+            pdo_readback: false,
             registers,
             eeprom: eeprom(model, fault),
             mailbox: None,
@@ -1025,10 +1051,43 @@ impl VirtualEsc {
         Ok(1)
     }
 
+    fn allows_pdo_read_command(&self, register: usize, data: &[u8]) -> bool {
+        self.pdo_readback
+            && match (register, data) {
+                (0x0502, [0, 1, _, _, 0, 0]) => true,
+                (
+                    MAILBOX_IN,
+                    [
+                        10,
+                        0,
+                        0,
+                        0,
+                        0,
+                        counter,
+                        0,
+                        0x20,
+                        0x40,
+                        lo,
+                        hi,
+                        _,
+                        padding @ ..,
+                    ],
+                ) => {
+                    self.model.has_coe()
+                        && data.len() == MAILBOX_BYTES
+                        && counter & 0x8f == 3
+                        && counter & 0x70 != 0
+                        && matches!(u16::from_le_bytes([*lo, *hi]), 0x1c10..=0x1c1f | 0x1a00..=0x1bff)
+                        && padding.iter().all(|byte| *byte == 0)
+                }
+                _ => false,
+            }
+    }
+
     fn write(&mut self, register: usize, data: &[u8]) -> Result<()> {
         self.stats.register_writes += 1;
         ensure!(
-            !self.read_only,
+            !self.read_only || self.allows_pdo_read_command(register, data),
             "read-only scan fixture rejects register writes"
         );
         let end = register
@@ -1610,6 +1669,31 @@ fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::wire::{Datagram, FPRD, FPWR, Frame};
+
+    #[test]
+    fn group_pdo_readback_keeps_the_scan_write_guard_for_other_commands() {
+        let mut wire = VirtualWire::with_group_layout(GROUP_PAIR);
+        let mut request = [0; MAILBOX_BYTES];
+        request[0] = 10;
+        request[5] = 0x13;
+        request[7] = 0x20;
+        request[8] = 0x40;
+        request[9..11].copy_from_slice(&0x1c13u16.to_le_bytes());
+        assert!(wire.devices[0].write(MAILBOX_IN, &request).is_err());
+        assert!(wire.devices[1].write(0x0502, &[0, 1, 8, 0, 0, 0]).is_err());
+
+        wire.prepare_group_pdo_readback();
+        assert!(wire.devices[0].write(MAILBOX_IN, &request).is_ok());
+        assert!(wire.devices[1].write(0x0502, &[0, 1, 8, 0, 0, 0]).is_ok());
+        request[8] = 0x2f;
+        assert!(wire.devices[0].write(MAILBOX_IN, &request).is_err());
+        assert!(wire.devices[1].write(0x0502, &[0, 2, 8, 0, 0, 0]).is_err());
+        assert!(wire.devices[0].write(0x0120, &[8, 0]).is_err());
+        assert!(wire.devices[0].write(0x0808, &[0; 8]).is_err());
+        assert!(wire.devices[0].write(OUTPUTS, &[1, 0]).is_err());
+        assert!(wire.devices[0].stats.state_requests.is_empty());
+        assert_eq!(wire.devices[0].stats.coe_downloads, 0);
+    }
 
     #[test]
     fn dc_rehearsal_rejects_a_cycle_write_that_reaches_latch_registers() {

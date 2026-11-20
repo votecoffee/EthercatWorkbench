@@ -11,28 +11,28 @@ use std::{ops::Range, path::Path};
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Snapshot {
-    schema: u32,
-    devices: Vec<Station>,
+pub(super) struct Snapshot {
+    pub(super) schema: u32,
+    pub(super) devices: Vec<Station>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Station {
-    station_address: u16,
-    identity: Identity,
-    tx: Option<TxLayout>,
-    tx_unavailable: Option<String>,
+pub(super) struct Station {
+    pub(super) station_address: u16,
+    pub(super) identity: Identity,
+    pub(super) tx: Option<TxLayout>,
+    pub(super) tx_unavailable: Option<String>,
 }
 
 // Require the evidence source explicitly; generic Layout defaults it for legacy callers.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct TxLayout {
-    mapping_source: MappingSource,
-    sync_managers: Vec<SyncManager>,
+pub(super) struct TxLayout {
+    pub(super) mapping_source: MappingSource,
+    pub(super) sync_managers: Vec<SyncManager>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +69,22 @@ pub(super) fn review(
     sync_managers: &sync_manager::Review,
 ) -> Result<Review> {
     let (snapshot, bytes) = read_json::<Snapshot>(path, MAX_FILE_BYTES)?;
+    review_snapshot(
+        snapshot,
+        hex::encode(Sha256::digest(&bytes)),
+        bindings,
+        fmmu,
+        sync_managers,
+    )
+}
+
+pub(super) fn review_snapshot(
+    snapshot: Snapshot,
+    source_sha256: String,
+    bindings: &[Binding],
+    fmmu: &fmmu::Review,
+    sync_managers: &sync_manager::Review,
+) -> Result<Review> {
     ensure!(
         snapshot.schema == 1,
         "unsupported group PDO schema {}",
@@ -88,7 +104,7 @@ pub(super) fn review(
         .map(|((station, binding), (mapped, sm))| check(station, binding, mapped, sm))
         .collect();
     Ok(Review {
-        source_sha256: hex::encode(Sha256::digest(&bytes)),
+        source_sha256,
         valid: devices
             .iter()
             .all(|device| device.issues.is_empty() && device.tx.errors.is_empty()),

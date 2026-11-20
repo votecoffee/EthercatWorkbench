@@ -1,7 +1,9 @@
 //! Read and verify the grouped station order and register layout before cyclic input.
+mod pdos;
 pub(super) mod topology;
 use super::{
-    InputGroup, Inspection, MappingReview, decode_frame_hex, fmmu, fmmu::Read, sync_manager,
+    InputGroup, Inspection, MappingReview, decode_frame_hex, fmmu, fmmu::Read, pdo_readback,
+    sync_manager,
 };
 pub use crate::virtual_esc::GroupMappingScenario;
 use crate::{
@@ -23,11 +25,27 @@ pub struct Report<'a> {
     fmmu_snapshot: fmmu::Snapshot,
     sync_manager_snapshot: sync_manager::Snapshot,
     mapping_replies: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pdo_snapshot: Option<pdo_readback::Snapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pdo_exchanges: Option<Vec<pdos::Exchange>>,
     inspection: Inspection<'a>,
     wire_audit: Vec<VirtualStats>,
 }
 
-pub fn inspect_virtual(group: &InputGroup, scenario: GroupMappingScenario) -> Result<Report<'_>> {
+pub fn inspect_virtual(
+    group: &InputGroup,
+    scenario: GroupMappingScenario,
+    read_pdos: bool,
+) -> Result<Report<'_>> {
+    ensure!(
+        read_pdos
+            || !matches!(
+                scenario,
+                GroupMappingScenario::CoePdoOrder | GroupMappingScenario::SiiPdoOrder
+            ),
+        "the PDO-order scenarios require --read-pdos"
+    );
     let fixture = virtual_group(group)?;
     let mut wire = VirtualWire::with_group_layout(fixture);
     wire.apply_group_mapping_scenario(scenario, fixture.stations);
@@ -37,24 +55,49 @@ pub fn inspect_virtual(group: &InputGroup, scenario: GroupMappingScenario) -> Re
         topology,
         replies: mapping_replies,
     } = capture_registers(&mut wire, fixture.stations, 0)?;
-    let mapping = review(
+    let next_index = topology.probe_indexes()[1].wrapping_add(1);
+    let mut mapping = review(
         group,
         fixture.stations,
         fmmu_snapshot.clone(),
         sync_manager_snapshot.clone(),
         Some(topology),
     )?;
+    let (pdo_snapshot, pdo_exchanges) = if read_pdos && mapping.valid() {
+        wire.prepare_group_pdo_readback();
+        let sync = mapping
+            .sync_managers
+            .as_ref()
+            .context("missing virtual SyncManager review")?;
+        let (snapshot, exchanges) = pdos::capture(&mut wire, fixture, sync, next_index)?;
+        mapping.pdo = Some(pdo_readback::review_snapshot(
+            snapshot.clone(),
+            snapshot_hash(&snapshot)?,
+            &group.bindings,
+            &mapping.fmmu,
+            sync,
+        )?);
+        (Some(snapshot), Some(exchanges))
+    } else {
+        (None, None)
+    };
     let valid = mapping.valid();
     let mut inspection = group.inspect(None)?;
     mapping.attach(&mut inspection);
     Ok(Report {
         schema: 1,
-        source: "virtual_group_register_reads",
+        source: if read_pdos {
+            "virtual_group_pdo_reads"
+        } else {
+            "virtual_group_register_reads"
+        },
         scenario,
         valid,
         fmmu_snapshot,
         sync_manager_snapshot,
         mapping_replies,
+        pdo_snapshot,
+        pdo_exchanges,
         inspection,
         wire_audit: wire.chain_audits(),
     })

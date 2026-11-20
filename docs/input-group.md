@@ -82,6 +82,28 @@ A cycle needs FRMW WKC 2, WKC 1 for each fixed-address read, a reference readbac
 
 `follower-wkc`, `follower-stale`, `follower-offset`, `difference-read-wkc` and `reference-regression` inject a fault on cycle two. Diagnostic runs still return a report. Check `clock_rejections`, `valid_input_cycles` and each cycle's `clock.issues`. A clock failure leaves `input` null and skips the LRD. Set `--cycles` from 1 to 64. The default 1,000,000 ns SYNC0 period advances authored time without pacing the host. The virtual wire audit records FRMW distribution separately from configuration, state requests and PDO writes. Physical DC initialization, propagation compensation, phase convergence and measured frame intervals require bench evidence.
 
+## Read TxPDO descriptors from the virtual group
+
+```powershell
+.\ethercat-workbench-cli.exe inspect-virtual-group-mapping samples/input-group.json --read-pdos --out .local/group-pdo-readback.json
+```
+
+This option checks station order, FMMUs and SyncManagers first. It reads identity from SII for each station and reads TxPDO descriptors through expedited CoE uploads or SII categories. CoE mailbox slots are seeded for the readback and discovered from the virtual ESC's registers. The report includes the request and reply bytes in `pdo_exchanges`, a reusable `pdo_snapshot`, per-field matches and the projection from each input SyncManager to the group's logical range. The SII reader uses four-byte read transactions on the authored EEPROM interface. [Beckhoff ESC register reference, SII EEPROM Interface](https://download.beckhoff.com/download/Document/io/ethercat-development-products/ethercat_esc_datasheet_sec2_registers_3i0.pdf)
+
+`--scenario coe-pdo-order` and `--scenario sii-pdo-order` each reorder the descriptors on one station while preserving its eight-byte image and register layout. Check `inspection.pdo` for the affected fields. The three-station sample also works with `--read-pdos`. Its middle station reports no active TxPDO buffers. The exchanges run on the in-memory wire. CoE upload requests and EEPROM read commands account for the protocol writes in `wire_audit`.
+
+To use the three snapshots with a saved frame or replay, write each JSON object to a fresh file. For example, in PowerShell 7:
+
+```powershell
+$group = Get-Content -LiteralPath .local/group-pdo-readback.json -Raw | ConvertFrom-Json
+$group.fmmu_snapshot | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8NoBOM -NoClobber .local/group-fmmu.json
+$group.sync_manager_snapshot | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8NoBOM -NoClobber .local/group-sm.json
+$group.pdo_snapshot | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8NoBOM -NoClobber .local/group-pdos.json
+.\ethercat-workbench-cli.exe inspect-input-group samples/input-group.json --frame samples/input-group-frame.json --fmmu .local/group-fmmu.json --sync-managers .local/group-sm.json --pdo .local/group-pdos.json
+```
+
+Pass the same three options when running `replay-input-group` and `verify-group-replay` to require the exported descriptors. A bad descriptor review withholds decoded frame inputs and stops replay before CSV creation. The snapshots retain the modeled scope. Native grouped mailbox and EEPROM readbacks still need live qualification.
+
 ## Replay clock-qualified inputs
 
 ```powershell

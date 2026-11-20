@@ -720,3 +720,11 @@ The 12-cycle fixture held generation one after the modeled swap and verified fre
 Every-valid logging produced five rows in three CSV parts. On-change logging retained the first accepted row of each generation with identical selected values. The relocated bundle verified all five rows and both generations of each setup check. Replay blocked missing setup, missing or copied SYNC0 evidence, an old clock frame, a reset elapsed timestamp and a timestamp attached to the rejected first exchange. The unchanged 0.73.0 and 0.74.0 DC bundles still verified.
 
 Formatting, locked Clippy, 190 Rust tests, the locked Windows x64 MSVC release build and the full Windows headless regression passed. The headless desktop showed the hold, first-cycle clock rejection and two verified SYNC0 setups. This fixture uses an authored reset of an in-memory ESC chain. Physical reconnect, synchronization and 1 ms timing remain pending.
+
+## Version 0.76.0 virtual grouped TxPDO readback (2026-11-20)
+
+The Windows release CLI read the SII identity of each virtual station and captured seven expedited CoE assignment and descriptor uploads for the CoE station. The SII station supplied PDO categories through the modeled four-byte EEPROM reads. Each transaction matched its station, command, datagram index and Working Counter. The three-station group also verified its no-PDO middle station with zero input bytes. The virtual write guard permitted only the required EEPROM read and CoE upload commands in the opt-in path.
+
+The CoE and SII descriptor-order faults each preserved the eight-byte process image and passed topology, FMMU and SyncManager checks. TxPDO verification identified the affected fields. The saved-frame inspector withheld decoded input despite a valid frame, and replay stopped before creating CSV when supplied either rejected snapshot. Clean exported snapshots verified all 12 saved CSV rows.
+
+Formatting, locked Clippy, 191 Rust tests, the locked Windows x64 MSVC build and the full Windows headless regression passed. The unchanged 0.75.0 reconnect bundle also verified. The grouped readback uses the in-memory wire and seeded device state. Live grouped commissioning and physical timing remain pending.

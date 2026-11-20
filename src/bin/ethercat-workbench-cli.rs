@@ -77,6 +77,9 @@ enum Command {
         manifest: PathBuf,
         #[arg(long, value_enum, default_value = "clean")]
         scenario: ethercat_workbench::input_group::preflight::GroupMappingScenario,
+        /// Read TxPDO descriptors from the modeled CoE mailboxes and SII EEPROM.
+        #[arg(long)]
+        read_pdos: bool,
         /// Save the mapping evidence and inspection to a new JSON file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -622,12 +625,13 @@ fn main() -> Result<()> {
         Command::InspectVirtualGroupMapping {
             manifest,
             scenario,
+            read_pdos,
             out,
         } => {
             use ethercat_workbench::input_group::{InputGroup, preflight};
             shared_outputs(out.as_deref(), None)?;
             let group = InputGroup::load(&manifest)?;
-            let report = preflight::inspect_virtual(&group, scenario)?;
+            let report = preflight::inspect_virtual(&group, scenario, read_pdos)?;
             inspection_export(&report, out.as_deref())
         }
         Command::RehearseGroupDc {

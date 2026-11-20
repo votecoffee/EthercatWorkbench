@@ -3251,6 +3251,107 @@ def verify_output_rehearsal(cli, destination):
     assert source_bytes == sample.read_bytes() and output == staged.read_bytes()
 
 
+def verify_virtual_group_pdo_readback(cli, destination):
+    sample = ROOT / "samples"
+    manifest = sample / "input-group.json"
+
+    def readback(plan=manifest, *args, **kwargs):
+        return cli_call(cli, "inspect-virtual-group-mapping", plan, "--read-pdos", *args, **kwargs)
+
+    def save(name, data):
+        path = destination / f"{name}.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    clean = readback(manifest, "--out", destination / "readback.json")
+    basic = cli_call(cli, "inspect-virtual-group-mapping", manifest)
+    assert clean["valid"] and clean["source"] == "virtual_group_pdo_reads"
+    assert "pdo_exchanges" not in basic and "pdo_snapshot" not in basic
+    for view in ("fmmu_snapshot", "sync_manager_snapshot", "mapping_replies"):
+        assert clean[view] == basic[view]
+    assert clean["inspection"]["pdo"]["valid"]
+    snapshot = clean["pdo_snapshot"]
+    assert snapshot["schema"] == 1
+    for position, captured in enumerate(snapshot["devices"]):
+        assert captured["station_address"] == 0x1000 + position
+        assert captured["identity"] == {"vendor": 16715776, "product": position + 1, "revision": 1}
+        assert captured["tx_unavailable"] is None
+        assert captured["tx"]["mapping_source"] == ("coe", "sii")[position]
+        [channel] = captured["tx"]["sync_managers"]
+        assert channel["index"] == (3, 1)[position] and channel["configured_bytes"] == 8
+        assert channel["pdos"] == [{"index": 0x1a00, "entries": [0x60000110, 0x60000201, 15, 0x60000320]}]
+
+    next_index = clean["inspection"]["topology"]["after_mapping"]["index"] + 1
+    coe_objects = []
+    sii_words = {4096: [], 4097: []}
+    for sequence, frame in enumerate(clean["pdo_exchanges"], next_index):
+        request = bytes.fromhex(frame["request_hex"])
+        reply = bytes.fromhex(frame["reply_hex"])
+        assert request[12:14] == reply[12:14] == b"\x88\xa4"
+        assert request[16:24] == reply[16:24] and reply[17] == sequence % 256
+        command, _, station, register, length = struct.unpack_from("<BBHHH", request, 16)
+        end = 26 + (length & 0x7ff)
+        assert struct.unpack_from("<H", reply, end)[0] == 1
+        if command == 5 and register == 0x0502:
+            assert request[26:28] == b"\x00\x01" and end == 32
+            assert request[30:32] == b"\x00\x00"
+            sii_words[station].append(struct.unpack_from("<H", request, 28)[0])
+        elif command == 5:
+            assert station == 4096 and register == 0x1000 and request[34] == 0x40
+            coe_objects.append((*struct.unpack_from("<HB", request, 35), request[31] >> 4))
+        else:
+            assert command == 4
+    assert coe_objects == [(0x1c13, 0, 1), (0x1c13, 1, 2)] + [(0x1a00, sub, sub + 3) for sub in range(5)]
+    assert sii_words[4096] == [8, 10, 12] and sii_words[4097][:4] == [8, 10, 12, 0x40]
+    assert clean["wire_audit"][0]["coe_uploads"] == 7
+    assert clean["wire_audit"][1]["coe_uploads"] == 0
+    for audit in clean["wire_audit"]:
+        assert all(audit[key] == 0 for key in ("coe_downloads", "sync_manager_writes", "fmmu_writes",
+                                               "logical_reads", "logical_writes", "physical_output_writes"))
+        assert not audit["state_requests"]
+
+    fmmu = save("fmmu", clean["fmmu_snapshot"])
+    sm = save("sync-managers", clean["sync_manager_snapshot"])
+    pdo = save("pdo", snapshot)
+    evidence = ("--fmmu", fmmu, "--sync-managers", sm, "--pdo", pdo)
+    frame = ("--frame", sample / "input-group-frame.json")
+    checked = cli_call(cli, "inspect-input-group", manifest, *evidence, *frame)
+    assert checked["frame"]["valid"] and checked["pdo"]["valid"] and all(d["input"] for d in checked["devices"])
+    fixture = destination / "frames.json"
+    cli_call(cli, "generate-group-replay", manifest, "--out", fixture)
+    csv_base = destination / "valid.csv"
+    receipt = destination / "replay.json"
+    report = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", csv_base, "--out", receipt, *evidence)
+    assert report["counts"]["valid"] == 12
+    assert cli_call(cli, "verify-group-replay", manifest, fixture, receipt, csv_base, *evidence)["verified_rows"] == 12
+
+    for position, scenario in enumerate(("coe-pdo-order", "sii-pdo-order")):
+        fault = readback(manifest, "--scenario", scenario, "--out", destination / f"{scenario}-report.json")
+        assert not fault["valid"] and not fault["inspection"]["pdo"]["valid"]
+        assert all(fault["inspection"][key]["valid"] for key in ("topology", "fmmu", "sync_managers"))
+        dev = fault["inspection"]["pdo"]["devices"][position]
+        assert dev["tx"]["image_bytes"] == 8 and "no device entry" in " ".join(dev["tx"]["errors"])
+        assert [entry["tx"]["errors"] == [] for entry in fault["inspection"]["pdo"]["devices"]] == [position != 0, position != 1]
+        bad_pdo = save(scenario, fault["pdo_snapshot"])
+        rejected = cli_call(cli, "inspect-input-group", manifest, *evidence[:-1], bad_pdo, *frame)
+        assert rejected["frame"]["valid"] and not rejected["pdo"]["valid"]
+        assert all(d["input"] is None for d in rejected["devices"])
+        blocked = destination / f"{scenario}.csv"
+        assert "saved mapping evidence failed" in cli_call(
+            cli, "replay-input-group", manifest, fixture, "--csv", blocked, *evidence[:-1], bad_pdo, success=False
+        )
+        assert not blocked.exists()
+        assert "require --read-pdos" in cli_call(cli, "inspect-virtual-group-mapping", manifest, "--scenario", scenario, success=False)
+
+    invalid_topology = readback(manifest, "--scenario", "swap-during-readback")
+    assert not invalid_topology["valid"] and "pdo_exchanges" not in invalid_topology
+    assert all(audit["coe_uploads"] == audit["sii_reads"] == 0 for audit in invalid_topology["wire_audit"])
+    three = readback(sample / "input-group-three.json")
+    assert three["valid"] and three["inspection"]["expected_wkc"] == 2
+    assert [d["tx"]["image_bytes"] for d in three["inspection"]["pdo"]["devices"]] == [8, 0, 8]
+    assert three["pdo_snapshot"]["devices"][1]["tx"] == {"mapping_source": "sii", "sync_managers": []}
+
+
 def verify_virtual_group_mapping(cli, destination):
     sample = ROOT / "samples"
     manifest = sample / "input-group.json"
@@ -4643,6 +4744,9 @@ def main():
     virtual_group_mapping_destination = destination / "input-group-virtual-mapping"
     virtual_group_mapping_destination.mkdir()
     verify_virtual_group_mapping(cli, virtual_group_mapping_destination)
+    virtual_group_pdo_destination = destination / "virtual-group-pdo"
+    virtual_group_pdo_destination.mkdir()
+    verify_virtual_group_pdo_readback(cli, virtual_group_pdo_destination)
     group_dc_destination = destination / "input-group-dc"
     group_dc_destination.mkdir()
     verify_group_dc(cli, group_dc_destination)
