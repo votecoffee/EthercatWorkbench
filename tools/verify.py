@@ -2192,7 +2192,7 @@ def verify_group_dc_replay(cli, destination):
     fixture = destination / "stale.json"
     authored = cli_call(cli, "generate-group-dc-replay", manifest, "--period-ns", 700_000,
                         "--cycles", 8, "--scenario", "follower-stale", "--out", fixture)
-    assert json.loads(fixture.read_bytes()) == authored and authored["schema"] == 2
+    assert json.loads(fixture.read_bytes()) == authored and authored["schema"] == 3
     policy = authored["virtual_dc"]
     assert (policy["scenario"], policy["period_ns"], policy["difference_limit_ns"]) == ("follower-stale", 700_000, 500)
     assert bytes.fromhex(policy["sync0_hex"])[12:14] == b"\x88\xa4"
@@ -2214,6 +2214,8 @@ def verify_group_dc_replay(cli, destination):
     receipt = destination / "every.json"
     report = run(base, receipt, fixture, "--rotate-rows", 2)
     assert report["virtual_dc"] == policy
+    assert len(report["setup_topology"]) == 1
+    assert report["setup_topology"][0]["valid"]
     assert report["fixture_sha256"] == hashlib.sha256(before).hexdigest()
     assert report["counts"]["valid"] == report["counts"]["matched_replies"] == 7
     assert report["counts"]["unmatched_cycles"] == 0 and report["counts"]["clock_rejections"] == 1
@@ -2255,6 +2257,7 @@ def verify_group_dc_replay(cli, destination):
     bundle.rename(relocated)
     bundled = cli_call(cli, "verify-group-bundle", relocated)
     assert bundled["audit"]["verified_rows"] == 7
+    assert bundled["audit"]["verified_topology_generations"] == 1
 
     empty = destination / "no-accepted-cycles.json"
     cli_call(cli, "generate-group-dc-replay", manifest, "--difference-limit-ns", 249,
@@ -2310,6 +2313,18 @@ def verify_group_dc_replay(cli, destination):
     amended.write_text(json.dumps(report), encoding="utf-8")
     assert "differs from the rebuilt" in audit(base, amended, success=False)
     assert "fixture SHA-256 differs" in audit(base, receipt, missing, success=False)
+
+    def legacy_dc(data):
+        data["schema"] = 2
+        del data["setup_topology"]
+
+    legacy = edit_source("legacy-dc", legacy_dc)
+    legacy_base = destination / "legacy.csv"
+    legacy_receipt = destination / "legacy-receipt.json"
+    result = run(legacy_base, legacy_receipt, legacy)
+    assert result["counts"]["valid"] == 7 and result["counts"]["clock_rejections"] == 1
+    assert "setup_topology" not in result
+    assert "verified_topology_generations" not in audit(legacy_base, legacy_receipt, legacy)
 
 
 def verify_input_group_replay(cli, destination):
@@ -3059,6 +3074,77 @@ def verify_virtual_group_mapping(cli, destination):
     assert (destination / "clean.json").read_bytes() == original
 
 
+def verify_replay_setup_topology(cli, destination):
+    manifest = ROOT / "samples/input-group.json"
+    fixture = destination / "topology.json"
+    captured = cli_call(cli, "generate-group-replay", manifest, "--out", fixture)
+    probes = captured["setup_topology"]
+    assert captured["schema"] == 3 and [p["connection_generation"] for p in probes] == [1, 2]
+    assert [p["before_mapping"]["index"] for p in probes] == [0, 32]
+    base = destination / "clean.csv"
+    receipt = destination / "verified.json"
+    replay = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", base, "--out", receipt)
+    assert replay["counts"]["valid"] == 12 and replay["capture"]["written"] == 12
+    for saved, report in zip(probes, replay["setup_topology"], strict=True):
+        assert report["valid"] and report["unchanged"] and report["expected_count"] == 2
+        assert report["connection_generation"] == saved["connection_generation"]
+        for phase in ("before_mapping", "after_mapping"):
+            for key in ("index", "reply_hex"):
+                assert report[phase][key] == saved[phase][key]
+            assert report[phase]["count_wkc"] == 2
+            assert [p["station_address"] for p in report[phase]["positions"]] == [0x1000, 0x1001]
+    audit = cli_call(cli, "verify-group-replay", manifest, fixture, receipt, base)
+    assert audit["verified_topology_generations"] == 2 and audit["verified_rows"] == 12
+
+    def change_reply(data, *, offset, value):
+        reply = data["setup_topology"][1]["after_mapping"]
+        raw = bytearray.fromhex(reply["reply_hex"])
+        struct.pack_into("<H", raw, offset, value)
+        reply["reply_hex"] = raw.hex()
+
+    def duplicate_probe(data):
+        probes = data["setup_topology"][1]
+        probes["after_mapping"] = probes["before_mapping"].copy()
+
+    def reverse_probes(data):
+        probes = data["setup_topology"][1]
+        probes["before_mapping"], probes["after_mapping"] = probes["after_mapping"], probes["before_mapping"]
+
+    def reversed_stations(data):
+        change_reply(data, offset=40, value=0x1001)
+        change_reply(data, offset=56, value=0x1000)
+
+    for name, mutate, message in [
+        ("missing-probes", lambda d: d.pop("setup_topology"), "requires setup topology"),
+        ("missing-generation", lambda d: d["setup_topology"].pop(), "missing setup topology for generation 2"),
+        ("wrong-generation", lambda d: d["setup_topology"].reverse(), "do not match generation 1"),
+        ("extra-generation", lambda d: d["setup_topology"].append(probes[1]), "unmatched setup topology"),
+        ("reused-probe", duplicate_probe, "datagram indexes must increase"),
+        ("reversed-probes", reverse_probes, "datagram indexes must increase"),
+        ("wrong-count", lambda d: change_reply(d, offset=28, value=3), "fail count, station order or stability"),
+        ("reversed-stations", reversed_stations, "fail count, station order or stability"),
+        ("unstable-alias", lambda d: change_reply(d, offset=58, value=0x44), "fail count, station order or stability"),
+        ("wrong-position", lambda d: change_reply(d, offset=48, value=66), "auto-increment address differs"),
+    ]:
+        data = json.loads(fixture.read_bytes())
+        mutate(data)
+        invalid = destination / f"{name}.json"
+        invalid.write_text(json.dumps(data), encoding="utf-8")
+        assert data["cycles"] == captured["cycles"]
+        blocked_csv = destination / "blocked.csv"
+        blocked_receipt = destination / "blocked-receipt.json"
+        failure = cli_call(cli, "replay-input-group", manifest, invalid, "--csv", blocked_csv,
+                           "--out", blocked_receipt, success=False)
+        assert message in failure
+        assert not blocked_csv.exists() and not blocked_receipt.exists()
+
+    no_probe_receipt = destination / "receipt-without-probes.json"
+    del replay["setup_topology"]
+    no_probe_receipt.write_text(json.dumps(replay), encoding="utf-8")
+    failure = cli_call(cli, "verify-group-replay", manifest, fixture, no_probe_receipt, base, success=False)
+    assert "differs from the rebuilt cycles" in failure
+
+
 def verify_generated_group_replay(cli, destination):
     sample = ROOT / "samples"
     manifest = sample / "input-group.json"
@@ -3071,7 +3157,7 @@ def verify_generated_group_replay(cli, destination):
         generated = cli_call(cli, "generate-group-replay", manifest, "--scenario", scenario, "--out", fixture)
         fixture_bytes = fixture.read_bytes()
         assert generated == json.loads(fixture_bytes)
-        assert generated["schema"] == 1 and generated["stations"] == [0x1000, 0x1001]
+        assert generated["schema"] == 3 and generated["stations"] == [0x1000, 0x1001]
         assert generated["virtual_scenario"] == scenario
         sent = generated["cycles"]
         assert [cycle["index"] for cycle in sent] == [((254 + i) & 255) for i in range(12)]
@@ -3986,6 +4072,9 @@ def main():
     generated_group_destination = destination / "input-group-generated"
     generated_group_destination.mkdir()
     verify_generated_group_replay(cli, generated_group_destination)
+    group_topology_replay_destination = destination / "input-group-topology-replay"
+    group_topology_replay_destination.mkdir()
+    verify_replay_setup_topology(cli, group_topology_replay_destination)
     virtual_group_mapping_destination = destination / "input-group-virtual-mapping"
     virtual_group_mapping_destination.mkdir()
     verify_virtual_group_mapping(cli, virtual_group_mapping_destination)

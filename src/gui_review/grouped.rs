@@ -129,6 +129,18 @@ impl Panel {
                 .map(|s| format!("{s:#06x}"))
                 .collect::<Vec<_>>();
             ui.label(format!("Station order · {}", stations.join(", ")));
+            if let Some(generations) = audit.verified_topology_generations {
+                ui.label(format!(
+                    "Saved setup topology verified · {generations} {}",
+                    if generations == 1 {
+                        "generation"
+                    } else {
+                        "generations"
+                    }
+                ));
+            } else {
+                ui.label("Saved setup topology unavailable");
+            }
             ui.label(format!(
                 "Ignored Ethernet candidates {}",
                 counts.ignored_frames

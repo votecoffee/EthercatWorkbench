@@ -1,5 +1,5 @@
 //! Produce replay candidates from an authored two-device virtual wire.
-use super::{Fixture, InputGroup, MODELED_UTC, RecordedCycle};
+use super::{Fixture, InputGroup, MODELED_UTC, RecordedCycle, TOPOLOGY_FIXTURE_SCHEMA};
 use crate::{
     input_group::preflight,
     virtual_esc::{GROUP_MODELS, GROUP_STATIONS, GroupDownstream, VirtualWire},
@@ -19,7 +19,7 @@ pub enum VirtualScenario {
 pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result<Fixture> {
     preflight::validate_virtual_group(group)?;
     let mut wire = VirtualWire::for_group_replay();
-    preflight::require_valid_mapping(group, &mut wire)?;
+    let mut setup_topology = Vec::new();
     let mut previous_reply = String::new();
     let mut cycles = Vec::with_capacity(12);
     let faults = scenario == VirtualScenario::Faults;
@@ -33,6 +33,20 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
                 _ => GroupDownstream::Clean,
             };
             wire.set_group_downstream(condition);
+        }
+        let (connection_generation, cycle_index) = if ordinal < 8 {
+            (1, u64::from(ordinal) + 1)
+        } else {
+            (2, u64::from(ordinal) - 7)
+        };
+        if cycle_index == 1 {
+            // Leave a distinct index range for the register reads in each generation.
+            let first_index = if connection_generation == 1 { 0 } else { 32 };
+            let mapping = preflight::require_valid_mapping(group, &mut wire, first_index)?;
+            let topology = mapping
+                .topology
+                .context("missing verified setup topology")?;
+            setup_topology.push(topology.recording(connection_generation));
         }
         let frame = group.expected_frame(index, &GROUP_STATIONS)?;
         wire.send(frame.bytes())?;
@@ -50,11 +64,6 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
         if !dropped {
             received_hex.push(previous_reply.clone());
         }
-        let (connection_generation, cycle_index) = if ordinal < 8 {
-            (1, u64::from(ordinal) + 1)
-        } else {
-            (2, u64::from(ordinal) - 7)
-        };
         cycles.push(RecordedCycle {
             connection_generation,
             cycle_index,
@@ -77,11 +86,12 @@ pub fn generate_virtual(group: &InputGroup, scenario: VirtualScenario) -> Result
         "virtual group replay expected one logical read per device and cycle, with zero writes"
     );
     Ok(Fixture {
-        schema: 1,
+        schema: TOPOLOGY_FIXTURE_SCHEMA,
         virtual_scenario: Some(scenario),
         virtual_dc: None,
         capture_start_utc: MODELED_UTC.into(),
         stations: GROUP_STATIONS.to_vec(),
+        setup_topology: Some(setup_topology),
         cycles,
     })
 }

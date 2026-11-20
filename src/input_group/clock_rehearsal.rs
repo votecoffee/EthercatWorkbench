@@ -1,7 +1,7 @@
 //! Rehearse clock distribution and clock-qualified inputs on the authored two-station wire.
 use super::{
     InputGroup, Inspection, decode_frame_hex, preflight,
-    replay::{Fixture, MODELED_UTC, RecordedCycle},
+    replay::{Fixture, MODELED_UTC, RecordedCycle, TOPOLOGY_FIXTURE_SCHEMA},
 };
 pub use crate::virtual_esc::GroupClockCase;
 use crate::{
@@ -214,22 +214,31 @@ fn rehearse(
     validate(group, options.period_ns, options.cycles as usize)?;
     let mut wire = VirtualWire::for_group_dc(options.scenario, options.period_ns);
     let mut plan = group.inspect(None)?;
-    preflight::require_valid_mapping(group, &mut wire)?.attach(&mut plan);
+    preflight::require_valid_mapping(group, &mut wire, 0)?.attach(&mut plan);
     let sync0 = exchange(&mut wire, &sync0_request())?;
     let configured_sync0 = read_sync0(sync0, options.period_ns)?;
-    let mut fixture = record.then(|| Fixture {
-        schema: 2,
-        virtual_scenario: None,
-        virtual_dc: Some(ClockRecording {
-            scenario: options.scenario,
-            period_ns: options.period_ns,
-            difference_limit_ns: options.difference_limit_ns,
-            sync0_hex: hex::encode(sync0),
-        }),
-        capture_start_utc: MODELED_UTC.into(),
-        stations: GROUP_STATIONS.to_vec(),
-        cycles: Vec::with_capacity(options.cycles as usize),
-    });
+    let mut fixture = if record {
+        let topology = plan
+            .topology
+            .as_ref()
+            .context("missing verified setup topology")?;
+        Some(Fixture {
+            schema: TOPOLOGY_FIXTURE_SCHEMA,
+            virtual_scenario: None,
+            virtual_dc: Some(ClockRecording {
+                scenario: options.scenario,
+                period_ns: options.period_ns,
+                difference_limit_ns: options.difference_limit_ns,
+                sync0_hex: hex::encode(sync0),
+            }),
+            capture_start_utc: MODELED_UTC.into(),
+            stations: GROUP_STATIONS.to_vec(),
+            setup_topology: Some(vec![topology.recording(1)]),
+            cycles: Vec::with_capacity(options.cycles as usize),
+        })
+    } else {
+        None
+    };
     let mut tracker = ClockTracker::new(options.difference_limit_ns);
     let mut cycles = Vec::with_capacity(options.cycles as usize);
     for cycle_index in 1..=options.cycles {

@@ -5,7 +5,9 @@ pub use virtual_capture::{VirtualScenario, generate_virtual};
 use super::{
     AlRead, InputGroup, Inspection,
     clock_rehearsal::{ClockCheck, ClockFrames, ClockRecording},
-    decode_al_reads, decode_frame_hex, read_json, validate_stations,
+    decode_al_reads, decode_frame_hex,
+    preflight::topology::{GenerationCheck, Recording},
+    read_json, validate_stations,
 };
 use crate::{
     capture::{Capture, CaptureStats},
@@ -13,7 +15,7 @@ use crate::{
     review::check_cancel,
     run::Spacing,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,6 +24,7 @@ use std::{path::Path, sync::atomic::AtomicBool};
 const MAX_FIXTURE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CYCLES: usize = 4096;
 const MAX_CANDIDATES: usize = 64;
+pub(super) const TOPOLOGY_FIXTURE_SCHEMA: u32 = 3;
 pub(super) const MODELED_UTC: &str = "2026-01-01T00:00:00.000000Z";
 
 pub struct Options<'a> {
@@ -43,6 +46,8 @@ pub struct Fixture {
     pub(super) virtual_dc: Option<ClockRecording>,
     pub(super) capture_start_utc: String,
     pub(super) stations: Vec<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) setup_topology: Option<Vec<Recording>>,
     pub(super) cycles: Vec<RecordedCycle>,
 }
 
@@ -113,6 +118,8 @@ pub struct Report<'a> {
     virtual_dc: Option<ClockRecording>,
     fixture_sha256: String,
     stations: Vec<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) setup_topology: Option<Vec<GenerationCheck>>,
     pub(super) plan: Inspection<'a>,
     mode: LogMode,
     rotate_rows: u64,
@@ -147,6 +154,7 @@ pub(super) struct PreparedReplay<'a> {
     pub(super) utc_start: String,
     pub(super) fixture_sha256: String,
     stations: Vec<u16>,
+    setup_topology: Option<Vec<GenerationCheck>>,
     plan: Inspection<'a>,
     pub(super) profile: Profile,
     pub(super) cycles: Vec<PreparedCycle>,
@@ -189,17 +197,24 @@ pub(super) fn prepare_capture<'a>(
         fixture.schema,
         &fixture.virtual_dc,
         fixture.virtual_scenario,
+        &fixture.setup_topology,
     ) {
-        (1, None, _) => {}
-        (2, Some(_), None) => ensure!(
-            fixture.capture_start_utc == MODELED_UTC,
-            "DC replay needs the authored UTC anchor"
-        ),
-        _ => ensure!(
-            false,
+        (1, None, _, None) | (2, Some(_), None, None) => {}
+        (TOPOLOGY_FIXTURE_SCHEMA, None, Some(_), Some(_))
+        | (TOPOLOGY_FIXTURE_SCHEMA, Some(_), None, Some(_)) => {}
+        (TOPOLOGY_FIXTURE_SCHEMA, _, _, None) => {
+            bail!("schema 3 group replay requires setup topology probes")
+        }
+        _ => bail!(
             "unsupported group replay schema or source metadata {}",
             fixture.schema
         ),
+    }
+    if fixture.virtual_dc.is_some() {
+        ensure!(
+            fixture.capture_start_utc == MODELED_UTC,
+            "DC replay needs the authored UTC anchor"
+        );
     }
     let anchor = DateTime::parse_from_rfc3339(&fixture.capture_start_utc)
         .context("invalid group replay capture-start timestamp")?;
@@ -212,6 +227,11 @@ pub(super) fn prepare_capture<'a>(
         "group replay requires 1–{MAX_CYCLES} cycles"
     );
     validate_stations(&fixture.stations, group.bindings.len())?;
+    let setup_topology = fixture
+        .setup_topology
+        .as_ref()
+        .map(|probes| verify_topology(probes, &fixture.stations, &fixture.cycles, stop))
+        .transpose()?;
     ensure!(
         options.sync_managers.is_none() || options.fmmu.is_some(),
         "SyncManager review requires FMMU evidence"
@@ -278,6 +298,7 @@ pub(super) fn prepare_capture<'a>(
         utc_start: fixture.capture_start_utc,
         fixture_sha256: hex::encode(Sha256::digest(&bytes)),
         stations: fixture.stations,
+        setup_topology,
         plan,
         profile,
         cycles: prepared,
@@ -313,6 +334,7 @@ impl<'a> PreparedReplay<'a> {
             virtual_dc: self.virtual_dc,
             fixture_sha256: self.fixture_sha256,
             stations: self.stations,
+            setup_topology: self.setup_topology,
             plan: self.plan,
             mode: self.profile.mode,
             rotate_rows: self.profile.rotate_rows,
@@ -325,6 +347,38 @@ impl<'a> PreparedReplay<'a> {
             error,
         }
     }
+}
+
+fn verify_topology(
+    probes: &[Recording],
+    stations: &[u16],
+    cycles: &[RecordedCycle],
+    stop: Option<&AtomicBool>,
+) -> Result<Vec<GenerationCheck>> {
+    ensure!(
+        probes.len() <= cycles.len(),
+        "too many setup topology records for the replay cycles"
+    );
+    let mut probes = probes.iter();
+    let mut findings = Vec::new();
+    for sequence in cycles.chunk_by(|a, b| a.connection_generation == b.connection_generation) {
+        check_cancel(stop)?;
+        let generation = sequence[0].connection_generation;
+        let recording = probes
+            .next()
+            .with_context(|| format!("missing setup topology for generation {generation}"))?;
+        ensure!(
+            recording.connection_generation == generation,
+            "setup topology records do not match generation {generation}"
+        );
+        findings.push(
+            recording
+                .verify(stations)
+                .with_context(|| format!("setup topology for generation {generation}"))?,
+        );
+    }
+    ensure!(probes.next().is_none(), "unmatched setup topology records");
+    Ok(findings)
 }
 
 fn prepare(

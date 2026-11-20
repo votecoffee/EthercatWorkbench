@@ -1579,7 +1579,15 @@ mod tests {
             }
             .unwrap();
             let fixture = self.0.join("frames.json");
-            std::fs::write(&fixture, serde_json::to_vec(&generated).unwrap()).unwrap();
+            let mut fixture_json = serde_json::to_value(generated).unwrap();
+            if !dc {
+                fixture_json["schema"] = 1.into();
+                fixture_json
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("setup_topology");
+            }
+            std::fs::write(&fixture, serde_json::to_vec(&fixture_json).unwrap()).unwrap();
             let csv = self.0.join("capture.csv");
             let report = replay::run(
                 &group,
@@ -1694,6 +1702,7 @@ mod tests {
             "FRMW WKC 2/2",
             "Follower clock did not advance",
             "moved-bundle",
+            "Saved setup topology verified · 1 generation",
         ] {
             assert!(text.contains(label), "missing {label} in {text}");
         }
@@ -1733,6 +1742,7 @@ mod tests {
             assert!(text.contains(label), "missing {label} in {text}");
         }
         assert!(!text.contains("Clock rejections"));
+        assert!(text.contains("Saved setup topology unavailable"));
 
         let original = bundle.join("csv/capture.0001.csv");
         let bytes = std::fs::read(&original).unwrap();

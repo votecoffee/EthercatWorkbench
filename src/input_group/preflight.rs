@@ -29,7 +29,7 @@ pub fn inspect_virtual(group: &InputGroup, scenario: GroupMappingScenario) -> Re
     validate_virtual_group(group)?;
     let mut wire = VirtualWire::for_group_replay();
     wire.apply_group_mapping_scenario(scenario);
-    let (fmmu_snapshot, sync_manager_snapshot, topology) = capture_registers(&mut wire)?;
+    let (fmmu_snapshot, sync_manager_snapshot, topology) = capture_registers(&mut wire, 0)?;
     let mapping = review(
         group,
         fmmu_snapshot.clone(),
@@ -71,8 +71,9 @@ pub(super) fn matches_fixture(group: &InputGroup, models: [VirtualModel; 2]) -> 
 pub(super) fn require_valid_mapping(
     group: &InputGroup,
     wire: &mut VirtualWire,
+    first_index: u8,
 ) -> Result<MappingReview> {
-    let (fmmu, sync_manager, topology) = capture_registers(wire)?;
+    let (fmmu, sync_manager, topology) = capture_registers(wire, first_index)?;
     ensure!(
         topology.valid,
         "virtual group topology preflight failed before cyclic reads"
@@ -111,6 +112,7 @@ fn snapshot_hash(snapshot: &impl Serialize) -> Result<String> {
 
 fn capture_registers(
     wire: &mut VirtualWire,
+    mut index: u8,
 ) -> Result<(fmmu::Snapshot, sync_manager::Snapshot, topology::Check)> {
     let mut fmmu = fmmu::Snapshot {
         schema: 1,
@@ -120,7 +122,6 @@ fn capture_registers(
         schema: 1,
         devices: Vec::with_capacity(GROUP_STATIONS.len()),
     };
-    let mut index = 0u8;
     let before = topology::read(wire, &mut index, &GROUP_STATIONS)?;
     for station in GROUP_STATIONS {
         let (count, slots) = read_bank::<16>(
@@ -213,13 +214,13 @@ mod tests {
         ] {
             let mut wire = VirtualWire::for_group_replay();
             wire.apply_group_mapping_scenario(scenario);
-            let Err(error) = require_valid_mapping(&group, &mut wire) else {
+            let Err(error) = require_valid_mapping(&group, &mut wire, 0) else {
                 panic!("reordered chain passed the preflight");
             };
             assert!(error.to_string().contains("topology preflight failed"));
             assert!(wire.chain_audits().iter().all(|esc| esc.logical_reads == 0));
 
-            let (fmmu, sync_managers, topology) = capture_registers(&mut wire).unwrap();
+            let (fmmu, sync_managers, topology) = capture_registers(&mut wire, 0).unwrap();
             let mapping = review(&group, fmmu, sync_managers, topology).unwrap();
             assert!(mapping.fmmu.valid);
             assert!(mapping.sync_managers.unwrap().valid);
@@ -242,7 +243,7 @@ mod tests {
         let mut wire = VirtualWire::for_group_replay();
         wire.apply_group_mapping_scenario(GroupMappingScenario::LogicalShift);
 
-        let Err(error) = require_valid_mapping(&group, &mut wire) else {
+        let Err(error) = require_valid_mapping(&group, &mut wire, 0) else {
             panic!("shifted slot passed the preflight");
         };
         assert!(

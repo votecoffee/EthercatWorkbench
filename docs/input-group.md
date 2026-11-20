@@ -90,11 +90,11 @@ A cycle needs FRMW WKC 2, WKC 1 for each fixed-address read, a reference readbac
 .\ethercat-workbench-cli.exe verify-group-replay samples/input-group-dc.json .local/dc-frames.json .local/dc-replay.json .local/dc.csv
 ```
 
-The generator uses the same clock and mapping checks as `rehearse-group-dc`. It saves a schema 2 fixture for the two authored CoE/DC stations, with raw SYNC0 readback, the declared difference limit, and the FRMW and FPRD replies for each cycle. The fixture contains any matched grouped input reply. Replay checks the setup and raw clock frames, then reevaluates the gate in cycle order before opening the CSV. It rejects a fixture that attaches input bytes or an input timestamp to a cycle whose clocks fail.
+The generator uses the same clock and mapping checks as `rehearse-group-dc`. It saves a schema 3 fixture for the two authored CoE/DC stations, with a raw setup topology probe pair, raw SYNC0 readback, the declared difference limit, and the FRMW and FPRD replies for each cycle. The fixture contains any matched grouped input reply. Replay checks the setup and raw clock frames, then reevaluates the gate in cycle order before opening the CSV. It rejects a fixture that attaches input bytes or an input timestamp to a cycle whose clocks fail.
 
 Inspect `counts.clock_rejections` and each cycle's `clock.issues` in the replay receipt. An unanswered LRD after accepted clock checks counts under `unmatched_cycles`. When an LRD matches, its own input WKC and AL still determine whether it can reach the writer. In the example, the follower returns full WKC with a stale time in cycle two. Every-valid mode logs seven rows, with a 1,400 µs gap between the first two samples. The CSV keeps the original cycle indexes and consecutive sample indexes. `--on-change` writes cycles one and six for this example. Writer mode and rotation do not change the spacing statistics.
 
-The generator derives elapsed microseconds from the modeled cycle index and SYNC0 period. The raw clock differences and saved elapsed times describe an authored offline run. Use the same schema 2 fixture for `verify-group-replay` and `bundle-group-replay`. The audit rebuilds the clock decisions from the raw frames and checks the CSV rows, including when reopening a moved bundle. Ordinary schema 1 replay fixtures still work.
+The generator derives elapsed microseconds from the modeled cycle index and SYNC0 period. The raw clock differences and saved elapsed times describe an authored offline run. Use the same fixture for `verify-group-replay` and `bundle-group-replay`. The audit rebuilds the clock decisions from the raw frames and checks the CSV rows, including when reopening a moved bundle. Older input-only schema 1 and DC schema 2 replay fixtures still work.
 
 ## Generate a two-device replay
 
@@ -104,9 +104,17 @@ The generator derives elapsed microseconds from the modeled cycle index and SYNC
 .\ethercat-workbench-cli.exe verify-group-replay samples/input-group.json .local/virtual-group.json .local/virtual-group-replay.json .local/virtual-group.csv
 ```
 
-The generator uses the sample CoE and SII virtual identities in that order, each with eight TxPDO bytes and two RxPDO bytes. It verifies station order and register mappings on the same virtual wire before the first LRD. Each cyclic exchange then sends the planned LRD and per-station AL reads through both in-memory ESCs. The fixture saves 12 cycles over two modeled connection generations and wraps the datagram index from 255 to 0. Each device produces its own counter, bit and float values. The default `clean` scenario yields 12 valid cycles. `faults` yields seven valid cycles and exercises downstream PREOP, a nonzero AL code with full LRD WKC, a changed station address, a stale candidate, a late reply and a missing reply. Replay with `--on-change` yields three rows in either scenario.
+The generator uses the sample CoE and SII virtual identities in that order, each with eight TxPDO bytes and two RxPDO bytes. It verifies station order and register mappings on the same virtual wire before the first LRD of each modeled generation. Each cyclic exchange then sends the planned LRD and per-station AL reads through both in-memory ESCs. The fixture saves 12 cycles over two modeled connection generations and wraps the datagram index from 255 to 0. Each device produces its own counter, bit and float values. The default `clean` scenario yields 12 valid cycles. `faults` yields seven valid cycles and exercises downstream PREOP, a nonzero AL code with full LRD WKC, a changed station address, a stale candidate, a late reply and a missing reply. Replay with `--on-change` yields three rows in either scenario.
 
 Generated fixtures and replay receipts include `virtual_scenario`. The fixed UTC anchor and nominal 1,000 µs spacing are fixture data. They exercise the timing calculations. Host scheduling and physical frame spacing require a separately measured run. The generator uses memory only and requires a new output file.
+
+## Verify saved setup topology
+
+Both virtual generators save schema 3 fixtures. Each entry in `setup_topology` binds a connection generation to two raw replies, one before and one after its mapping reads. Replay requires one pair for every generation in the cycle stream, in the same order. It checks the raw datagram structure and increasing probe indexes, broadcast and per-position WKC, configured station addresses, and stability of observed addresses and aliases. Copies of one probe cannot serve as both observations.
+
+A missing or invalid pair stops replay before it creates the CSV. The receipt retains the rebuilt observations. Group audit requires agreement with the original fixture bytes and the rebuilt receipt, and reports `verified_topology_generations`. Portable bundle verification repeats this check using the copied fixture. The setup probes record evidence at those observations. The saved mapping snapshots and individual cyclic replies have their own checks.
+
+Schema 1 input-only and schema 2 DC fixtures remain usable with the previous rules. Setup topology evidence is unavailable for those fixtures, and their receipts and audits omit the new fields.
 
 ## Replay group cycles to CSV
 
@@ -115,7 +123,7 @@ Generated fixtures and replay receipts include `virtual_scenario`. The fixed UTC
 .\ethercat-workbench-cli.exe replay-input-group samples/input-group.json samples/input-group-replay.json --csv .local/group-changes.csv --on-change --rotate-rows 2
 ```
 
-The schema 1 replay fixture supplies a UTC capture-start anchor, a fixed ordered station list and up to 4,096 cycles. Each cycle records the connection generation, cycle index, expected datagram index and up to 64 received Ethernet candidates in order. A matching reply must be last. Supply its recorded `elapsed_us`, or null when no reply matches. Matched timestamps must be nondecreasing. The replay checks the complete fixture before it opens the CSV. To apply the saved configuration checks, pass the same optional `--fmmu`, `--sync-managers` and `--pdo` files used by the inspector.
+A replay fixture supplies a UTC capture-start anchor, a fixed ordered station list and up to 4,096 cycles. Each cycle records the connection generation, cycle index, expected datagram index and up to 64 received Ethernet candidates in order. A matching reply must be last. Supply its recorded `elapsed_us`, or null when no reply matches. Matched timestamps must be nondecreasing. The replay checks the complete fixture before it opens the CSV. To apply the saved configuration checks, pass the same optional `--fmmu`, `--sync-managers` and `--pdo` files used by the inspector.
 
 The replay uses the existing bounded CSV writer. Columns follow bus order and use the profile's selected fields, prefixed by position. Every-valid logging includes unchanged values. On-change logging records the first valid row of a generation and subsequent selected-field changes. Invalid cycles do not enter the writer or its change comparison. CSV rows keep the recorded UTC anchor and elapsed receive time, their sample index, the connection generation and the cycle index. Rotation uses numbered parts and preserves existing files.
 
