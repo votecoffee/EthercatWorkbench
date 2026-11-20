@@ -2,6 +2,7 @@
 use super::{
     super::{MAX_DATAGRAMS, decode_frame_hex},
     RegisterReview,
+    pdos::Exchange,
 };
 use crate::{
     virtual_esc::VirtualWire,
@@ -22,6 +23,8 @@ pub(crate) struct Recording {
     after_mapping: ProbeReply,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) mapping_replies: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::input_group) pdo_exchanges: Option<Vec<Exchange>>,
 }
 
 #[derive(Serialize)]
@@ -31,6 +34,8 @@ pub(in crate::input_group) struct GenerationCheck {
     pub(in crate::input_group) topology: Check,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(in crate::input_group) mapping: Option<RegisterReview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::input_group) pdo: Option<crate::input_group::pdo_readback::Review>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(in crate::input_group) configured_sync0:
         Option<Vec<crate::input_group::clock_rehearsal::Sync0>>,
@@ -50,6 +55,7 @@ impl Recording {
             connection_generation: self.connection_generation,
             topology,
             mapping: None,
+            pdo: None,
             configured_sync0: None,
         })
     }
@@ -138,6 +144,7 @@ impl Check {
             before_mapping: self.before_mapping.raw.clone(),
             after_mapping: self.after_mapping.raw.clone(),
             mapping_replies: Some(mapping_replies),
+            pdo_exchanges: None,
         }
     }
 }

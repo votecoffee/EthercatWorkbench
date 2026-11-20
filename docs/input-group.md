@@ -112,13 +112,30 @@ Use the readback report from the preceding example with a fixture that records i
 .\ethercat-workbench-cli.exe bundle-group-replay samples/input-group.json .local/group-frames.json .local/group-replay.json .local/group-input.csv --pdo .local/group-pdo-readback.json --out .local/group-bundle
 ```
 
-A standalone `--pdo` accepts a schema 1 PDO snapshot or the complete virtual readback report. It requires recorded FMMU and SyncManager replies for every generation, as in fixture schemas 4 through 6. Replay rebuilds each generation's register mapping, then checks the supplied PDO descriptors and their placement against it before opening CSV. A placement mismatch names the generation and station. The receipt shows the first generation's detailed PDO review under `plan.pdo` and reports the total number of verified generations in `verified_pdo_generations`.
+A standalone `--pdo` accepts a schema 1 PDO snapshot or the complete virtual readback report. It requires recorded FMMU and SyncManager replies for every generation, as in fixture schemas 4 through 7. Replay rebuilds each generation's register mapping, then checks the supplied PDO descriptors and their placement against it before opening CSV. A placement mismatch names the generation and station. The receipt shows the first generation's detailed PDO review under `plan.pdo` and reports the total number of verified generations in `verified_pdo_generations`.
 
 With a complete virtual readback report, Workbench first rebuilds the report's setup from its raw topology probes and register replies. It matches each saved PDO request in order, checks the reply and Working Counter, and decodes SII identity, CoE descriptors and SII PDO categories. The reconstructed layout must agree with the saved `pdo_snapshot` before it is compared with the replay fixture. A standalone descriptor snapshot goes directly to the placement comparison.
 
 Audit hashes the entire supplied file. For a complete report, it repeats reconstruction and includes `verified_pdo_exchanges`. The bundle copies the source file as `pdo.json`. Desktop **Review → Grouped capture → Verified source** shows the verified generation count and, for a complete report, the verified exchange count. The transcript checks apply to the recorded virtual transaction sequence.
 
 Use all three evidence arguments when supplying separate FMMU and SyncManager snapshots. Older fixtures that lack raw setup register replies need that form. A single-frame inspection always needs both register snapshots for a PDO comparison.
+
+## Capture PDO setup inside the replay fixture
+
+Use `--read-pdos` to write a schema 7 fixture with the raw CoE and SII PDO exchanges for each connection generation.
+
+```powershell
+.\ethercat-workbench-cli.exe generate-group-replay samples/input-group.json --read-pdos --out .local/group-with-pdos.json
+.\ethercat-workbench-cli.exe replay-input-group samples/input-group.json .local/group-with-pdos.json --csv .local/group-with-pdos.csv --out .local/group-with-pdos-replay.json
+.\ethercat-workbench-cli.exe verify-group-replay samples/input-group.json .local/group-with-pdos.json .local/group-with-pdos-replay.json .local/group-with-pdos.csv
+.\ethercat-workbench-cli.exe bundle-group-replay samples/input-group.json .local/group-with-pdos.json .local/group-with-pdos-replay.json .local/group-with-pdos.csv --out .local/group-with-pdos-bundle
+```
+
+The virtual generator reads TxPDO descriptors after topology and register checks and before the first cyclic LRD of each generation. The second generation starts with a fresh virtual wire. The generator checks the descriptors against the configured fields and refuses to export a fixture if placement disagrees.
+
+Replay rebuilds both TxPDO layouts from the raw transactions before creating CSV. The receipt includes each generation's layout and source hash under `setup_topology[].pdo`. The default two-station fixture verifies two generations and 278 exchanges across them. A missing or mismatched transcript identifies the failing generation before CSV creation. A separate `--pdo` file is optional and must agree with both recorded layouts if supplied.
+
+Bundling keeps the exchanges with the fixture and repeats verification after relocation. The exchange count and generation count are visible under **Review → Grouped capture → Verified source**. This option works with the two- and three-station input group samples and their clean, faulted and topology-change scenarios. The DC generator uses its own clock fixtures.
 
 ## Replay clock-qualified inputs
 
@@ -193,7 +210,7 @@ Generated fixtures and replay receipts include `virtual_scenario`. The fixed UTC
 
 ## Verify saved setup topology
 
-Fixtures in schema 4 through 6 include setup topology. Each entry in `setup_topology` binds a connection generation to two raw replies, one before and one after its mapping reads. Replay requires one pair for every generation in the cycle stream, in the same order. It checks the raw datagram structure and increasing probe indexes, broadcast and per-position WKC, configured station addresses, and stability of observed addresses and aliases. Copies of one probe cannot serve as both observations.
+Fixtures in schema 4 through 7 include setup topology. Each entry in `setup_topology` binds a connection generation to two raw replies, one before and one after its mapping reads. Replay requires one pair for every generation in the cycle stream, in the same order. It checks the raw datagram structure and increasing probe indexes, broadcast and per-position WKC, configured station addresses, and stability of observed addresses and aliases. Copies of one probe cannot serve as both observations.
 
 A missing or invalid pair stops replay before it creates the CSV. The receipt retains the rebuilt observations. Group audit requires agreement with the original fixture bytes and the rebuilt receipt, and reports `verified_topology_generations`. Portable bundle verification repeats this check using the copied fixture. The setup probes record evidence at those observations. The saved mapping snapshots and individual cyclic replies have their own checks.
 
@@ -201,7 +218,7 @@ Schema 3 fixtures keep the same topology checks. Schema 1 input-only and schema 
 
 ## Verify saved setup mapping
 
-In schema 4 through 6 fixtures, each `setup_topology` entry also contains `mapping_replies`. The list holds the FMMU and SyncManager register replies between that generation's two setup probes. Replay rebuilds the expected sequence from the station order and the reported channel counts. It checks each reply against its expected datagram index, station address, register offset, and width. It then checks WKC and the logical and physical mapping geometry before creating a CSV.
+In schema 4 through 7 fixtures, each `setup_topology` entry also contains `mapping_replies`. The list holds the FMMU and SyncManager register replies between that generation's two setup probes. Replay rebuilds the expected sequence from the station order and the reported channel counts. It checks each reply against its expected datagram index, station address, register offset, and width. It then checks WKC and the logical and physical mapping geometry before creating a CSV.
 
 The replay receipt retains the rebuilt mapping per generation and the audit reports `verified_mapping_generations`. A missing reply, changed mapping or invalid register WKC can stop replay while the recorded cyclic replies still look healthy. The verified portable bundle retains the original fixture bytes.
 

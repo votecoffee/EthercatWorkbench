@@ -1,5 +1,5 @@
 //! Read and verify the grouped station order and register layout before cyclic input.
-mod pdos;
+pub(super) mod pdos;
 pub(super) mod topology;
 use super::{
     InputGroup, Inspection, MappingReview, decode_frame_hex, fmmu, fmmu::Read, pdo_readback,
@@ -245,6 +245,63 @@ pub(super) fn verify_recorded_mapping(
         fmmu: mapping.fmmu,
         sync_managers: mapping.sync_managers.expect("setup SyncManager review"),
     })
+}
+
+pub(super) fn record_pdo_setup(
+    group: &InputGroup,
+    wire: &mut VirtualWire,
+    fixture: GroupFixture,
+    mapping: &MappingReview,
+    recording: &mut topology::Recording,
+) -> Result<()> {
+    let sync = mapping
+        .sync_managers
+        .as_ref()
+        .context("missing setup SyncManagers")?;
+    wire.prepare_group_pdo_readback();
+    let next_index = recording.probe_indexes()[1].wrapping_add(1);
+    let (snapshot, exchanges) = pdos::capture(wire, fixture, sync, next_index)?;
+    pdo_readback::review_snapshot(
+        snapshot,
+        snapshot_hash(&exchanges)?,
+        &group.bindings,
+        &mapping.fmmu,
+        sync,
+    )?
+    .require_valid()
+    .context("virtual TxPDO setup failed before cyclic reads")?;
+    recording.pdo_exchanges = Some(exchanges);
+    Ok(())
+}
+
+pub(super) fn verify_recorded_pdos(
+    group: &InputGroup,
+    recording: &topology::Recording,
+    mapping: &RegisterReview,
+    stop: Option<&AtomicBool>,
+) -> Result<pdo_readback::Review> {
+    let exchanges = recording
+        .pdo_exchanges
+        .as_deref()
+        .context("missing setup PDO exchanges")?;
+    let fixture = virtual_group(group)?;
+    let snapshot = pdos::rebuild(
+        exchanges,
+        fixture,
+        &mapping.sync_managers,
+        recording.probe_indexes()[1].wrapping_add(1),
+        stop,
+    )?;
+    let mut review = pdo_readback::review_snapshot(
+        snapshot,
+        snapshot_hash(&exchanges)?,
+        &group.bindings,
+        &mapping.fmmu,
+        &mapping.sync_managers,
+    )?;
+    review.require_valid()?;
+    review.verified_exchanges = Some(exchanges.len());
+    Ok(review)
 }
 
 fn review(

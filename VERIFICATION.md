@@ -744,3 +744,11 @@ The Windows release CLI rebuilt the two-station PDO snapshot from 139 saved exch
 Edits to the decoded snapshot, CoE descriptor payload or SII identity payload failed reconstruction. Changed request bytes, a bad WKC, a short reply, missing or trailing exchanges, and broken report topology or mapping also stopped replay before CSV creation. The 0.77.0 report-backed bundle verified with the new exchange count. The 0.76.0 descriptor-only bundle and 0.75.0 reconnect bundle still verified.
 
 Formatting, locked Clippy, 192 Rust tests, the locked Windows x64 MSVC build and the full Windows headless regression passed. The transcript checks use authored virtual frames. Live grouped mailbox readback and physical timing remain pending.
+
+## Version 0.79.0 embedded PDO setup verification (2026-11-20)
+
+The two-station schema 7 fixture records its CoE and SII PDO readback on each connection generation's virtual wire after topology and register verification. Replay rebuilt both layouts from 278 saved exchanges and audited 12 CSV rows. The relocated bundle verified directly from the embedded fixture. Headless desktop review showed two verified generations and the combined exchange count under Verified source.
+
+Missing second-generation exchanges, copies of the first setup or its transcript, an altered CoE descriptor and an older schema carrying embedded exchanges stopped replay before CSV creation. The generator withheld a fixture when a selected field did not match its observed PDO object. A separate PDO file with conflicting descriptor provenance also blocked replay. The three-station fixture retained its no-PDO middle station. The monitored replay held cyclic input after a station swap until a fresh setup passed. Older portable bundles from 0.78.0, 0.77.0 and 0.75.0 still verified.
+
+Formatting, locked Clippy, 192 Rust tests, the locked Windows x64 MSVC build and the full Windows headless regression passed. The saved evidence comes from modeled wire traffic. Physical grouped commissioning and 1 ms bench timing remain pending.

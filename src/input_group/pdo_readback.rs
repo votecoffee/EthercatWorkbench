@@ -74,6 +74,15 @@ struct Placement {
 }
 
 impl Review {
+    pub(super) fn matches_layout(&self, other: &Self) -> bool {
+        self.devices.len() == other.devices.len()
+            && self.devices.iter().zip(&other.devices).all(|(a, b)| {
+                a.station_address == b.station_address
+                    && a.identity == b.identity
+                    && a.readback == b.readback
+            })
+    }
+
     pub(super) fn require_valid(&self) -> Result<()> {
         for device in &self.devices {
             if let Some(issue) = device.issues.first().or_else(|| device.tx.errors.first()) {

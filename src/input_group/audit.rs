@@ -191,10 +191,18 @@ pub(super) fn verify_with_layout(
             .filter(|count| *count > 0),
         verified_pdo_generations: expected.verified_pdo_generations,
         verified_pdo_exchanges: expected
-            .plan
-            .pdo
-            .as_ref()
-            .and_then(|pdo| pdo.verified_exchanges),
+            .setup_topology
+            .iter()
+            .flatten()
+            .filter_map(|setup| setup.pdo.as_ref().and_then(|pdo| pdo.verified_exchanges))
+            .reduce(|total, count| total + count)
+            .or_else(|| {
+                expected
+                    .plan
+                    .pdo
+                    .as_ref()
+                    .and_then(|pdo| pdo.verified_exchanges)
+            }),
         verified_clock_setup_generations: expected
             .setup_topology
             .as_ref()

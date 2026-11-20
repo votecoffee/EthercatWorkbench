@@ -107,6 +107,9 @@ enum Command {
         manifest: PathBuf,
         #[arg(long, value_enum, default_value = "clean")]
         scenario: ethercat_workbench::input_group::replay::VirtualScenario,
+        /// Record CoE and SII TxPDO exchanges during each virtual setup.
+        #[arg(long)]
+        read_pdos: bool,
         /// Save the fixture to a new JSON file.
         #[arg(long)]
         out: PathBuf,
@@ -660,12 +663,13 @@ fn main() -> Result<()> {
         Command::GenerateGroupReplay {
             manifest,
             scenario,
+            read_pdos,
             out,
         } => {
             use ethercat_workbench::input_group::{InputGroup, replay};
             shared_outputs(Some(&out), None)?;
             let group = InputGroup::load(&manifest)?;
-            let fixture = replay::generate_virtual(&group, scenario)?;
+            let fixture = replay::generate_virtual(&group, scenario, read_pdos)?;
             inspection_export(&fixture, Some(&out))
         }
         Command::ReplayInputGroup {

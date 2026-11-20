@@ -32,6 +32,7 @@ const TOPOLOGY_FIXTURE_SCHEMA: u32 = 3;
 pub(super) const MAPPING_FIXTURE_SCHEMA: u32 = 4;
 pub(super) const MONITORED_FIXTURE_SCHEMA: u32 = 5;
 pub(super) const DC_RECONNECT_FIXTURE_SCHEMA: u32 = 6;
+pub(super) const PDO_FIXTURE_SCHEMA: u32 = 7;
 pub(super) const MODELED_UTC: &str = "2026-01-01T00:00:00.000000Z";
 
 pub struct Options<'a> {
@@ -218,15 +219,18 @@ pub(super) fn prepare_capture<'a>(
         dc_reconnect == (fixture.schema == DC_RECONNECT_FIXTURE_SCHEMA),
         "topology-reconnect requires a schema 6 DC replay fixture"
     );
-    let monitor_topology = fixture.schema == MONITORED_FIXTURE_SCHEMA || dc_reconnect;
+    let embedded_pdos = fixture.schema == PDO_FIXTURE_SCHEMA;
+    let topology_change = fixture.virtual_scenario == Some(VirtualScenario::TopologyChange);
+    let monitor_topology = fixture.schema == MONITORED_FIXTURE_SCHEMA
+        || (embedded_pdos && topology_change)
+        || dc_reconnect;
     let dc_monitored = fixture
         .virtual_dc
         .as_ref()
         .is_some_and(ClockRecording::monitors_topology);
-    let monitored_source =
-        dc_monitored || fixture.virtual_scenario == Some(VirtualScenario::TopologyChange);
+    let monitored_source = dc_monitored || topology_change;
     ensure!(
-        !monitored_source || fixture.schema == MONITORED_FIXTURE_SCHEMA,
+        !monitored_source || fixture.schema == MONITORED_FIXTURE_SCHEMA || embedded_pdos,
         "topology-change requires a monitored group replay fixture"
     );
     match (
@@ -235,6 +239,10 @@ pub(super) fn prepare_capture<'a>(
         fixture.virtual_scenario,
         &fixture.setup_topology,
     ) {
+        (PDO_FIXTURE_SCHEMA, None, Some(_), Some(_)) => {}
+        (PDO_FIXTURE_SCHEMA, None, Some(_), None) => {
+            bail!("schema 7 requires setup topology and PDO exchanges")
+        }
         (DC_RECONNECT_FIXTURE_SCHEMA, Some(_), None, Some(_)) => {}
         (DC_RECONNECT_FIXTURE_SCHEMA, Some(_), None, None) => {
             bail!("DC reconnect requires setup topology probes")
@@ -287,7 +295,7 @@ pub(super) fn prepare_capture<'a>(
                 probes,
                 &fixture.stations,
                 &fixture.cycles,
-                fixture.schema == MAPPING_FIXTURE_SCHEMA || monitor_topology,
+                fixture.schema,
                 stop,
             )
         })
@@ -375,6 +383,7 @@ pub(super) fn prepare_capture<'a>(
         !profile.tx.is_empty(),
         "select at least one TxPDO field for CSV"
     );
+    let setup_count = setup_topology.as_ref().map_or(0, Vec::len);
     Ok(PreparedReplay {
         virtual_scenario: fixture.virtual_scenario,
         virtual_dc: fixture.virtual_dc,
@@ -382,7 +391,7 @@ pub(super) fn prepare_capture<'a>(
         fixture_sha256: hex::encode(Sha256::digest(&bytes)),
         stations: fixture.stations,
         setup_topology,
-        verified_pdo_generations,
+        verified_pdo_generations: verified_pdo_generations.or(embedded_pdos.then_some(setup_count)),
         monitor_topology,
         plan,
         profile,
@@ -453,16 +462,26 @@ fn verify_setup(
     probes: &[Recording],
     stations: &[u16],
     cycles: &[RecordedCycle],
-    require_mapping: bool,
+    schema: u32,
     stop: Option<&AtomicBool>,
 ) -> Result<Vec<GenerationCheck>> {
+    let require_mapping = schema >= MAPPING_FIXTURE_SCHEMA;
+    let require_pdo = schema == PDO_FIXTURE_SCHEMA;
+    let setup_indexes = virtual_capture::SETUP_INDEXES;
+    ensure!(
+        !require_pdo || probes.len() == setup_indexes.len(),
+        "schema 7 requires both authored setup generations"
+    );
     ensure!(
         probes.len() <= cycles.len(),
         "too many setup topology records for the replay cycles"
     );
     let mut probes = probes.iter();
     let mut findings = Vec::new();
-    for sequence in cycles.chunk_by(|a, b| a.connection_generation == b.connection_generation) {
+    for (ordinal, sequence) in cycles
+        .chunk_by(|a, b| a.connection_generation == b.connection_generation)
+        .enumerate()
+    {
         check_cancel(stop)?;
         let generation = sequence[0].connection_generation;
         let recording = probes
@@ -472,6 +491,13 @@ fn verify_setup(
             recording.connection_generation == generation,
             "setup topology records do not match generation {generation}"
         );
+        if require_pdo {
+            ensure!(
+                generation == ordinal as u64 + 1
+                    && setup_indexes.get(ordinal) == Some(&recording.probe_indexes()[0]),
+                "schema 7 setup probe index does not match generation {generation}"
+            );
+        }
         let mut verified = recording
             .verify(stations)
             .with_context(|| format!("setup topology for generation {generation}"))?;
@@ -489,6 +515,21 @@ fn verify_setup(
             (false, Some(_)) => bail!("schema 3 cannot include mapping replies"),
             (false, None) => None,
         };
+        if require_pdo {
+            let mapping = verified
+                .mapping
+                .as_ref()
+                .context("missing register mapping for embedded PDO verification")?;
+            verified.pdo = Some(
+                preflight::verify_recorded_pdos(group, recording, mapping, stop)
+                    .with_context(|| format!("setup PDO readback for generation {generation}"))?,
+            );
+        } else {
+            ensure!(
+                recording.pdo_exchanges.is_none(),
+                "setup PDO exchanges require schema 7"
+            );
+        }
         findings.push(verified);
     }
     ensure!(probes.next().is_none(), "unmatched setup topology records");
@@ -518,9 +559,24 @@ fn review_pdo_against_setup(
                 generation.connection_generation
             )
         })?;
+        require_consistent_pdo(generation, Some(&review))?;
         first.get_or_insert(review);
     }
     first.context("standalone --pdo requires at least one verified setup generation")
+}
+
+fn require_consistent_pdo(
+    setup: &GenerationCheck,
+    supplied: Option<&pdo_readback::Review>,
+) -> Result<()> {
+    if let Some((recorded, supplied)) = setup.pdo.as_ref().zip(supplied) {
+        ensure!(
+            recorded.matches_layout(supplied),
+            "saved PDO layout differs from recorded PDO exchanges for generation {}",
+            setup.connection_generation
+        );
+    }
+    Ok(())
 }
 
 fn require_consistent_mapping(
@@ -537,6 +593,7 @@ fn require_consistent_mapping(
         .transpose()?;
     for generation in setup {
         check_cancel(stop)?;
+        require_consistent_pdo(generation, plan.pdo.as_ref())?;
         if let Some(mapping) = &generation.mapping {
             ensure!(
                 serde_json::to_value(&mapping.fmmu.devices)? == expected_fmmu,

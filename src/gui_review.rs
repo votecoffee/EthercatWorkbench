@@ -1568,7 +1568,7 @@ mod tests {
 
         fn archived_group(&self, scenario: GroupReviewFixture) -> PathBuf {
             use ethercat_workbench::input_group::{
-                InputGroup, audit::Evidence, bundle, clock_rehearsal, preflight, replay,
+                InputGroup, audit::Evidence, bundle, clock_rehearsal, replay,
             };
             let (sample, clock_case) = match scenario {
                 GroupReviewFixture::Inputs(_) | GroupReviewFixture::InputsWithPdo => {
@@ -1588,19 +1588,9 @@ mod tests {
                 GroupReviewFixture::InputsWithPdo => Some(VirtualScenario::Clean),
                 _ => None,
             };
-            let pdo = matches!(scenario, GroupReviewFixture::InputsWithPdo).then(|| {
-                let path = self.0.join("pdo-readback.json");
-                let report = preflight::inspect_virtual(
-                    &group,
-                    preflight::GroupMappingScenario::Clean,
-                    true,
-                )
-                .unwrap();
-                std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
-                path
-            });
+            let read_pdos = matches!(scenario, GroupReviewFixture::InputsWithPdo);
             let generated = if let Some(scenario) = input_scenario {
-                replay::generate_virtual(&group, scenario)
+                replay::generate_virtual(&group, scenario, read_pdos)
             } else {
                 clock_rehearsal::generate_replay(
                     &group,
@@ -1640,7 +1630,7 @@ mod tests {
                     rotate_rows: 2,
                     fmmu: None,
                     sync_managers: None,
-                    pdo: pdo.as_deref(),
+                    pdo: None,
                 },
             )
             .unwrap();
@@ -1657,7 +1647,7 @@ mod tests {
                     evidence: Evidence {
                         fmmu: None,
                         sync_managers: None,
-                        pdo: pdo.as_deref(),
+                        pdo: None,
                     },
                 },
                 &bundle,
@@ -1932,7 +1922,7 @@ mod tests {
     }
 
     #[test]
-    fn grouped_review_reports_pdo_checks_against_each_saved_setup() {
+    fn grouped_review_reports_embedded_pdo_checks_from_each_setup() {
         let scratch = GroupScratch::create();
         let bundle = scratch.archived_group(GroupReviewFixture::InputsWithPdo);
         let mut panel = Panel {
@@ -1957,7 +1947,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("Saved PDO transcript verified · 139 exchanges"),
+            text.contains("Saved PDO transcript verified · 278 exchanges"),
             "{text}"
         );
     }

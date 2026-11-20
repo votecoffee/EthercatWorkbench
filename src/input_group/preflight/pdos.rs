@@ -17,7 +17,7 @@ const MAX_ENTRIES: usize = 1024;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Exchange {
+pub(in crate::input_group) struct Exchange {
     request_hex: String,
     reply_hex: String,
 }
