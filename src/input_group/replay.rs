@@ -79,7 +79,7 @@ pub struct Report<'a> {
     source: &'static str,
     fixture_sha256: String,
     stations: Vec<u16>,
-    plan: Inspection<'a>,
+    pub(super) plan: Inspection<'a>,
     mode: LogMode,
     rotate_rows: u64,
     queue_capacity: usize,

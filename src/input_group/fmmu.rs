@@ -32,7 +32,7 @@ pub(crate) struct Read<T> {
 
 #[derive(Serialize)]
 pub(crate) struct Review {
-    source_sha256: String,
+    pub(super) source_sha256: String,
     layout_matches: bool,
     stations_match: Option<bool>,
     pub(super) valid: bool,

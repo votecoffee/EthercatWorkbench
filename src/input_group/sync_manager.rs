@@ -28,7 +28,7 @@ pub(crate) struct Station {
 
 #[derive(Serialize)]
 pub(super) struct Review {
-    source_sha256: String,
+    pub(super) source_sha256: String,
     pub(super) valid: bool,
     pub(super) devices: Vec<Device>,
 }

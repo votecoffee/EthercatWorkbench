@@ -1,5 +1,6 @@
 //! Offline planning and decoding for a byte-aligned, input-only logical read.
 pub mod audit;
+pub mod bundle;
 pub(crate) mod fmmu;
 mod pdo_readback;
 pub mod replay;
@@ -52,12 +53,14 @@ struct FrameSample {
 struct Binding {
     entry: Entry,
     profile: Profile,
+    profile_file: PathBuf,
     profile_sha256: String,
     offset: Option<usize>,
 }
 
 pub struct InputGroup {
     bindings: Vec<Binding>,
+    manifest_sha256: String,
     input_bytes: usize,
     expected_wkc: u16,
 }
@@ -153,9 +156,14 @@ struct FieldValue<'a> {
 
 impl InputGroup {
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_profiles(path, None)
+    }
+
+    fn load_profiles(path: &Path, bundled: Option<&[PathBuf]>) -> Result<Self> {
         let path = std::path::absolute(path).context("resolve input group path")?;
         let parent = path.parent().context("input group needs a file name")?;
-        let (manifest, _) = read_json::<Manifest>(&path, MAX_MANIFEST_BYTES)?;
+        let (manifest, bytes) = read_json::<Manifest>(&path, MAX_MANIFEST_BYTES)?;
+        let manifest_sha256 = hex::encode(Sha256::digest(&bytes));
         ensure!(
             manifest.schema == 1,
             "unsupported input group schema {}",
@@ -164,6 +172,10 @@ impl InputGroup {
         ensure!(
             (1..=MAX_DEVICES).contains(&manifest.devices.len()),
             "input group requires 1–{MAX_DEVICES} device positions"
+        );
+        ensure!(
+            bundled.is_none_or(|profiles| profiles.len() == manifest.devices.len()),
+            "bundled profile count differs from the manifest"
         );
         let mut bindings = Vec::with_capacity(manifest.devices.len());
         let mut input_bytes = 0;
@@ -184,9 +196,12 @@ impl InputGroup {
                             ))),
                 "position {position} needs an absolute or group-relative profile path"
             );
-            let (profile, bytes) =
-                read_json::<Profile>(&parent.join(&entry.profile), MAX_PROFILE_BYTES)
-                    .with_context(|| format!("load profile for position {position}"))?;
+            let profile_file = bundled.map_or_else(
+                || parent.join(&entry.profile),
+                |profiles| profiles[position].clone(),
+            );
+            let (profile, bytes) = read_json::<Profile>(&profile_file, MAX_PROFILE_BYTES)
+                .with_context(|| format!("load profile for position {position}"))?;
             profile
                 .validate()
                 .with_context(|| format!("validate profile for position {position}"))?;
@@ -205,6 +220,7 @@ impl InputGroup {
             bindings.push(Binding {
                 entry,
                 profile,
+                profile_file,
                 profile_sha256: hex::encode(Sha256::digest(&bytes)),
                 offset,
             });
@@ -215,6 +231,7 @@ impl InputGroup {
         );
         Ok(Self {
             bindings,
+            manifest_sha256,
             input_bytes,
             expected_wkc,
         })

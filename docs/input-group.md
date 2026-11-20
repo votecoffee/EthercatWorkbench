@@ -79,4 +79,15 @@ The audit rebuilds the recorded cycles, timing, and selection from the original 
 
 A completed capture must contain all selected rows and sets `complete` to true. When the receipt records a writer failure, the audit can verify the exact saved prefix. It sets `complete` to false and retains the capture error. It reads only the declared parts and preserves the input files. Saved evidence covers the supplied offline sequence and mapping.
 
+## Export and reopen group evidence
+
+```powershell
+.\ethercat-workbench-cli.exe bundle-group-replay samples/input-group.json samples/input-group-replay.json .local/group-replay.json .local/group.csv --out .local/group-bundle
+.\ethercat-workbench-cli.exe verify-group-bundle .local/group-bundle --out .local/bundle-audit.json
+```
+
+Supply the same optional FMMU, SyncManager and PDO files used for the original replay. Export audits the source first and copies its verified bytes into a new directory. It archives the manifest, frame fixture, replay receipt, profiles, mapping evidence and declared CSV parts. `bundle.json` records their lengths and SHA-256 hashes. It is written after the copied evidence has been flushed.
+
+Use `verify-group-bundle` with the folder at its new location. It loads the copied profiles by manifest position, checks the fixed inventory and reruns the group audit using the copies. The original manifest and receipt retain their path strings as saved evidence. Completed captures and verified prefixes of interrupted captures can be exported. Check `complete`, `verified_rows` and `expected_rows` in the receipt.
+
 Live SAFEOP sessions require exactly one isolated SubDevice. Live grouped acquisition remains on the [roadmap](../ROADMAP.md).

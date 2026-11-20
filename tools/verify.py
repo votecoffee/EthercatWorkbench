@@ -2323,6 +2323,145 @@ def verify_input_group_replay(cli, destination):
     assert audit(nan_base, nan_receipt, source=nan_fixture)["complete"]
 
 
+def verify_group_replay_bundle(cli, destination):
+    original = destination / "source files"
+    original.mkdir()
+    manifest = original / "manifest.json"
+    fixture = original / "fixture.json"
+    receipt = original / "replay.json"
+    csv_base = original / "log.csv"
+    sample = ROOT / "samples"
+    plan = json.loads((sample / "input-group.json").read_bytes())
+    original_profiles = []
+    for position, device in enumerate(plan["devices"]):
+        profile = original / f"profile {position}.json"
+        shutil.copyfile(sample / device["profile"], profile)
+        original_profiles.append(profile)
+        device["profile"] = str(profile.resolve()) if position == 0 else profile.name
+    manifest.write_text(json.dumps(plan), encoding="utf-8")
+    shutil.copyfile(sample / "input-group-replay.json", fixture)
+    evidence_names = ["fmmu", "sync-managers", "pdo"]
+    evidence = []
+    for name in evidence_names:
+        path = original / (name + ".json")
+        shutil.copyfile(sample / f"input-group-{name}.json", path)
+        evidence.extend([f"--{name}", path])
+    replay = cli_call(cli, "replay-input-group", manifest, fixture, "--csv", csv_base,
+                      "--rotate-rows", 2, "--out", receipt, *evidence)
+    expected_rows = replay["capture"]["written"]
+    assert expected_rows == 6
+
+    def bundle(out, saved=receipt, base=csv_base, options=evidence, success=True):
+        return cli_call(cli, "bundle-group-replay", manifest, fixture, saved, base, *options,
+                        "--out", out, success=success)
+
+    def verify(path, *args, success=True):
+        return cli_call(cli, "verify-group-bundle", path, *args, success=success)
+
+    folder = destination / "verified bundle"
+    checked = bundle(folder)
+    assert checked == json.loads((folder / "bundle.json").read_bytes())
+    assert checked["complete"] and checked["rotated"] and checked["verified_rows"] == expected_rows
+    expected_files = {
+        "manifest.json": manifest,
+        "fixture.json": fixture,
+        "replay.json": receipt,
+        **{f"profiles/{i:02}.json": file for i, file in enumerate(original_profiles)},
+        **{name + ".json": original / (name + ".json") for name in evidence_names},
+        **{f"csv/capture.{i:04}.csv": original / f"log.{i:04}.csv" for i in range(1, 4)},
+    }
+    assert {path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()} == (
+        set(expected_files) | {"bundle.json"}
+    )
+    sealed = [(checked[key], expected_files[name]) for key, name in [
+        ("manifest", "manifest.json"), ("fixture", "fixture.json"), ("replay", "replay.json"),
+        ("fmmu", "fmmu.json"), ("sync_managers", "sync-managers.json"), ("pdo", "pdo.json"),
+    ]]
+    sealed.extend(zip(checked["profiles"], original_profiles, strict=True))
+    sealed.extend(zip(checked["csv"], [expected_files[f"csv/capture.{i:04}.csv"] for i in range(1, 4)], strict=True))
+    for record, file in sealed:
+        data = file.read_bytes()
+        assert record == {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    for target, source in expected_files.items():
+        assert (folder / target).read_bytes() == source.read_bytes()
+    assert "already exists" in bundle(folder, success=False)
+    assert checked == json.loads((folder / "bundle.json").read_bytes())
+
+    rejected_output = destination / "must remain absent"
+    incorrect = original / "edited.json"
+    changed = json.loads(receipt.read_bytes())
+    changed["cycles"][2]["valid"] = True
+    incorrect.write_text(json.dumps(changed), encoding="utf-8")
+    assert "rebuilt cycles" in bundle(rejected_output, saved=incorrect, success=False)
+    assert not rejected_output.exists()
+
+    partial_base = original / "partial.csv"
+    collision = original / "partial.0002.csv"
+    collision.write_bytes(b"existing part stays here\n")
+    partial_receipt = original / "partial.json"
+    cli_call(cli, "replay-input-group", manifest, fixture, "--csv", partial_base,
+             "--rotate-rows", 2, "--out", partial_receipt, success=False)
+    partial_folder = destination / "partial bundle"
+    incomplete = bundle(partial_folder, saved=partial_receipt, base=partial_base, options=[])
+    assert not incomplete["complete"] and incomplete["verified_rows"] == 2 and incomplete["expected_rows"] == 6
+    assert len(incomplete["csv"]) == 1 and not (partial_folder / "csv/capture.0002.csv").exists()
+    assert not verify(partial_folder)["audit"]["complete"]
+    assert collision.read_bytes() == b"existing part stays here\n"
+
+    plain_csv = original / "on-change.csv"
+    plain_receipt = original / "on-change.json"
+    cli_call(cli, "replay-input-group", manifest, fixture, "--csv", plain_csv,
+             "--on-change", "--out", plain_receipt)
+    plain_folder = destination / "unrotated bundle"
+    plain = bundle(plain_folder, saved=plain_receipt, base=plain_csv, options=[])
+    assert plain["complete"] and not plain["rotated"] and plain["verified_rows"] == 3
+    assert (plain_folder / "csv/capture.csv").read_bytes() == plain_csv.read_bytes()
+    assert verify(plain_folder)["audit"]["verified_rows"] == 3
+
+    relocated = destination / "case relocated"
+    shutil.copytree(folder, relocated)
+    parked = destination / "source files parked"
+    assert original.resolve().parent == parked.resolve().parent == destination.resolve()
+    original.rename(parked)
+    assert not original.exists()
+    audit_file = destination / "relocated-audit.json"
+    result = verify(relocated, "--out", audit_file)
+    assert result == json.loads(audit_file.read_bytes())
+    assert result["receipt_sha256"] == hashlib.sha256((folder / "bundle.json").read_bytes()).hexdigest()
+    assert result["audit"]["complete"] and result["audit"]["verified_rows"] == 6
+    assert "exists" in verify(relocated, "--out", audit_file, success=False)
+    assert result == json.loads(audit_file.read_bytes())
+
+    tampered = destination / "changed bundle"
+    shutil.copytree(relocated, tampered)
+    edited_manifest = tampered / "manifest.json"
+    before = edited_manifest.read_bytes()
+    modified = before.replace(b'"devices": ', b'"devices":\t', 1)
+    assert modified != before and len(modified) == len(before)
+    edited_manifest.write_bytes(modified)
+    assert "SHA-256" in verify(tampered, success=False)
+    edited_manifest.write_bytes(before)
+    csv = tampered / "csv/capture.0001.csv"
+    raw = csv.read_bytes()
+    modified = raw.replace(b",42,true,", b",43,true,", 1)
+    assert modified != raw and len(modified) == len(raw)
+    csv.write_bytes(modified)
+    assert "differs from recorded input" in verify(tampered, success=False)
+    csv.write_bytes(raw)
+    verified_receipt = tampered / "bundle.json"
+    forged = json.loads(verified_receipt.read_bytes())
+    forged["csv"].pop()
+    verified_receipt.write_text(json.dumps(forged), encoding="utf-8")
+    assert "layout differs from bundle inventory" in verify(tampered, success=False)
+    shutil.copyfile(relocated / "bundle.json", verified_receipt)
+    missing = tampered / "csv/capture.0002.csv"
+    missing.rename(missing.with_suffix(".unused"))
+    assert "capture.0002.csv" in verify(tampered, success=False)
+    incomplete_dir = destination / "interrupted export"
+    incomplete_dir.mkdir()
+    assert "bundle.json" in verify(incomplete_dir, success=False)
+
+
 def verify_pcap(cli, destination):
     """Authored PCAP records: no capture hardware or packet transmission."""
     fixture = json.loads((ROOT / "samples/synthetic-replay.json").read_text(encoding="utf-8"))
@@ -2996,6 +3135,9 @@ def main():
     replay_group_destination = destination / "input-group-replay"
     replay_group_destination.mkdir()
     verify_input_group_replay(cli, replay_group_destination)
+    group_bundle_destination = destination / "input-group-bundle"
+    group_bundle_destination.mkdir()
+    verify_group_replay_bundle(cli, group_bundle_destination)
     for scheduler, flags, generation in [
         ("deadline", ["--simulate-faults"], 3),
         ("relative", ["--on-change"], 4),

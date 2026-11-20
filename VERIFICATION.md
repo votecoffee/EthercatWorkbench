@@ -596,3 +596,11 @@ The on-change audit accepted two distinct NaN bit patterns rendered as identical
 The audit reconstructs the supplied offline evidence. Native GUI interaction, live grouped acquisition and physical bench timing remain pending.
 
 The first full regression reached 430 rows during a two-second synthetic capture, below the existing 500-row rotation collision. The regression fixture now uses the authored replay and a two-row rotation so it exercises the same second-part create-new failure without requiring 500 cycles in a short host interval.
+
+## Version 0.57.0 portable group replay evidence (2026-11-20)
+
+The release CLI copied the exact manifest, profiles, raw frame fixture, saved receipt, FMMU, SyncManager and PDO evidence, and three rotated CSV parts. A relocated bundle verified all six rows after the original source directory had been moved aside. One source profile had been referenced by an absolute path and the other by a relative path. Both originals were preserved as metadata and the audit reopened the position-bound copies.
+
+Focused tests checked independent SHA-256 values, a complete unrotated three-row capture, and a partial two-row prefix that preserved an unrelated conflicting part. They also checked existing destinations, altered CSV values, changed manifest bytes with the same length, inconsistent layout metadata, missing parts and an interrupted export. Formatting, Clippy, 181 offline Rust tests and the Windows x64 MSVC release build passed.
+
+The bundle contains saved offline evidence. Live grouped acquisition and physical timing qualification remain pending.

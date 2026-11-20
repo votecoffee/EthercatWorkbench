@@ -255,7 +255,7 @@ fn verify_layout(
     Ok(())
 }
 
-fn require_entry(path: &Path, directory: bool) -> Result<()> {
+pub(crate) fn require_entry(path: &Path, directory: bool) -> Result<()> {
     let metadata =
         fs::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))?;
     let kind = metadata.file_type();
@@ -442,7 +442,7 @@ fn path_text(path: &Path) -> Result<String> {
         .to_owned())
 }
 
-fn copy_checked(
+pub(crate) fn copy_checked(
     source: &Path,
     dest: &Path,
     bytes: u64,
@@ -483,13 +483,13 @@ fn copy_checked(
     output.sync_all().context("flush copied source")
 }
 
-fn json_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
+pub(crate) fn json_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec_pretty(value)?;
     bytes.push(b'\n');
     Ok(bytes)
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file =
         File::create_new(path).with_context(|| format!("create new {}", path.display()))?;
     file.write_all(bytes)?;

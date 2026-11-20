@@ -37,7 +37,7 @@ struct TxLayout {
 
 #[derive(Serialize)]
 pub(super) struct Review {
-    source_sha256: String,
+    pub(super) source_sha256: String,
     pub(super) valid: bool,
     devices: Vec<Device>,
 }

@@ -117,6 +117,27 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Export verified group replay evidence to a new portable directory.
+    BundleGroupReplay {
+        manifest: PathBuf,
+        fixture: PathBuf,
+        receipt: PathBuf,
+        csv: PathBuf,
+        #[arg(long)]
+        fmmu: Option<PathBuf>,
+        #[arg(long, requires = "fmmu")]
+        sync_managers: Option<PathBuf>,
+        #[arg(long, requires_all = ["fmmu", "sync_managers"])]
+        pdo: Option<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Reopen a portable group replay bundle and rerun the CSV audit.
+    VerifyGroupBundle {
+        directory: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Read one existing Windows shared-memory input snapshot. Never opens an EtherCAT NIC.
     ReadShared {
         name: String,
@@ -524,6 +545,34 @@ fn main() -> Result<()> {
                 },
             )?;
             inspection_export(&checked, out.as_deref())
+        }
+        Command::BundleGroupReplay {
+            manifest,
+            fixture,
+            receipt,
+            csv,
+            fmmu,
+            sync_managers,
+            pdo,
+            out,
+        } => {
+            use ethercat_workbench::input_group::{audit::Evidence, bundle};
+            let sources = bundle::Sources {
+                manifest: &manifest,
+                fixture: &fixture,
+                replay: &receipt,
+                csv: &csv,
+                evidence: Evidence {
+                    fmmu: fmmu.as_deref(),
+                    sync_managers: sync_managers.as_deref(),
+                    pdo: pdo.as_deref(),
+                },
+            };
+            output(&bundle::create(sources, &out)?)
+        }
+        Command::VerifyGroupBundle { directory, out } => {
+            let result = ethercat_workbench::input_group::bundle::verify(&directory)?;
+            inspection_export(&result, out.as_deref())
         }
         Command::ReadShared {
             name,

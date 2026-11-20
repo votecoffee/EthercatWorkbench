@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 const MAX_RECEIPT_BYTES: u64 = 64 * 1024 * 1024;
 
+#[derive(Clone, Copy)]
 pub struct Evidence<'a> {
     pub fmmu: Option<&'a Path>,
     pub sync_managers: Option<&'a Path>,
@@ -37,15 +38,19 @@ pub struct Audit {
     schema: u32,
     source: &'static str,
     receipt: PathBuf,
-    receipt_sha256: String,
-    fixture_sha256: String,
+    pub(super) receipt_sha256: String,
+    pub(super) fixture_sha256: String,
     csv_base: PathBuf,
     mode: LogMode,
-    expected_rows: u64,
-    verified_rows: u64,
-    complete: bool,
+    pub(super) expected_rows: u64,
+    pub(super) verified_rows: u64,
+    pub(super) complete: bool,
     capture_error: Option<String>,
-    parts: Vec<Part>,
+    pub(super) parts: Vec<Part>,
+    #[serde(skip)]
+    pub(super) rotated: bool,
+    #[serde(skip)]
+    pub(super) evidence_hashes: [Option<String>; 3],
 }
 
 pub fn verify(
@@ -54,6 +59,17 @@ pub fn verify(
     receipt: &Path,
     csv: &Path,
     evidence: Evidence<'_>,
+) -> Result<Audit> {
+    verify_with_layout(group, fixture, receipt, csv, evidence, None)
+}
+
+pub(super) fn verify_with_layout(
+    group: &InputGroup,
+    fixture: &Path,
+    receipt: &Path,
+    csv: &Path,
+    evidence: Evidence<'_>,
+    layout: Option<(u64, bool)>,
 ) -> Result<Audit> {
     ensure!(
         csv.extension()
@@ -64,6 +80,12 @@ pub fn verify(
     ensure!(
         saved.schema == 1 && saved.source == "offline_group_replay",
         "expected a schema 1 group replay receipt"
+    );
+    ensure!(
+        layout
+            .is_none_or(|(parts, rotated)| (parts, rotated)
+                == (saved.capture.parts, saved.rotate_rows != 0)),
+        "saved replay CSV layout differs from bundle inventory"
     );
     let prepared = prepare_capture(
         group,
@@ -112,6 +134,15 @@ pub fn verify(
 
     let parts = verify_parts(csv, &prepared, &indexes, cap)?;
     let expected = prepared.into_report(saved.capture.clone(), saved.error.clone());
+    let evidence_hashes = [
+        expected.plan.fmmu.as_ref().map(|r| r.source_sha256.clone()),
+        expected
+            .plan
+            .sync_managers
+            .as_ref()
+            .map(|r| r.source_sha256.clone()),
+        expected.plan.pdo.as_ref().map(|r| r.source_sha256.clone()),
+    ];
     let recorded: serde_json::Value =
         serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))?;
     ensure!(
@@ -131,6 +162,8 @@ pub fn verify(
         complete,
         capture_error: saved.error,
         parts,
+        rotated: rotate != 0,
+        evidence_hashes,
     })
 }
 
