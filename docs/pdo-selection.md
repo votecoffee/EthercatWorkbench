@@ -30,6 +30,19 @@ The CLI shows the inventory under `source.modular` in `esi-list` and `esi.modula
 
 The profile's image lengths and fields come from the device-level PDOs. The sample's modular revision therefore produces only the one-byte base status input, even though it declares additional module data. An installed module list, resolved index offsets, and the composed PDO mapping require separate evidence. Source references and module-list download hints are descriptive. [Beckhoff's module and slot overview](https://infosys.beckhoff.com/content/1033/ep8601-0022/17946536971.html)
 
+## Preview PDO indexes for fixed module slots
+
+Use `preview-modular-pdos` with the original ESI and an exact device identity or list index. Supply both selectors to guard the index. Supply one explicitly chosen module identity per slot. Slot numbers are zero-based in declaration order, so the first slot is 0. The same module identity can occupy multiple slots if each slot allows it.
+
+```powershell
+.\ethercat-workbench-cli.exe esi-list samples/fixed-slot-pdos.esi.xml
+.\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --identity '0x00FF1000/11/1' --slot '0=0x400' --slot '1=0x400' --out .local/module-pdo-preview.json
+```
+
+The JSON records the exact ESI identity and SHA-256, manual slot choices, and each candidate's declared SyncManager hint. Each mapping index, excluded mapping index, and entry object index shows its declared and resolved values. At a flagged index, the preview adds the slot number multiplied by the relevant increment. A per-slot value takes precedence over the device-wide value. PDO mappings and exclusions use `SlotPdoIncrement`. Entry objects use `SlotIndexIncrement`. Unflagged indexes, widths, subindexes, and padding are preserved. In the sample, the second slot resolves TxPDO `0x1A00` to `0x1A10` and its status object `0x6041` to `0x6841`. [HPMicro CiA 402 example](https://kb.hpmicro.com/2026/06/04/ethercat%E4%BB%A5cia402%E4%BE%8B%E7%A8%8B%E4%BB%8B%E7%BB%8Dmdp%E8%AE%BE%E5%A4%87%E7%9A%84od%E5%A4%84%E7%90%86/)
+
+This preview covers ungrouped slots that each declare exactly one instance. It needs one local module definition per chosen identity and checks each choice against that slot's declarations. Duplicate resolved mapping indexes among the chosen modules, out-of-range results, and unsupported slot group or oversampling dependencies stop the preview. A `device_level_index_match` marks an index also present in the device-level catalog for separate review. The preview describes candidates. A composed process image still requires confirmed PDO assignments, SyncManager placement, and offsets. Existing profiles use their device-level PDO layouts.
+
 ## Catalog choices
 
 The [pinned ESI base schema](https://github.com/synapticon/siitool/blob/c46570adb1228eada44ae1f38bd61a81fab99c98/examples/ModulesSlots_DS402_Simple/EtherCATBase.xsd) distinguishes fixed entry mapping from mandatory assignment and describes the default `Sm` and exclusion list. Workbench preserves fixed entries while allowing assignment choices. Mandatory PDOs must be selected. Exclusions are conservatively checked across all chosen PDOs. Duplicate indexes in a direction, duplicate choices, unknown candidates, out-of-range SyncManagers and sharing one SyncManager between Tx and Rx are rejected.
@@ -40,7 +53,7 @@ An attached selection is validated when saving or running the profile. Profile i
 
 Readback verification compares the entire selected SyncManager/PDO order and mapping descriptors, in addition to named fields and byte lengths. A known mismatch stops the setup before SAFEOP and requests INIT cleanup. Missing readback stays explicitly unavailable. A saved expected layout is not evidence of current hardware configuration. The runtime configures ESC buffers from discovered device mapping and never downloads the offline selection.
 
-Virtual PDOs and slot/module-dependent indexes are not materialized. Other attributes and extensions are retained as notes when supported by the importer; datatype annotations are not automatically applied as scaling or swaps. The decoder's explicit transforms are separate settings. This subset does not expand modules, execute mode-specific mapping commands or prove full ESI XSD validity. Catalog limits are 512 candidates and 8,192 entries; selected images retain the 1,024-byte/128-field limits, and selected mapping descriptor widths are 1–255 bits. Vendor ESI files and bench reports belong in ignored `.local/`.
+The profile catalog builds assignments from direct device PDOs. Use the fixed-slot preview above to resolve module candidate indexes. The importer keeps other supported attributes and extensions as notes. Scaling and swaps use explicit decoder settings. This subset does not expand modules, execute mode-specific mapping commands or prove full ESI XSD validity. Catalog limits are 512 candidates and 8,192 entries; selected images retain the 1,024-byte/128-field limits, and selected mapping descriptor widths are 1–255 bits. Vendor ESI files and bench reports belong in ignored `.local/`.
 
 `samples/pdo-choices.esi.xml` is authored for the CoE virtual device. Its default mapping matches that model. The alternative is also eight bytes long and demonstrates why lengths alone do not validate a mapping. Public authored ESI fixtures use LF checkout rules so their linked sample-profile hashes remain stable.
 

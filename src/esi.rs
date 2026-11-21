@@ -5,6 +5,9 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub mod modular;
+pub mod modular_preview;
+
+const MAX_ESI_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct Device {
@@ -42,16 +45,23 @@ impl Device {
 }
 
 pub fn load(path: &Path) -> Result<Vec<Device>> {
-    ensure!(
-        std::fs::metadata(path)?.len() <= 16 * 1024 * 1024,
-        "ESI exceeds 16 MiB"
-    );
-    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let (file, bytes) = read_file(path)?;
+    parse(&file, &bytes)
+}
+
+fn read_file(path: &Path) -> Result<(String, Vec<u8>)> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .with_context(|| format!("open {}", path.display()))?
+        .take(MAX_ESI_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read {}", path.display()))?;
     let file = path
         .file_name()
         .context("ESI path has no file name")?
         .to_string_lossy();
-    parse(&file, &bytes)
+    Ok((file.into_owned(), bytes))
 }
 
 /// Parse an exact unsigned vendor/product/revision selector. Zero is a literal value.
@@ -103,7 +113,15 @@ pub fn select_device<'a>(
 }
 
 pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
-    ensure!(bytes.len() <= 16 * 1024 * 1024, "ESI exceeds 16 MiB");
+    with_description(file, bytes, |_, devices| Ok(devices))
+}
+
+fn with_description<T>(
+    file: &str,
+    bytes: &[u8],
+    visit: impl FnOnce(Node<'_, '_>, Vec<Device>) -> Result<T>,
+) -> Result<T> {
+    ensure!(bytes.len() <= MAX_ESI_BYTES, "ESI exceeds 16 MiB");
     let text = xml_text(bytes)?;
     let doc = Document::parse(&text).context("parse ESI XML (DTD disabled)")?;
     let root = doc.root_element();
@@ -188,7 +206,7 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
         })
         .collect::<Result<Vec<_>>>()?;
     ensure!(!result.is_empty(), "ESI has no devices");
-    Ok(result)
+    visit(descriptions, result)
 }
 
 fn xml_text(bytes: &[u8]) -> Result<String> {

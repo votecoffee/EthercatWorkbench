@@ -193,10 +193,7 @@ pub(super) fn parse(
     }
     if let Some(modules) = unique_child(descriptions, "Modules")? {
         for node in modules.children().filter(|n| named(*n, "Module")) {
-            let Some(ty) = child(node, "Type") else {
-                continue;
-            };
-            let Some(ident) = ty.attribute("ModuleIdent").and_then(|id| number(id).ok()) else {
+            let Some((ident, ty)) = module_type(node) else {
                 continue;
             };
             let class = ty.attribute("ModuleClass").map(str::trim);
@@ -264,6 +261,19 @@ fn parse_slot(node: Node<'_, '_>, additional: &mut BTreeSet<String>) -> Result<S
     })
 }
 
+pub(super) fn module_type<'a, 'input>(node: Node<'a, 'input>) -> Option<(u32, Node<'a, 'input>)> {
+    let ty = child(node, "Type")?;
+    let ident = number(ty.attribute("ModuleIdent")?).ok()?;
+    Some((ident, ty))
+}
+
+pub(super) fn pdo_nodes<'a, 'input>(
+    node: Node<'a, 'input>,
+) -> impl Iterator<Item = Node<'a, 'input>> {
+    node.children()
+        .filter(|node| named(*node, "TxPdo") || named(*node, "RxPdo"))
+}
+
 fn parse_module(
     node: Node<'_, '_>,
     ty: Node<'_, '_>,
@@ -271,10 +281,7 @@ fn parse_module(
     class: Option<&str>,
 ) -> Result<Module> {
     let mut pdo_templates = Vec::new();
-    for pdo in node
-        .children()
-        .filter(|n| named(*n, "TxPdo") || named(*n, "RxPdo"))
-    {
+    for pdo in pdo_nodes(node) {
         ensure!(
             pdo_templates.len() < MAX_DECLARATIONS,
             "ESI module exceeds 512 PDO templates"

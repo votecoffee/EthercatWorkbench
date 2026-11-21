@@ -686,6 +686,94 @@ def verify_esi_modular(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_fixed_slot_pdos(cli, destination, sample=None):
+    """Resolve mapping and entry indexes independently against explicit fixed-slot choices."""
+    sample = ROOT / "samples/fixed-slot-pdos.esi.xml" if sample is None else sample
+    original = sample.read_bytes()
+    selector = ["--identity", "0x00FF1000/11/1"]
+    placements = ["--slot", "0=0x400", "--slot", "1=#x400"]
+    out = destination / "preview.json"
+    review = cli_call(cli, "preview-modular-pdos", sample, *selector, *placements, "--out", out)
+    assert json.loads(out.read_bytes()) == review
+    assert review["schema"] == 1 and review["scope"] == "offline_esi_module_pdo_candidates"
+    assert review["esi_sha256"] == hashlib.sha256(original).hexdigest()
+    assert review == cli_call(cli, "preview-modular-pdos", sample, "--device", 0, *selector,
+                              "--slot", "1=1024", "--slot", "0=1024")
+    first, second = review["slots"]
+    assert [slot["slot"] for slot in (first, second)] == [0, 1]
+    assert all(slot["module_ident"] == 0x400 for slot in (first, second))
+    assert second["slot_pdo_increment"] == 16 and second["slot_index_increment"] == 0x800
+    rx0, tx0 = first["pdos"]
+    rx1, tx1 = second["pdos"]
+    assert rx0["mapping"] == {"declared": 0x1600, "resolved": 0x1600}
+    assert rx1["mapping"] == {"declared": 0x1600, "resolved": 0x1610}
+    assert tx1["mapping"] == {"declared": 0x1A00, "resolved": 0x1A10}
+    assert tx1["excludes"] == [{"declared": 0x1A05, "resolved": 0x1A15}]
+    assert rx1["direction"] == "rx" and rx1["declared_sm"] == 2
+    assert tx1["direction"] == "tx" and tx1["declared_sm"] == 3
+    assert tx0["device_level_index_match"] and not tx1["device_level_index_match"]
+    assert rx1["entries"][0]["object"] == {"declared": 0x6040, "resolved": 0x6840}
+    assert tx1["entries"] == [
+        {"object": {"declared": 0x6041, "resolved": 0x6841}, "subindex": 0, "width": 16, "name": "Status word"},
+        {"object": {"declared": 0x2100, "resolved": 0x2100}, "subindex": 2, "width": 1, "name": "Shared state"},
+        {"object": {"declared": 0, "resolved": 0}, "subindex": 0, "width": 7, "name": None},
+    ]
+    blank = cli_call(cli, "preview-modular-pdos", sample, *selector,
+                     "--slot", "0=0x400", "--slot", "1=0x401")
+    assert blank["slots"][1]["pdos"] == []
+    profile = destination / "base.json"
+    cli_call(cli, "esi-import", sample, *selector, "--out", profile)
+    base = cli_call(cli, "review-pdos", profile)
+    assert base["tx_bytes"] == 1 and base["rx_bytes"] == 0
+    assert base["selection"] == {"tx": [{"index": 0x1A00, "sm": 3}], "rx": []}
+
+    def altered(name, old, new):
+        assert original.count(old) == 1
+        path = destination / (name + ".esi.xml")
+        path.write_bytes(original.replace(old, new))
+        return path
+
+    override = altered(
+        "slot-override",
+        b'<Slot MinInstances="1" MaxInstances="1">\n            <Name>Second axis',
+        b'<Slot MinInstances="1" MaxInstances="1" SlotPdoIncrement="#x20" SlotIndexIncrement="#x1000">\n'
+        b'            <Name>Second axis',
+    )
+    changed = cli_call(cli, "preview-modular-pdos", override, *selector, *placements)
+    tx = changed["slots"][1]["pdos"][1]
+    assert tx["mapping"]["resolved"] == 0x1A20 and tx["entries"][0]["object"]["resolved"] == 0x7041
+
+    def rejected(name, file, args, message):
+        target = destination / (name + ".json")
+        result = cli_call(cli, "preview-modular-pdos", file, *selector, *args, "--out", target, success=False)
+        assert message in result, result
+        assert not target.exists()
+
+    rejected("missing-slot", sample, ["--slot", "0=0x400"], "every slot")
+    rejected("duplicate-slot", sample, ["--slot", "0=0x400", "--slot", "0=0x400"], "duplicate placement")
+    rejected("wrong-module", sample, ["--slot", "0=0x401", "--slot", "1=0x400"], "not allowed")
+    rejected("unknown-module", sample, ["--slot", "0=0x999", "--slot", "1=0x400"], "no local module")
+    rejected("out-of-range-slot", sample, ["--slot", "0=0x400", "--slot", "2=0x400"], "out of range")
+    rejected("grouped", altered("grouped", b"<Slots SlotPdoIncrement", b'<Slots SlotGroupPdoIncrement="1" SlotPdoIncrement'),
+             placements, "requires ungrouped slots")
+    rejected("missing-increment", altered("missing-increment", b' SlotIndexIncrement="#x800"', b""),
+             placements, "missing SlotIndexIncrement")
+    rejected("collision", altered("collision", b'SlotPdoIncrement="#x10"', b'SlotPdoIncrement="0"'),
+             placements, "used more than once")
+    rejected("mapping-range", altered("mapping-range", b'SlotPdoIncrement="#x10"', b'SlotPdoIncrement="#x200"'),
+             placements, "outside the Rx mapping range")
+    rejected("overflow", altered("overflow", b'SlotIndexIncrement="#x800"', b'SlotIndexIncrement="#xFFFF"'),
+             placements, "exceeds 16 bits")
+    rejected("group-index", altered("group-index", b'<Index DependOnSlot="1">#x6041', b'<Index DependOnSlotGroup="1">#x6041'),
+             placements, "slot-group-dependent indexes")
+    rejected("oversampling", altered("oversampling", b'<RxPdo Sm="2">', b'<RxPdo Sm="2" OSFac="2">'),
+             placements, "oversampled PDO templates")
+    before = out.read_bytes()
+    error = cli_call(cli, "preview-modular-pdos", sample, *selector, *placements, "--out", out, success=False)
+    assert "existing paths are preserved" in error and out.read_bytes() == before
+    assert sample.read_bytes() == original
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -5255,6 +5343,9 @@ def main():
     modular_destination = destination / "esi-modular"
     modular_destination.mkdir()
     verify_esi_modular(cli, modular_destination)
+    slots_destination = destination / "esi-fixed-slots"
+    slots_destination.mkdir()
+    verify_fixed_slot_pdos(cli, slots_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

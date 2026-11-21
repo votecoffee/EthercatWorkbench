@@ -250,6 +250,22 @@ enum Command {
         #[arg(long)]
         rx_pdo: Vec<String>,
     },
+    /// Resolve module PDO candidate indexes for explicit placements in fixed ESI slots.
+    #[command(group(clap::ArgGroup::new("module_device").required(true).multiple(true).args(["device", "identity"])))]
+    PreviewModularPdos {
+        file: PathBuf,
+        /// Zero-based device entry in esi-list.
+        #[arg(long)]
+        device: Option<usize>,
+        /// Exact VENDOR/PRODUCT/REVISION, optionally guarding the device index.
+        #[arg(long, value_parser = esi::identity_selector)]
+        identity: Option<ethercat_workbench::model::Identity>,
+        /// Supply one zero-based SLOT=MODULE_IDENT for each fixed slot.
+        #[arg(long, required = true, value_parser = esi::modular_preview::placement)]
+        slot: Vec<esi::modular_preview::Placement>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Build a new offline profile from a retained ESI catalog. Sends no bus writes.
     SelectPdos {
         profile: PathBuf,
@@ -910,6 +926,16 @@ fn main() -> Result<()> {
             profile.sync_unit_cycle_ns = sync_unit_cycle_ns;
             profile.save(&out)?;
             output(&selected.notes)
+        }
+        Command::PreviewModularPdos {
+            file,
+            device,
+            identity,
+            slot,
+            out,
+        } => {
+            let report = esi::modular_preview::preview(&file, device, identity.as_ref(), &slot)?;
+            inspection_export(&report, out.as_deref())
         }
         Command::SelectPdos {
             profile,
