@@ -71,6 +71,7 @@ try {
         'samples/grouped-fixed-slot-pdos.esi.xml' = 'samples/grouped-fixed-slot-pdos.esi.xml'
         'samples/repeated-fixed-slot-pdos.esi.xml' = 'samples/repeated-fixed-slot-pdos.esi.xml'
         'samples/variable-slot-pdos.esi.xml' = 'samples/variable-slot-pdos.esi.xml'
+        'samples/mixed-slot-group-pdos.esi.xml' = 'samples/mixed-slot-group-pdos.esi.xml'
         'samples/fixed-slot-pdo-readback.json' = 'samples/fixed-slot-pdo-readback.json'
         'samples/fixed-slot-module-inventory.json' = 'samples/fixed-slot-module-inventory.json'
         'samples/pdo-choices.esi.xml' = 'samples/pdo-choices.esi.xml'

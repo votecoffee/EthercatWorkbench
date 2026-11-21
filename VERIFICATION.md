@@ -861,3 +861,13 @@ The layouts `0=0, 1=2` and `0=1, 1=1` both matched the same flat module list and
 The CLI rejected missing, malformed, duplicate and out-of-range count entries, a count outside a declaration's bounds, an expanded length different from the detected list, an empty materialized repeat instance and a layout exceeding `MaxSlotCount`. It also verified explicit omission of an optional singleton. The earlier fixed, optional, repeated and grouped fixture paths passed. The authored fixture passed XML well-formedness, the cached ESI 1.14 schema and the Workbench consumer.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Physical qualification remains pending.
+
+## Version 0.92.0 mixed slot and group offsets (2026-11-21)
+
+Read-only analysis of the installed Beckhoff AX8yxx ESI found a module with a slot-dependent PDO mapping and group-dependent entries, referenced at absolute slot positions 32 and 64 in two groups of the AX8206-0000-0041. The module's PDO increment is one and the device's group PDO increment is zero. This supports absolute slot numbering for the mapping alongside group numbering for the entries. [Beckhoff ESI distribution](https://download.beckhoff.com/download/configuration-files/io/ethercat/xml-device-description)
+
+In the authored fixture, the last module uses slot position 2 and group position 1. The PDO mapping resolves to `0x1A20`, its group-dependent exclusion to `0x1A35`, and its entry objects to `0x6841` and `0x2300`. Simulated PREOP readback matched the descriptors and reported the module at bit 24 in the TxPDO image. The simulator confirmed INIT after 50 CoE uploads with no mailbox counter errors, SDO downloads, OP requests or cyclic traffic.
+
+The offline profile reloaded and decoded both payloads. Changing one entry from group-relative to slot-relative broke its descriptor match and withheld the affected PDO's fields. The preview rejected a single index marked with both flags and reported missing increments for both offset types. Fixed, optional, repeated, grouped and variable-count slot fixtures still passed. The new fixture passed XML well-formedness, the cached ESI 1.14 schema and the Workbench consumer.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Physical qualification, a combined rule for both flags on a single index, and module PDO grouping and alignment remain pending.

@@ -76,7 +76,18 @@ Declare a `SlotGroup` on every fixed slot. The preview supports consecutive grou
 .\ethercat-workbench-cli.exe export-modular-profile samples/grouped-fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/grouped-modules.json --run-report .local/grouped-pdos.json --out .local/grouped-decoder.json
 ```
 
-The sample's two groups occupy three slot positions. The second position is vacant. The third position uses group position 1 and its per-slot overrides, resolving TxPDO `0x1A00` to `0x1A30` and entry object `0x6041` to `0x6841`. The exported profile uses bit offsets from the saved PDO readback. Mixed slot and group index dependencies, module PDO grouping and automatic alignment remain outside this preview.
+The sample's two groups occupy three slot positions. The second position is vacant. The third position uses group position 1 and its per-slot overrides, resolving TxPDO `0x1A00` to `0x1A30` and entry object `0x6041` to `0x6841`. The exported profile uses bit offsets from the saved PDO readback. Module PDO grouping and automatic alignment remain outside this preview.
+
+## Mix slot and group indexes in a PDO template
+
+Workbench resolves each mapping index, exclusion and PDO entry independently. `DependOnSlot` uses the absolute zero-based slot position after expansion. `DependOnSlotGroup` uses the zero-based group position. This supports forms such as a slot-dependent mapping with group-dependent entry objects. An individual index has one offset basis. Workbench rejects declarations with both flags enabled on that index. [ETG.2000, PDO index attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario mixed-slot-group-indexes --out .local/mixed-modules.json --pdo-report .local/mixed-pdos.json
+.\ethercat-workbench-cli.exe export-modular-profile samples/mixed-slot-group-pdos.esi.xml --device 0 --module-inventory .local/mixed-modules.json --run-report .local/mixed-pdos.json --out .local/mixed-decoder.json
+```
+
+In the fixture, the final module is at slot position 2 and group position 1. Its TxPDO resolves to `0x1A20`, its group-dependent exclusion resolves to `0x1A35`, and its group- and slot-dependent entry objects resolve to `0x6841` and `0x2300`. The saved offsets come from the simulated PDO readback.
 
 ## Compare module candidates with saved PDO readback
 

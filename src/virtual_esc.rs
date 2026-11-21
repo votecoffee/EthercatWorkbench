@@ -82,6 +82,7 @@ pub enum ModuleInventoryCase {
     GroupedFixedSlots,
     RepeatedFixedSlots,
     VariableSlotCounts,
+    MixedSlotGroupIndexes,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -429,6 +430,7 @@ impl VirtualWire {
             ModuleInventoryCase::GroupedFixedSlots => (13, 14_787),
             ModuleInventoryCase::RepeatedFixedSlots => (14, 14_788),
             ModuleInventoryCase::VariableSlotCounts => (15, 14_789),
+            ModuleInventoryCase::MixedSlotGroupIndexes => (16, 14_790),
             _ => (11, 14_785),
         };
         esc.eeprom[0x14..0x18].copy_from_slice(&product.to_le_bytes());
@@ -1562,13 +1564,23 @@ impl VirtualEsc {
                 (
                     _,
                     0,
-                    VacantMiddleSlot | GroupedFixedSlots | RepeatedFixedSlots | VariableSlotCounts,
+                    VacantMiddleSlot
+                    | GroupedFixedSlots
+                    | RepeatedFixedSlots
+                    | VariableSlotCounts
+                    | MixedSlotGroupIndexes,
                 ) => Some((3, 1)),
-                (_, 2, VacantMiddleSlot | GroupedFixedSlots) => Some((0, 4)),
+                (_, 2, VacantMiddleSlot | GroupedFixedSlots | MixedSlotGroupIndexes) => {
+                    Some((0, 4))
+                }
                 (
                     _,
                     3,
-                    VacantMiddleSlot | GroupedFixedSlots | RepeatedFixedSlots | VariableSlotCounts,
+                    VacantMiddleSlot
+                    | GroupedFixedSlots
+                    | RepeatedFixedSlots
+                    | VariableSlotCounts
+                    | MixedSlotGroupIndexes,
                 ) => Some((0x400, 4)),
                 (_, 0, _) => Some((2, 1)),
                 (DETECTED, 2, DetectedDiffers) => Some((0x401, 4)),
@@ -1668,7 +1680,8 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
     } else {
         0x6841_0010
     };
-    let vacant = case == ModuleInventoryCase::VacantMiddleSlot;
+    let mixed = case == ModuleInventoryCase::MixedSlotGroupIndexes;
+    let vacant = mixed || case == ModuleInventoryCase::VacantMiddleSlot;
     let grouped = case == ModuleInventoryCase::GroupedFixedSlots;
     let three_axes = matches!(
         case,
@@ -1685,10 +1698,12 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
         0x1c13 => (2, &[0x1a00, 0x1a10, 0x1a40]),
         0x1600 => (4, &[0x6040_0010]),
         0x1610 if !vacant && !grouped => (4, &[0x6840_0010]),
+        0x1620 if mixed => (4, &[0x6840_0010]),
         0x1620 if vacant || three_axes => (4, &[0x7040_0010]),
         0x1630 if grouped => (4, &[0x6840_0010]),
         0x1a00 => (4, &[0x6041_0010, 0x2100_0201, 7]),
         0x1a10 if !vacant && !grouped => (4, &[second_status_word, 0x2100_0201, 7]),
+        0x1a20 if mixed => (4, &[0x6841_0010, 0x2300_0201, 7]),
         0x1a20 if vacant || three_axes => (4, &[0x7041_0010, 0x2100_0201, 7]),
         0x1a30 if grouped => (4, &[0x6841_0010, 0x2100_0201, 7]),
         0x1a40 => (4, &[0x2200_0108]),
