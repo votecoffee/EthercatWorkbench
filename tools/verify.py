@@ -1459,6 +1459,97 @@ def verify_virtual_modular_pdos(cli, destination, sample=None, report=None):
     assert "pdo_report" not in cli_call(cli, "read-virtual-module-inventory")
 
 
+def verify_variable_slot_counts(cli, destination, sample=None):
+    """Bind an explicit declaration partition to a flat CoE inventory and saved layout."""
+    sample = ROOT / "samples/variable-slot-pdos.esi.xml" if sample is None else sample
+    identity = {"vendor": 0x00FF1000, "product": 15, "revision": 1}
+    selector = ("--identity", "0x00ff1000/15/1")
+    counts = ("--slot-count", "1=2", "--slot-count", "0=0")
+    expected_counts = [{"declaration_index": 0, "count": 0}, {"declaration_index": 1, "count": 2}]
+    manual = ("--slot", "0=0x400", "--slot", "1=0x400", "--slot", "2=0x400")
+    inventory = destination / "inventory.json"
+    pdos = destination / "pdos.json"
+    captured = cli_call(cli, "read-virtual-module-inventory", "--scenario", "variable-slot-counts",
+                        "--out", inventory, "--pdo-report", pdos)
+    assert captured["inventory"] == json.loads(inventory.read_bytes())
+    assert captured["inventory"]["identity"] == identity and captured["inventory"]["serial"] == 14789
+    assert all([entry["data_hex"] for entry in obj["uploads"]] ==
+               ["03", "00040000", "00040000", "00040000"] for obj in captured["inventory"]["objects"])
+    assert captured["pdo_report"] == json.loads(pdos.read_bytes())
+    assert captured["pdo_report"]["devices"] == [{"identity": identity, "serial": 14789}]
+    assert captured["preop_al"] == [2, 0] and captured["stopped_al"] == [1, 0]
+    audit = captured["audit"]
+    assert audit["coe_uploads"] == 66 and audit["mailbox_counter_errors"] == 0
+    assert audit["state_requests"] == [1, 2, 1]
+    assert not any(audit[key] for key in ("coe_downloads", "op_requests", "logical_reads",
+                                         "logical_writes", "physical_output_writes"))
+    evidence = ("--module-inventory", inventory, "--run-report", pdos)
+    review = cli_call(cli, "preview-modular-pdos", sample, *selector, *evidence, *counts)
+    assert review["slot_counts"] == expected_counts
+    assert review["module_inventory"]["detected"]["state"] == "matched"
+    assert [slot["name"] for slot in review["slots"]] == ["Variable axis bank", "Variable axis bank", "Following axis"]
+    assert [slot["slot_instance"] for slot in review["slots"]] == [
+        {"declaration_index": 1, "instance_index": 0}, {"declaration_index": 1, "instance_index": 1},
+        {"declaration_index": 2, "instance_index": 0},
+    ]
+    assert all(pdo["saved_readback"]["state"] == "matched" for slot in review["slots"] for pdo in slot["pdos"])
+    entered = cli_call(cli, "preview-modular-pdos", sample, *selector, *evidence, *counts, *manual)
+    assert entered["slots"] == review["slots"] and entered["slot_counts"] == expected_counts
+
+    alternative = ("--slot-count", "0=1", "--slot-count", "1=1")
+    other = cli_call(cli, "preview-modular-pdos", sample, *selector, *evidence, *alternative)
+    assert other["module_inventory"]["detected"]["state"] == "matched"
+    assert other["slots"][0]["name"] == "Optional axis bank"
+    assert other["slot_counts"] != review["slot_counts"]
+
+    target = destination / "variable-decoder.json"
+    profile = cli_call(cli, "export-modular-profile", sample, *selector, *evidence, *counts, "--out", target)
+    assert cli_call(cli, "validate", target) == profile
+    assert profile["modular_decoder"]["slot_counts"] == expected_counts
+    assert profile["modular_decoder"]["slots"] == [0x400] * 3
+    assert (profile["tx_bytes"], profile["rx_bytes"]) == (10, 6)
+    assert [field["value"] for field in cli_call(cli, "decode", target, "34 12 01 CD AB FE 21 43 01 A5")] == [
+        "4660", "true", "43981", "false", "17185", "true",
+    ]
+    assert [field["value"] for field in cli_call(cli, "decode", target, "EF BE 02 80 34 12", "--rx")] == [
+        "48879", "32770", "4660",
+    ]
+
+    def rejected(name, args, expected, esi=sample):
+        out = destination / (name + "-result.json")
+        error = cli_call(cli, "preview-modular-pdos", esi, *selector, *args, "--out", out, success=False)
+        assert expected in error and not out.exists(), (name, error)
+
+    rejected("missing-both", evidence, "requires --slot-count 0=COUNT")
+    rejected("missing-one", (*evidence, "--slot-count", "0=0"), "requires --slot-count 1=COUNT")
+    rejected("wrong-count-total", (*evidence, "--slot-count", "0=2", "--slot-count", "1=1"),
+             "differs from the ESI fixed slot count")
+    rejected("count-too-high", (*evidence, "--slot-count", "0=3", "--slot-count", "1=2"), "outside 0..=2")
+    rejected("count-too-low", (*evidence, "--slot-count", "0=0", "--slot-count", "1=0"), "outside 1..=3")
+    rejected("duplicate", (*evidence, *counts, "--slot-count", "1=1"), "duplicate count for slot declaration 1")
+    rejected("unknown-declaration", (*evidence, *counts, "--slot-count", "3=1"), "slot declaration 3 is out of range")
+    rejected("malformed", (*evidence, "--slot-count", "0"), "expected zero-based DECLARATION=COUNT")
+    rejected("empty-repeat-instance",
+             (*alternative, "--slot", "0=0", "--slot", "1=0x400", "--slot", "2=0x400"),
+             "empty required slot 0")
+
+    original = sample.read_bytes()
+    narrow = destination / "lower-slot-limit.esi.xml"
+    narrow.write_bytes(original.replace(b'MaxSlotCount="6"', b'MaxSlotCount="2"'))
+    rejected("too-many-positions", (*evidence, *counts), "exceeding MaxSlotCount 2", esi=narrow)
+    singleton = destination / "optional-singleton.esi.xml"
+    singleton.write_bytes(original.replace(b'MinInstances="0" MaxInstances="2"', b'MinInstances="0" MaxInstances="1"'))
+    omitted = cli_call(cli, "preview-modular-pdos", singleton, *selector, *evidence, *counts)
+    assert omitted["slots"] == review["slots"] and omitted["slot_counts"] == expected_counts
+
+    altered = destination / "edited-decoder.json"
+    profile["modular_decoder"]["slot_counts"][1]["count"] = 1
+    altered.write_text(json.dumps(profile), encoding="utf-8")
+    error = cli_call(cli, "validate", altered, success=False)
+    assert "saved slot counts expand to 2 positions, but the decoder has 3" in error
+    assert sample.read_bytes() == original
+
+
 def verify_repeated_fixed_slots(cli, destination, sample=None):
     """Expand a fixed-count declaration before comparing uploaded inventory and PDOs."""
     sample = ROOT / "samples/repeated-fixed-slot-pdos.esi.xml" if sample is None else sample
@@ -1540,7 +1631,7 @@ def verify_repeated_fixed_slots(cli, destination, sample=None):
     assert original.count(bounds) == 1
     mutations = [
         ("variable-count", original.replace(bounds, b'MinInstances="1" MaxInstances="2"'),
-         "requires equal MinInstances and MaxInstances"),
+         "requires --slot-count 0=COUNT"),
         ("excessive-expansion", original.replace(bounds, b'MinInstances="4294967295" MaxInstances="4294967295"'),
          "more than 512 slot positions"),
         ("max-slot-count", original.replace(b'MaxSlotCount="3"', b'MaxSlotCount="2"'),
@@ -1743,7 +1834,7 @@ def verify_vacant_fixed_slot(cli, destination, sample=None):
     assert esibytes.count(token) == 1
     repeated.write_bytes(esibytes.replace(token, b'MinInstances="0" MaxInstances="2"'))
     error = cli_call(cli, "preview-modular-pdos", repeated, "--device", 0, *manual, success=False)
-    assert "requires equal MinInstances and MaxInstances" in error
+    assert "requires --slot-count 1=COUNT" in error
 
 
 def verify_mode_pdo_staging(cli, destination):
@@ -6370,6 +6461,9 @@ def main():
     repeated_slot_destination = destination / "repeated-fixed-slots"
     repeated_slot_destination.mkdir()
     verify_repeated_fixed_slots(cli, repeated_slot_destination)
+    variable_slot_destination = destination / "variable-slot-counts"
+    variable_slot_destination.mkdir()
+    verify_variable_slot_counts(cli, variable_slot_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

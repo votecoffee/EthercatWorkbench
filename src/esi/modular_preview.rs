@@ -1,4 +1,4 @@
-//! Resolve PDO template indexes for fixed ESI slot placements.
+//! Resolve PDO template indexes for ESI slot placements.
 mod decode;
 pub mod inventory;
 pub mod profile;
@@ -14,7 +14,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use roxmltree::Node;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -37,6 +37,26 @@ pub fn placement(text: &str) -> Result<Placement> {
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlotCount {
+    pub declaration_index: usize,
+    pub count: u32,
+}
+
+pub fn slot_count(text: &str) -> Result<SlotCount> {
+    ensure!(text.len() <= 64, "ESI slot count argument exceeds 64 bytes");
+    let (declaration, count) = text
+        .split_once('=')
+        .context("expected zero-based DECLARATION=COUNT")?;
+    Ok(SlotCount {
+        declaration_index: usize::try_from(
+            number(declaration).context("invalid declaration index")?,
+        )?,
+        count: number(count).context("invalid slot instance count")?,
+    })
+}
+
 #[derive(Debug, Serialize)]
 pub struct Preview {
     schema: u32,
@@ -45,6 +65,8 @@ pub struct Preview {
     esi_sha256: String,
     identity: Identity,
     slots: Vec<SlotPreview>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    slot_counts: Vec<SlotCount>,
     #[serde(skip)]
     esi: EsiSource,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,7 +91,13 @@ impl Preview {
                 .is_none_or(|report| report.detected.state != inventory::State::Mismatch),
             "saved detected module list differs from the requested slot placements"
         );
-        profile::build(self.esi, readback, &self.slots, self.module_inventory)
+        profile::build(
+            self.esi,
+            readback,
+            &self.slots,
+            self.slot_counts,
+            self.module_inventory,
+        )
     }
 
     pub fn compare_saved_run(&mut self, path: &Path) -> Result<()> {
@@ -188,13 +216,30 @@ pub fn preview_with_inventory(
     placements: &[Placement],
     saved_inventory: Option<&Path>,
 ) -> Result<Preview> {
+    preview_with_slot_counts(path, device, identity, placements, saved_inventory, &[])
+}
+
+pub fn preview_with_slot_counts(
+    path: &Path,
+    device: Option<usize>,
+    identity: Option<&Identity>,
+    placements: &[Placement],
+    saved_inventory: Option<&Path>,
+    slot_counts: &[SlotCount],
+) -> Result<Preview> {
     let (file, bytes) = read_file(path)?;
     with_description(&file, &bytes, |descriptions, devices| {
         let selected = select_device(&devices, device, identity)?;
         let inventory = saved_inventory
             .map(|path| inventory::Inventory::load(path, &selected.source.identity))
             .transpose()?;
-        preview_device(&selected.source, descriptions, placements, inventory)
+        preview_device(
+            &selected.source,
+            descriptions,
+            placements,
+            inventory,
+            slot_counts,
+        )
     })
 }
 
@@ -203,13 +248,16 @@ fn preview_device(
     descriptions: Node<'_, '_>,
     placements: &[Placement],
     inventory: Option<inventory::Inventory>,
+    slot_counts: &[SlotCount],
 ) -> Result<Preview> {
     let modular = source
         .modular
         .as_ref()
         .context("selected ESI device has no slot declarations")?;
-    let positions = fixed_slot_positions(modular)?;
-    let repeated = positions.len() > modular.slots.len();
+    let positions = slot_positions(modular, slot_counts)?;
+    let record_instances = !slot_counts.is_empty() || positions.len() != modular.slots.len();
+    let mut slot_counts = slot_counts.to_vec();
+    slot_counts.sort_unstable_by_key(|count| count.declaration_index);
     ensure!(
         modular
             .additional_elements
@@ -306,13 +354,13 @@ fn preview_device(
             module_name: "Empty slot".into(),
             slot_pdo_increment: pdo_increment,
             slot_index_increment: index_increment,
-            slot_instance: repeated.then_some(instance),
+            slot_instance: record_instances.then_some(instance),
             group,
             pdos: Vec::new(),
         };
         if ident == 0 {
             ensure!(
-                slot.min_instances == Some(0),
+                slot.min_instances == Some(0) && slot.max_instances == Some(1),
                 "empty required slot {position}"
             );
             slots.push(preview);
@@ -362,6 +410,7 @@ fn preview_device(
         identity: source.identity.clone(),
         module_inventory: inventory.map(|inventory| inventory.compare(&slots, placement_source)),
         slots,
+        slot_counts,
         esi: source.clone(),
         saved_readback: None,
         decoded_tx: None,
@@ -369,20 +418,50 @@ fn preview_device(
     })
 }
 
-fn fixed_slot_positions(modular: &modular::Description) -> Result<Vec<SlotInstance>> {
-    ensure!(
-        !modular.slots.is_empty(),
-        "ESI has no slot positions to preview"
-    );
+fn slot_positions(
+    modular: &modular::Description,
+    counts: &[SlotCount],
+) -> Result<Vec<SlotInstance>> {
+    let mut requested_counts = BTreeMap::new();
+    for &SlotCount {
+        declaration_index,
+        count,
+    } in counts
+    {
+        ensure!(
+            declaration_index < modular.slots.len(),
+            "slot declaration {declaration_index} is out of range"
+        );
+        ensure!(
+            requested_counts.insert(declaration_index, count).is_none(),
+            "duplicate count for slot declaration {declaration_index}"
+        );
+    }
+
     let mut positions = Vec::new();
     for (declaration_index, slot) in modular.slots.iter().enumerate() {
-        let count = match (slot.min_instances, slot.max_instances) {
-            (Some(0 | 1), Some(1)) => 1,
-            (Some(min), Some(max)) if min == max && max > 1 => usize::try_from(max)?,
-            _ => anyhow::bail!(
-                "slot declaration {declaration_index} requires equal MinInstances and MaxInstances for repeatable slots, or a single optional position"
+        let (min, max) = slot
+            .min_instances
+            .zip(slot.max_instances)
+            .context("slot declaration requires MinInstances and MaxInstances")?;
+        ensure!(
+            min <= max && max > 0,
+            "invalid instance limits {min}..={max} for slot declaration {declaration_index}"
+        );
+        let count = match requested_counts.get(&declaration_index).copied() {
+            Some(count) => {
+                ensure!(
+                    (min..=max).contains(&count),
+                    "count {count} for slot declaration {declaration_index} is outside {min}..={max}"
+                );
+                count
+            }
+            None if min == max || max == 1 => max,
+            None => anyhow::bail!(
+                "slot declaration {declaration_index} requires --slot-count {declaration_index}=COUNT ({min}..={max})"
             ),
         };
+        let count = usize::try_from(count)?;
         ensure!(
             count <= modular::MAX_DECLARATIONS - positions.len(),
             "ESI expands to more than {} slot positions",
@@ -393,7 +472,11 @@ fn fixed_slot_positions(modular: &modular::Description) -> Result<Vec<SlotInstan
             instance_index,
         }));
     }
-    if positions.len() > modular.slots.len()
+    ensure!(
+        !positions.is_empty(),
+        "ESI has no slot positions to preview"
+    );
+    if (positions.len() > modular.slots.len() || !counts.is_empty())
         && let Some(max) = modular.slot_attributes.get("MaxSlotCount")
     {
         let max = usize::try_from(number(max).context("invalid MaxSlotCount")?)?;

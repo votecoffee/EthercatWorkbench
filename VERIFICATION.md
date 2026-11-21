@@ -851,3 +851,13 @@ The virtual PREOP session made 66 CoE uploads including setup and returned to IN
 The CLI rejected a short detected list, a missing manual position, an empty required instance, an identity disallowed by the repeated declaration, variable instance counts, a count above the preview limit and a count over the ESI's `MaxSlotCount`. The original, optional and grouped fixed-slot fixtures still passed. The new authored fixture passed XML well-formedness, the cached ESI 1.14 schema and the Workbench consumer.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression retry passed. The first run recovered from its injected 40-reply outage and confirmed INIT with 887 missed deadlines and 77 valid exchanges, below the sample-count threshold. The isolated case passed with 713 valid exchanges. The next suite run reported a PDU timeout during the segmented-upload fault. The isolated CoE suite reproduced the expected upload timeout and passed. Variable-count repetition and physical qualification remain pending.
+
+## Version 0.91.0 explicit variable slot counts (2026-11-21)
+
+The new authored ESI declares two variable axis banks followed by one fixed position. The Windows CLI collected a three-module inventory and both PDO layouts in one virtual PREOP session, then confirmed INIT. The wire audit observed 66 CoE uploads including initialization, zero mailbox counter errors and zero SDO downloads, OP requests, cyclic reads or output writes.
+
+The layouts `0=0, 1=2` and `0=1, 1=1` both matched the same flat module list and PDO descriptors. The preview required explicit counts for both declarations and showed the resulting declaration indexes. The exported profile retained the chosen counts, including the omitted first bank, and decoded the sample values after reload. Its validator rejected edited counts whose expansion disagreed with the saved position count. The desktop's saved layout panel includes the selected counts.
+
+The CLI rejected missing, malformed, duplicate and out-of-range count entries, a count outside a declaration's bounds, an expanded length different from the detected list, an empty materialized repeat instance and a layout exceeding `MaxSlotCount`. It also verified explicit omission of an optional singleton. The earlier fixed, optional, repeated and grouped fixture paths passed. The authored fixture passed XML well-formedness, the cached ESI 1.14 schema and the Workbench consumer.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Physical qualification remains pending.

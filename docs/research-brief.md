@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.90.0** expands ESI declarations with equal positive instance limits before comparing a complete detected list or applying manual choices. The simulated repeated-axis fixture proves the following slot's index offsets through CoE readback, offline profile export and decoding. The simulator confirms INIT on exit. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Saved module identities](pdo-selection.md#review-saved-module-identities) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.91.0** accepts explicit counts for variable repeatable ESI declarations, including zero where permitted. A simulated three-axis fixture shows that different declaration boundaries can produce the same flat CoE inventory and PDO layout. Previews and saved profiles retain the chosen counts. The simulator confirms INIT on exit. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Saved module identities](pdo-selection.md#review-saved-module-identities) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

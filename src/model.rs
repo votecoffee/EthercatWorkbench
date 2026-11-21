@@ -348,11 +348,12 @@ impl Profile {
             "sync-unit assumption requires a staged ESI DC mode"
         );
         crate::sync_review::review(self, None)?;
-        if self.modular_decoder.is_some() {
-            ensure!(
-                self.esi.is_some(),
-                "modular decoder requires ESI provenance"
-            );
+        if let Some(decoder) = &self.modular_decoder {
+            let esi = self
+                .esi
+                .as_ref()
+                .context("modular decoder requires ESI provenance")?;
+            decoder.validate_slot_counts(esi)?;
             ensure!(
                 self.esi_pdo_selection.is_none(),
                 "a modular decoder cannot carry a device-level PDO selection"

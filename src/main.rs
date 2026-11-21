@@ -388,6 +388,17 @@ impl App {
                             inventory.detected.state.label()
                         ));
                     }
+                    if !decoder.slot_counts.is_empty() {
+                        ui.collapsing("Selected slot counts", |ui| {
+                            for count in &decoder.slot_counts {
+                                ui.label(format!(
+                                    "Declaration {} · {} instances",
+                                    count.declaration_index + 1,
+                                    count.count,
+                                ));
+                            }
+                        });
+                    }
                     let empty_slots: Vec<_> = decoder
                         .slots
                         .iter()

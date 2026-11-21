@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.14">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored variable slot-count fixture</Name></Vendor>
+  <Descriptions>
+    <Groups><Group><Type>Fixture</Type><Name>Authored sample group</Name></Group></Groups>
+    <Devices>
+      <Device Physics="YY">
+        <Type ProductCode="#x0000000F" RevisionNo="1">VirtualVariableSlotCounts</Type>
+        <Name>Authored variable slot-count device</Name>
+        <GroupType>Fixture</GroupType>
+        <TxPdo Sm="3">
+          <Index>#x1A40</Index>
+          <Name>Base status</Name>
+          <Entry><Index>#x2200</Index><SubIndex>1</SubIndex><BitLen>8</BitLen><Name>Base status</Name><DataType>USINT</DataType></Entry>
+        </TxPdo>
+        <Slots MaxSlotCount="6" SlotPdoIncrement="#x10" SlotIndexIncrement="#x800">
+          <Slot MinInstances="0" MaxInstances="2">
+            <Name>Optional axis bank</Name>
+            <ModuleIdent>#x400</ModuleIdent>
+          </Slot>
+          <Slot MinInstances="1" MaxInstances="3">
+            <Name>Variable axis bank</Name>
+            <ModuleIdent Default="2">#x400</ModuleIdent>
+          </Slot>
+          <Slot MinInstances="1" MaxInstances="1">
+            <Name>Following axis</Name>
+            <ModuleIdent Default="1">#x400</ModuleIdent>
+            <ModuleIdent>#x401</ModuleIdent>
+          </Slot>
+        </Slots>
+      </Device>
+    </Devices>
+    <Modules>
+      <Module>
+        <Type ModuleIdent="#x400">VirtualAxis</Type>
+        <Name>Axis module</Name>
+        <RxPdo Sm="2">
+          <Index DependOnSlot="1">#x1600</Index>
+          <Name>Axis command</Name>
+          <Entry><Index DependOnSlot="1">#x6040</Index><SubIndex>0</SubIndex><BitLen>16</BitLen><Name>Control word</Name><DataType>UINT</DataType></Entry>
+        </RxPdo>
+        <TxPdo Sm="3">
+          <Index DependOnSlot="1">#x1A00</Index>
+          <Name>Axis status</Name>
+          <Exclude DependOnSlot="1">#x1A05</Exclude>
+          <Entry><Index DependOnSlot="1">#x6041</Index><BitLen>16</BitLen><Name>Status word</Name><DataType>UINT</DataType></Entry>
+          <Entry><Index>#x2100</Index><SubIndex>2</SubIndex><BitLen>1</BitLen><Name>Shared state</Name><DataType>BOOL</DataType></Entry>
+          <Entry><Index>0</Index><BitLen>7</BitLen></Entry>
+        </TxPdo>
+      </Module>
+      <Module>
+        <Type ModuleIdent="#x401">VirtualEmptyModule</Type>
+        <Name>Module without process data</Name>
+      </Module>
+    </Modules>
+  </Descriptions>
+</EtherCATInfo>

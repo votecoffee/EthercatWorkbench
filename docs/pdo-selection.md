@@ -45,7 +45,7 @@ A single-slot declaration has a minimum of zero or one and a maximum of one. A r
 
 ## Expand fixed-count slot declarations
 
-A declaration with equal `MinInstances` and `MaxInstances` greater than one contributes that many consecutive positions. In the sample, declaration 0 contributes positions 0 and 1, and declaration 1 starts at position 2. Each position inherits its declaration's module choices. Use one `--slot` per expanded position or a complete detected list with the expanded count. The preview retains the zero-based declaration and instance indexes for each slot. The preview accepts up to 512 manual positions and checks the ESI's `MaxSlotCount` when expanding repeated declarations. The saved detected-list format has a one-byte count and can supply up to 255 positions. Variable-count repetition still needs a separate layout rule. [ETG.2000, SlotType instance limits](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+A declaration with equal `MinInstances` and `MaxInstances` greater than one contributes that many consecutive positions. In the sample, declaration 0 contributes positions 0 and 1, and declaration 1 starts at position 2. Each position inherits its declaration's module choices. Use one `--slot` per expanded position or a complete detected list with the expanded count. The preview retains the zero-based declaration and instance indexes for each slot. The preview accepts up to 512 manual positions and checks the ESI's `MaxSlotCount` when expanding repeated declarations. The saved detected-list format has a one-byte count and can supply up to 255 positions. [ETG.2000, SlotType instance limits](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
 
 ```powershell
 .\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario repeated-fixed-slots --out .local/repeated-modules.json --pdo-report .local/repeated-pdos.json
@@ -53,6 +53,19 @@ A declaration with equal `MinInstances` and `MaxInstances` greater than one cont
 ```
 
 The following axis resolves to TxPDO `0x1A20` at bit 48 in the simulator's saved process image. Indexes follow the expanded slot positions. Payload offsets come from PDO readback.
+
+## Choose variable slot counts
+
+For a repeatable declaration whose `MinInstances` differs from `MaxInstances`, supply `--slot-count DECLARATION=COUNT` within those limits. Declaration indexes are zero-based and come from the ESI's `Slots` list. The count of zero omits a declaration when its minimum allows it. An optional singleton keeps its existing reserved position by default and can also be omitted with an explicit count of zero.
+
+The CLI expands the counts in declaration order before applying `--slot` choices or a saved detected list. The flat list confirms the IDs and length for the selected layout. It leaves the declaration boundaries to the supplied counts. The preview and offline profile preserve those counts, including zeros. The desktop's **Saved modular layout** panel shows the selected counts by declaration number.
+
+```powershell
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario variable-slot-counts --out .local/variable-modules.json --pdo-report .local/variable-pdos.json
+.\ethercat-workbench-cli.exe export-modular-profile samples/variable-slot-pdos.esi.xml --device 0 --slot-count 0=0 --slot-count 1=2 --module-inventory .local/variable-modules.json --run-report .local/variable-pdos.json --out .local/variable-decoder.json
+```
+
+The first declaration contributes no positions. The second supplies two axes and the final fixed declaration supplies the third. The sample also illustrates why the layout is explicit. Counts `0=1` and `1=1` yield the same flat list and PDO descriptors with different declaration boundaries.
 
 ## Resolve fixed slot groups
 

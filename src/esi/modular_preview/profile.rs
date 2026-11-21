@@ -1,11 +1,13 @@
 //! Build standard offline profiles from ESI labels and matched saved PDO positions.
-use super::{SlotPreview, decode::field_positions, readback::Comparison};
+use super::{
+    SlotCount, SlotPreview, decode::field_positions, readback::Comparison, slot_positions,
+};
 use crate::{
     model::{EsiSource, Field, Profile},
     pdo::MappingSource,
     pdo_catalog::Direction,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,10 +17,31 @@ pub struct Provenance {
     pub report_sha256: String,
     pub reported_backend: String,
     pub slots: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slot_counts: Vec<SlotCount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module_inventory: Option<super::inventory::Comparison>,
     pub tx: ImageSource,
     pub rx: ImageSource,
+}
+
+impl Provenance {
+    pub(crate) fn validate_slot_counts(&self, esi: &EsiSource) -> Result<()> {
+        if !self.slot_counts.is_empty() {
+            let modular = esi
+                .modular
+                .as_ref()
+                .context("saved slot counts require ESI slot declarations")?;
+            let positions = slot_positions(modular, &self.slot_counts)?;
+            ensure!(
+                positions.len() == self.slots.len(),
+                "saved slot counts expand to {} positions, but the decoder has {}",
+                positions.len(),
+                self.slots.len()
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +64,7 @@ pub(super) fn build(
     mut esi: EsiSource,
     readback: &Comparison,
     slots: &[SlotPreview],
+    slot_counts: Vec<SlotCount>,
     module_inventory: Option<super::inventory::Comparison>,
 ) -> Result<Profile> {
     let (tx_source, tx) = image(Direction::Tx, readback, slots)?;
@@ -68,6 +92,7 @@ pub(super) fn build(
             report_sha256: readback.sha256.clone(),
             reported_backend: readback.reported_backend.clone(),
             slots: slots.iter().map(|slot| slot.module_ident).collect(),
+            slot_counts,
             module_inventory,
             tx: tx_source,
             rx: rx_source,

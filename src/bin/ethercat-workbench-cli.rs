@@ -36,6 +36,9 @@ struct ModularSelection {
     /// Supply one zero-based SLOT=MODULE_IDENT for each expanded position. Use 0 for an empty optional slot.
     #[arg(long, required_unless_present = "module_inventory", value_parser = esi::modular_preview::placement)]
     slot: Vec<esi::modular_preview::Placement>,
+    /// Supply a zero-based DECLARATION=COUNT for each variable repeatable declaration.
+    #[arg(long, value_parser = esi::modular_preview::slot_count)]
+    slot_count: Vec<esi::modular_preview::SlotCount>,
     /// Use saved configured/detected CoE module IDs to review or fill the slot choices.
     #[arg(long)]
     module_inventory: Option<PathBuf>,
@@ -43,12 +46,13 @@ struct ModularSelection {
 
 impl ModularSelection {
     fn preview(&self) -> Result<esi::modular_preview::Preview> {
-        esi::modular_preview::preview_with_inventory(
+        esi::modular_preview::preview_with_slot_counts(
             &self.file,
             self.device,
             self.identity.as_ref(),
             &self.slot,
             self.module_inventory.as_deref(),
+            &self.slot_count,
         )
     }
 }
