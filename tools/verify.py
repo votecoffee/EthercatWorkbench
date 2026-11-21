@@ -755,7 +755,7 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     rejected("unknown-module", sample, ["--slot", "0=0x999", "--slot", "1=0x400"], "no local module")
     rejected("out-of-range-slot", sample, ["--slot", "0=0x400", "--slot", "2=0x400"], "out of range")
     rejected("grouped", altered("grouped", b"<Slots SlotPdoIncrement", b'<Slots SlotGroupPdoIncrement="1" SlotPdoIncrement'),
-             placements, "requires ungrouped slots")
+             placements, "group increments require explicit SlotGroup declarations")
     rejected("missing-increment", altered("missing-increment", b' SlotIndexIncrement="#x800"', b""),
              placements, "missing SlotIndexIncrement")
     rejected("collision", altered("collision", b'SlotPdoIncrement="#x10"', b'SlotPdoIncrement="0"'),
@@ -1457,6 +1457,103 @@ def verify_virtual_modular_pdos(cli, destination, sample=None, report=None):
                      "--pdo-report", fresh.with_name("FRESH.JSON"), success=False)
     assert "require different output paths" in error and not fresh.exists()
     assert "pdo_report" not in cli_call(cli, "read-virtual-module-inventory")
+
+
+def verify_grouped_fixed_slots(cli, destination, sample=None):
+    """Cross-check group-relative indexes against PDOs uploaded from the virtual ESC."""
+    sample = ROOT / "samples/grouped-fixed-slot-pdos.esi.xml" if sample is None else sample
+    identity = {"vendor": 0x00FF1000, "product": 13, "revision": 1}
+    selector = ("--identity", "0x00ff1000/13/1")
+    manual = ("--slot", "0=0x400", "--slot", "1=0", "--slot", "2=0x400")
+    inventory = destination / "inventory.json"
+    pdos = destination / "pdos.json"
+    captured = cli_call(cli, "read-virtual-module-inventory", "--scenario", "grouped-fixed-slots",
+                        "--out", inventory, "--pdo-report", pdos)
+    raw = json.loads(inventory.read_bytes())
+    assert raw == captured["inventory"] and raw["identity"] == identity and raw["serial"] == 14787
+    assert all([entry["data_hex"] for entry in obj["uploads"]] ==
+               ["03", "00040000", "00000000", "00040000"] for obj in raw["objects"])
+    report = json.loads(pdos.read_bytes())
+    assert report == captured["pdo_report"]
+    assert report["devices"] == [{"identity": identity, "serial": 14787}]
+    assert captured["preop_al"] == [2, 0] and captured["stopped_al"] == [1, 0]
+    audit = captured["audit"]
+    assert audit["coe_uploads"] == 50 and audit["mailbox_counter_errors"] == 0
+    assert audit["state_requests"] == [1, 2, 1]
+    assert not any(audit[key] for key in ("coe_downloads", "op_requests", "logical_reads",
+                                         "logical_writes", "physical_output_writes"))
+    evidence = ("--module-inventory", inventory, "--run-report", pdos)
+    checked = cli_call(cli, "preview-modular-pdos", sample, *selector, *evidence)
+    manual_view = cli_call(cli, "preview-modular-pdos", sample, *selector, *evidence, *manual)
+    slots = checked["slots"]
+    assert slots == manual_view["slots"]
+    assert [slot["module_ident"] for slot in slots] == [0x400, 0, 0x400]
+    assert [slot["group"]["number"] for slot in slots] == [1, 1, 2]
+    assert [slot["group"]["position"] for slot in slots] == [0, 0, 1] and slots[1]["pdos"] == []
+    assert slots[0]["group"] == {"number": 1, "position": 0, "pdo_increment": 0x40, "index_increment": 0x400}
+    assert slots[2]["group"] == {"number": 2, "position": 1, "pdo_increment": 0x30, "index_increment": 0x800}
+    rx, tx = slots[2]["pdos"]
+    assert rx["mapping"] == {"declared": 0x1600, "resolved": 0x1630}
+    assert tx["mapping"] == {"declared": 0x1A00, "resolved": 0x1A30}
+    assert tx["excludes"] == [{"declared": 0x1A05, "resolved": 0x1A35}]
+    assert [item["object"]["resolved"] for item in tx["entries"]] == [0x6841, 0x2100, 0]
+    assert rx["entries"][0]["object"]["resolved"] == 0x6840
+    assert (rx["saved_readback"]["bit"], tx["saved_readback"]["bit"]) == (16, 24)
+    assert rx["saved_readback"]["state"] == tx["saved_readback"]["state"] == "matched"
+
+    target = destination / "grouped-decoder.json"
+    profile = cli_call(cli, "export-modular-profile", sample, *selector, *evidence, "--out", target)
+    assert cli_call(cli, "validate", target) == profile
+    assert (profile["tx_bytes"], profile["rx_bytes"]) == (7, 4)
+    assert profile["modular_decoder"]["slots"] == [0x400, 0, 0x400]
+    assert [field["object_index"] for field in profile["tx"]] == [0x6041, 0x2100, 0x6841, 0x2100]
+    assert [field["value"] for field in cli_call(cli, "decode", target, "34 12 01 CD AB FE A5")] == [
+        "4660", "true", "43981", "false",
+    ]
+    assert [field["value"] for field in cli_call(cli, "decode", target, "EF BE 02 80", "--rx")] == [
+        "48879", "32770",
+    ]
+
+    original = sample.read_bytes()
+
+    def alternate(name, data):
+        path = destination / (name + ".esi.xml")
+        assert data != original
+        path.write_bytes(data)
+        return path
+
+    override = b' SlotGroupPdoIncrement="#x30" SlotGroupIndexIncrement="#x800"'
+    defaults = alternate("common-group-increments", original.replace(override, b""))
+    default_tx = cli_call(cli, "preview-modular-pdos", defaults, *selector, *manual)["slots"][2]["pdos"][1]
+    assert default_tx["mapping"]["resolved"] == 0x1A40 and default_tx["entries"][0]["object"]["resolved"] == 0x6441
+    zero_based = alternate("zero-based-group-numbers",
+                           original.replace(b' SlotGroup="1"', b' SlotGroup="0"').replace(b' SlotGroup="2"', b' SlotGroup="1"'))
+    same = cli_call(cli, "preview-modular-pdos", zero_based, *selector, *manual)["slots"]
+    assert [slot["group"]["number"] for slot in same] == [0, 0, 1]
+    assert same[2]["pdos"][1]["mapping"] == tx["mapping"]
+
+    invalid = [
+        ("missing-group", original.replace(b'<Slot SlotGroup="2"', b'<Slot'), "a SlotGroup for every slot"),
+        ("nonconsecutive-group", original.replace(b'<Slot SlotGroup="2"', b'<Slot SlotGroup="3"'), "numbers must be consecutive"),
+        ("ambiguous-group-base", original.replace(b'<Slot SlotGroup="1"', b'<Slot SlotGroup="4"'), "must start at 0 or 1"),
+        ("mixed-dependencies", original.replace(b'<Index DependOnSlotGroup="1">#x1600',
+                                                b'<Index DependOnSlot="1" DependOnSlotGroup="1">#x1600'),
+         "slot-dependent indexes inside SlotGroups"),
+        ("missing-pdo-increment", original.replace(override, b"").replace(b' SlotGroupPdoIncrement="#x40"', b""),
+         "missing SlotGroupPdoIncrement"),
+        ("offset-overflow", original.replace(b'SlotGroupIndexIncrement="#x800"', b'SlotGroupIndexIncrement="#xFFFF"'),
+         "resolved slot index exceeds 16 bits"),
+        ("collision", original.replace(b'SlotGroupPdoIncrement="#x30"', b'SlotGroupPdoIncrement="0"'),
+         "used more than once"),
+        ("pdo-group-alignment", original.replace(b"</Slots>", b"<ModulePdoGroup>1</ModulePdoGroup></Slots>"),
+         "does not support module PDO grouping"),
+    ]
+    for name, changed, reason in invalid:
+        out = destination / (name + "-result.json")
+        error = cli_call(cli, "preview-modular-pdos", alternate(name, changed), *selector, *manual,
+                         "--out", out, success=False)
+        assert reason in error and not out.exists(), (name, error)
+    assert sample.read_bytes() == original
 
 
 def verify_vacant_fixed_slot(cli, destination, sample=None):
@@ -6172,6 +6269,9 @@ def main():
     vacant_slot_destination = destination / "vacant-fixed-slot"
     vacant_slot_destination.mkdir()
     verify_vacant_fixed_slot(cli, vacant_slot_destination)
+    grouped_slot_destination = destination / "grouped-fixed-slots"
+    grouped_slot_destination.mkdir()
+    verify_grouped_fixed_slots(cli, grouped_slot_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

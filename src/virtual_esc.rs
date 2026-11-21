@@ -79,6 +79,7 @@ pub enum ModuleInventoryCase {
     EmptyDetected,
     PdoEntryDiffers,
     VacantMiddleSlot,
+    GroupedFixedSlots,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -420,11 +421,11 @@ impl VirtualWire {
 
     pub fn for_module_inventory(case: ModuleInventoryCase) -> Self {
         let mut esc = VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
-        // Identities for the two authored fixed-slot ESIs.
-        let (product, serial): (u32, u32) = if case == ModuleInventoryCase::VacantMiddleSlot {
-            (12, 14_786)
-        } else {
-            (11, 14_785)
+        // Identities for the authored fixed-slot ESIs.
+        let (product, serial): (u32, u32) = match case {
+            ModuleInventoryCase::VacantMiddleSlot => (12, 14_786),
+            ModuleInventoryCase::GroupedFixedSlots => (13, 14_787),
+            _ => (11, 14_785),
         };
         esc.eeprom[0x14..0x18].copy_from_slice(&product.to_le_bytes());
         esc.eeprom[0x1c..0x20].copy_from_slice(&serial.to_le_bytes());
@@ -1554,9 +1555,9 @@ impl VirtualEsc {
                 (CONFIGURED, 0, MalformedCount) => Some((2, 2)),
                 (DETECTED, 0, EmptyDetected) => Some((0, 1)),
                 (DETECTED, _, EmptyDetected) => None,
-                (_, 0, VacantMiddleSlot) => Some((3, 1)),
-                (_, 2, VacantMiddleSlot) => Some((0, 4)),
-                (_, 3, VacantMiddleSlot) => Some((0x400, 4)),
+                (_, 0, VacantMiddleSlot | GroupedFixedSlots) => Some((3, 1)),
+                (_, 2, VacantMiddleSlot | GroupedFixedSlots) => Some((0, 4)),
+                (_, 3, VacantMiddleSlot | GroupedFixedSlots) => Some((0x400, 4)),
                 (_, 0, _) => Some((2, 1)),
                 (DETECTED, 2, DetectedDiffers) => Some((0x401, 4)),
                 (_, 1 | 2, _) => Some((0x400, 4)),
@@ -1656,17 +1657,22 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
         0x6841_0010
     };
     let vacant = case == ModuleInventoryCase::VacantMiddleSlot;
+    let grouped = case == ModuleInventoryCase::GroupedFixedSlots;
     let (width, entries): (u8, &[u32]) = match index {
+        0x1c12 if grouped => (2, &[0x1600, 0x1630]),
+        0x1c13 if grouped => (2, &[0x1a00, 0x1a30, 0x1a40]),
         0x1c12 if vacant => (2, &[0x1600, 0x1620]),
         0x1c13 if vacant => (2, &[0x1a00, 0x1a20, 0x1a40]),
         0x1c12 => (2, &[0x1600, 0x1610]),
         0x1c13 => (2, &[0x1a00, 0x1a10, 0x1a40]),
         0x1600 => (4, &[0x6040_0010]),
-        0x1610 if !vacant => (4, &[0x6840_0010]),
+        0x1610 if !vacant && !grouped => (4, &[0x6840_0010]),
         0x1620 if vacant => (4, &[0x7040_0010]),
+        0x1630 if grouped => (4, &[0x6840_0010]),
         0x1a00 => (4, &[0x6041_0010, 0x2100_0201, 7]),
-        0x1a10 if !vacant => (4, &[second_status_word, 0x2100_0201, 7]),
+        0x1a10 if !vacant && !grouped => (4, &[second_status_word, 0x2100_0201, 7]),
         0x1a20 if vacant => (4, &[0x7041_0010, 0x2100_0201, 7]),
+        0x1a30 if grouped => (4, &[0x6841_0010, 0x2100_0201, 7]),
         0x1a40 => (4, &[0x2200_0108]),
         _ => return None,
     };

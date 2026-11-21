@@ -1,4 +1,4 @@
-//! Resolve PDO template indexes for explicit placements in fixed, ungrouped ESI slots.
+//! Resolve PDO template indexes for fixed ESI slot placements.
 mod decode;
 pub mod inventory;
 pub mod profile;
@@ -110,7 +110,29 @@ struct SlotPreview {
     module_name: String,
     slot_pdo_increment: Option<u32>,
     slot_index_increment: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<GroupPreview>,
     pdos: Vec<PdoPreview>,
+}
+
+#[derive(Debug, Serialize)]
+struct GroupPreview {
+    number: u32,
+    position: u32,
+    pdo_increment: Option<u32>,
+    index_increment: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+enum IndexPosition {
+    Slot(u32),
+    Group(u32),
+}
+
+struct IndexOffsets {
+    position: IndexPosition,
+    pdo_increment: Option<u32>,
+    index_increment: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -188,17 +210,13 @@ fn preview_device(
         "PDO index preview requires fixed slots with MinInstances 0 or 1 and MaxInstances 1"
     );
     ensure!(
-        !has_group_increment(&modular.slot_attributes)
-            && modular
-                .additional_elements
-                .iter()
-                .all(|item| item == "SlotSelections")
-            && modular
-                .slots
-                .iter()
-                .all(|slot| slot.group.is_none() && !has_group_increment(&slot.attributes)),
-        "PDO index preview requires ungrouped slots without PDO grouping"
+        modular
+            .additional_elements
+            .iter()
+            .all(|item| matches!(item.as_str(), "SlotSelections" | "SlotGroupData")),
+        "PDO index preview does not support module PDO grouping or slot extensions"
     );
+    let group_base = group_base(modular)?;
     let detected;
     let (placements, placement_source) = if placements.is_empty() {
         let inventory = inventory
@@ -253,6 +271,32 @@ fn preview_device(
         let slot = &modular.slots[position];
         let pdo_increment = increment(&modular.slot_attributes, slot, "SlotPdoIncrement")?;
         let index_increment = increment(&modular.slot_attributes, slot, "SlotIndexIncrement")?;
+        let group = if let Some((number, base)) = slot.group.zip(group_base) {
+            Some(GroupPreview {
+                number,
+                position: number - base,
+                pdo_increment: increment(&modular.slot_attributes, slot, "SlotGroupPdoIncrement")?,
+                index_increment: increment(
+                    &modular.slot_attributes,
+                    slot,
+                    "SlotGroupIndexIncrement",
+                )?,
+            })
+        } else {
+            None
+        };
+        let offsets = match &group {
+            Some(group) => IndexOffsets {
+                position: IndexPosition::Group(group.position),
+                pdo_increment: group.pdo_increment,
+                index_increment: group.index_increment,
+            },
+            None => IndexOffsets {
+                position: IndexPosition::Slot(u32::try_from(position)?),
+                pdo_increment,
+                index_increment,
+            },
+        };
         let mut preview = SlotPreview {
             slot: position,
             name: slot.name.clone(),
@@ -260,6 +304,7 @@ fn preview_device(
             module_name: "Empty slot".into(),
             slot_pdo_increment: pdo_increment,
             slot_index_increment: index_increment,
+            group,
             pdos: Vec::new(),
         };
         if ident == 0 {
@@ -294,10 +339,9 @@ fn preview_device(
             .unwrap_or("Unnamed module")
             .into();
         for pdo in modular::pdo_nodes(node) {
-            let resolved = resolve_pdo(pdo, pdo_increment, index_increment, position, source)
-                .with_context(|| {
-                    format!("resolve PDO indexes for slot {position}, module {ident:#010x}")
-                })?;
+            let resolved = resolve_pdo(pdo, &offsets, source).with_context(|| {
+                format!("resolve PDO indexes for slot {position}, module {ident:#010x}")
+            })?;
             ensure!(
                 seen.insert(resolved.mapping.resolved),
                 "resolved PDO index {:#06x} is used more than once among the chosen modules",
@@ -322,6 +366,33 @@ fn preview_device(
     })
 }
 
+fn group_base(modular: &modular::Description) -> Result<Option<u32>> {
+    if let Some(base) = modular.slots[0].group {
+        ensure!(base <= 1, "fixed SlotGroup numbering must start at 0 or 1");
+        let mut previous = base;
+        for slot in &modular.slots {
+            let group = slot
+                .group
+                .context("grouped preview requires a SlotGroup for every slot")?;
+            ensure!(
+                group == previous || group == previous + 1,
+                "fixed SlotGroup numbers must be consecutive in declaration order"
+            );
+            previous = group;
+        }
+        return Ok(Some(base));
+    }
+    ensure!(
+        !has_group_increment(&modular.slot_attributes)
+            && modular
+                .slots
+                .iter()
+                .all(|slot| slot.group.is_none() && !has_group_increment(&slot.attributes)),
+        "group increments require explicit SlotGroup declarations for every slot"
+    );
+    Ok(None)
+}
+
 fn has_group_increment(attributes: &BTreeMap<String, String>) -> bool {
     attributes.keys().any(|name| name.starts_with("SlotGroup"))
 }
@@ -340,9 +411,7 @@ fn increment(
 
 fn resolve_pdo(
     pdo: Node<'_, '_>,
-    pdo_increment: Option<u32>,
-    index_increment: Option<u32>,
-    position: usize,
+    offsets: &IndexOffsets,
     source: &EsiSource,
 ) -> Result<PdoPreview> {
     ensure!(
@@ -359,7 +428,16 @@ fn resolve_pdo(
         Direction::Rx
     };
     let index_node = unique_child(pdo, "Index")?.context("ESI module PDO Index missing")?;
-    let mapping = resolve_index(index_node, pdo_increment, "SlotPdoIncrement", position)?;
+    let pdo_increment_name = match offsets.position {
+        IndexPosition::Slot(_) => "SlotPdoIncrement",
+        IndexPosition::Group(_) => "SlotGroupPdoIncrement",
+    };
+    let mapping = resolve_index(
+        index_node,
+        offsets.pdo_increment,
+        pdo_increment_name,
+        offsets.position,
+    )?;
     let range = match direction {
         Direction::Rx => 0x1600..=0x17ff,
         Direction::Tx => 0x1a00..=0x1bff,
@@ -374,12 +452,19 @@ fn resolve_pdo(
     let excludes = pdo
         .children()
         .filter(|entry| named(*entry, "Exclude"))
-        .map(|exclude| resolve_index(exclude, pdo_increment, "SlotPdoIncrement", position))
+        .map(|exclude| {
+            resolve_index(
+                exclude,
+                offsets.pdo_increment,
+                pdo_increment_name,
+                offsets.position,
+            )
+        })
         .collect::<Result<Vec<_>>>()?;
     let entries = pdo
         .children()
         .filter(|entry| named(*entry, "Entry"))
-        .map(|entry| resolve_entry(entry, index_increment, position))
+        .map(|entry| resolve_entry(entry, offsets))
         .collect::<Result<Vec<_>>>()?;
     Ok(PdoPreview {
         direction,
@@ -395,12 +480,16 @@ fn resolve_pdo(
     })
 }
 
-fn resolve_entry(entry: Node<'_, '_>, increment: Option<u32>, position: usize) -> Result<Entry> {
+fn resolve_entry(entry: Node<'_, '_>, offsets: &IndexOffsets) -> Result<Entry> {
+    let increment_name = match offsets.position {
+        IndexPosition::Slot(_) => "SlotIndexIncrement",
+        IndexPosition::Group(_) => "SlotGroupIndexIncrement",
+    };
     let object = resolve_index(
         unique_child(entry, "Index")?.context("ESI PDO entry Index missing")?,
-        increment,
-        "SlotIndexIncrement",
-        position,
+        offsets.index_increment,
+        increment_name,
+        offsets.position,
     )?;
     let subindex = unique_child(entry, "SubIndex")?
         .map(|node| number(&dc_text(node)))
@@ -427,21 +516,35 @@ fn resolve_index(
     node: Node<'_, '_>,
     increment: Option<u32>,
     name: &str,
-    position: usize,
+    position: IndexPosition,
 ) -> Result<Index> {
-    ensure!(
-        !bool_attr(node, "DependOnSlotGroup")?,
-        "slot-group-dependent indexes require separate interpretation"
-    );
+    let slot_dependent = bool_attr(node, "DependOnSlot")?;
+    let group_dependent = bool_attr(node, "DependOnSlotGroup")?;
+    let (position, dependent) = match position {
+        IndexPosition::Slot(position) => {
+            ensure!(
+                !group_dependent,
+                "slot-group-dependent indexes require explicit SlotGroup declarations"
+            );
+            (position, slot_dependent)
+        }
+        IndexPosition::Group(position) => {
+            ensure!(
+                !slot_dependent,
+                "slot-dependent indexes inside SlotGroups require separate interpretation"
+            );
+            (position, group_dependent)
+        }
+    };
     let declared = u16::try_from(number(&dc_text(node))?).context("ESI index exceeds 16 bits")?;
-    let resolved = if bool_attr(node, "DependOnSlot")? {
+    let resolved = if dependent {
         ensure!(declared != 0, "PDO padding cannot depend on a slot");
         if position == 0 {
             declared
         } else {
             let increment =
-                increment.with_context(|| format!("missing {name} for a slot-dependent index"))?;
-            let offset = (position as u32)
+                increment.with_context(|| format!("missing {name} for a dependent index"))?;
+            let offset = position
                 .checked_mul(increment)
                 .context("slot index offset overflow")?;
             let index = u32::from(declared)

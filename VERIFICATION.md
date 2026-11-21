@@ -831,3 +831,13 @@ Manual and detected choices produced the same preview. The empty position had no
 Required slots rejected zero. Automatic placement rejected a short detected list. Manual comparison distinguished an explicit zero from a missing position, and an occupied manual choice exposed unassigned PDOs and the detected conflict. The preview rejected a repeatable declaration and a missing manual choice. The earlier fixed-slot fixtures continued to pass. The authored XML passed well-formedness and Workbench consumer checks.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Native GUI interaction and physical qualification remain pending.
+
+## Version 0.89.0 grouped fixed-slot PDO resolution (2026-11-21)
+
+The new authored ESI declares two groups across three fixed positions. The middle slot of the first group is empty. The Windows CLI used the same virtual PREOP session to upload both module lists and the PDO layouts before confirming INIT. The audit recorded 50 uploads including setup with no mailbox counter errors, SDO downloads, cyclic reads, output writes or OP requests.
+
+The third slot used group position one. Its local increments overrode the device defaults and resolved RxPDO `0x1630`, TxPDO `0x1A30`, TxPDO exclusion `0x1A35` and entry objects `0x6840` and `0x6841`. The readback matched the directional PDOs at Rx bit 16 and Tx bit 24. The offline profile retained both image lengths and decoded the sample values after reload. The authored ESI passed namespace-aware well-formedness, the cached ESI 1.14 schema and the Workbench consumer.
+
+The focused regression checked equivalent zero-based group numbering and device defaults when a per-slot override was absent. It rejected missing group declarations, nonconsecutive numbering, unsupported mixed dependencies, missing increments, overflow, duplicate PDOs and module PDO alignment declarations before writing a preview. Older ungrouped and optional fixed-slot scenarios passed.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Physical device acceptance, repeatable slot types, mixed slot/group dependencies and module PDO alignment remain pending.

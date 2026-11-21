@@ -57,6 +57,8 @@ Use `read-virtual-module-inventory --out .local/virtual-modules.json` to collect
 
 For an empty optional fixed slot, supply `--slot INDEX=0` with all other slot choices, or use a complete detected list containing an explicit zero at that position. [Optional fixed slots](pdo-selection.md#review-an-empty-optional-slot)
 
+Use `--scenario grouped-fixed-slots` with `samples/grouped-fixed-slot-pdos.esi.xml` to exercise group-relative PDO indexes and the normal offline export. [Fixed slot groups](pdo-selection.md#resolve-fixed-slot-groups)
+
 For manual setup, edit/save a profile through **Device**, **Mappings** and **Profiles…**, or use a new JSON profile based on an appropriate sample. Configure exact expected identity, Tx/Rx lengths, bit offsets/widths, numeric/raw types and transformations. `Field.source` identifies the definition as manual, ESI or override. Live PDO verification is separate discovered evidence. Staged output values are manual offline entries even when their field definitions came from ESI.
 
 Profiles use schema 1 with defaults for omitted settings and validation on load/save. Saves create new paths, use UTF-8 and flush. Preserve the source profile when preparing variants. Typed staging has its own preview/apply guard; [output staging](output-staging.md) explains ranges, overlaps, zero initialization and provenance.

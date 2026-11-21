@@ -41,7 +41,18 @@ Use `preview-modular-pdos` with the original ESI and an exact device identity or
 
 The JSON records the exact ESI identity and SHA-256, manual slot choices, and each candidate's declared SyncManager hint. Each mapping index, excluded mapping index, and entry object index shows its declared and resolved values. At a flagged index, the preview adds the slot number multiplied by the relevant increment. A per-slot value takes precedence over the device-wide value. PDO mappings and exclusions use `SlotPdoIncrement`. Entry objects use `SlotIndexIncrement`. Unflagged indexes, widths, subindexes, and padding are preserved. In the sample, the second slot resolves TxPDO `0x1A00` to `0x1A10` and its status object `0x6041` to `0x6841`. [HPMicro CiA 402 example](https://kb.hpmicro.com/2026/06/04/ethercat%E4%BB%A5cia402%E4%BE%8B%E7%A8%8B%E4%BB%8B%E7%BB%8Dmdp%E8%AE%BE%E5%A4%87%E7%9A%84od%E5%A4%84%E7%90%86/)
 
-This preview covers ungrouped slots with `MaxInstances="1"` and a declared minimum of zero or one. Each declaration has a position in the preview. It needs one local module definition per chosen identity and checks each choice against that slot's declarations. Duplicate resolved mapping indexes among the chosen modules, out-of-range results, and unsupported slot group or oversampling dependencies stop the preview. A `device_level_index_match` marks an index also present in the device-level catalog for separate review. The preview describes candidates. A composed process image still requires confirmed PDO assignments, SyncManager placement, and offsets. Existing profiles use their device-level PDO layouts.
+The fixed-slot preview covers `MaxInstances="1"` and a declared minimum of zero or one. Each declaration has a position in the preview. It needs one local module definition per chosen identity and checks each choice against that slot's declarations. Duplicate resolved mapping indexes among the chosen modules, out-of-range indexes and oversampled templates stop the preview. A `device_level_index_match` marks an index also present in the device-level catalog for separate review. The preview describes candidates. A composed process image still requires confirmed PDO assignments, SyncManager placement, and offsets. Existing profiles use their device-level PDO layouts.
+
+## Resolve fixed slot groups
+
+Declare a `SlotGroup` on every fixed slot. The preview supports consecutive groups starting at 0 or 1 and keeps the declaration order. Each group has a zero-based position. Indexes marked `DependOnSlotGroup` use that position multiplied by `SlotGroupPdoIncrement` for PDO mappings and exclusions or by `SlotGroupIndexIncrement` for entry objects. A per-slot increment overrides the matching device-wide value. The JSON keeps the group number, position and both effective increments. [ETG.2000, slot and PDO index attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario grouped-fixed-slots --out .local/grouped-modules.json --pdo-report .local/grouped-pdos.json
+.\ethercat-workbench-cli.exe export-modular-profile samples/grouped-fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/grouped-modules.json --run-report .local/grouped-pdos.json --out .local/grouped-decoder.json
+```
+
+The sample's two groups occupy three slot positions. The second position is vacant. The third position uses group position 1 and its per-slot overrides, resolving TxPDO `0x1A00` to `0x1A30` and entry object `0x6041` to `0x6841`. The exported profile uses bit offsets from the saved PDO readback. Mixed slot and group index dependencies, module PDO grouping and automatic alignment remain outside this preview.
 
 ## Compare module candidates with saved PDO readback
 
@@ -107,7 +118,7 @@ Use `--scenario detected-differs` to compare a different detected module with ma
 
 ## Review an empty optional slot
 
-An ungrouped fixed slot with `MinInstances="0"` and `MaxInstances="1"` accepts an explicit `--slot INDEX=0` or a zero at that position in the complete detected list. CLI slot positions start at zero. Workbench keeps the vacant position in the preview and saved profile. Later modules use their original position to resolve the ESI indexes and the saved PDO readback to locate their values in the process image. Required slots reject zero. Short detected lists cannot supply automatic placements. [ETG.2000, ModuleIdent and slot instance limits](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+A fixed slot with `MinInstances="0"` and `MaxInstances="1"` accepts an explicit `--slot INDEX=0` or a zero at that position in the complete detected list. CLI slot positions start at zero. Workbench keeps the vacant position in the preview and saved profile. Later modules use their original position to resolve the ESI indexes and the saved PDO readback to locate their values in the process image. Required slots reject zero. Short detected lists cannot supply automatic placements. [ETG.2000, ModuleIdent and slot instance limits](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
 
 ```powershell
 .\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario vacant-middle-slot --out .local/optional-modules.json --pdo-report .local/optional-pdos.json
