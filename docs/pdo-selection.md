@@ -32,7 +32,7 @@ The profile's image lengths and fields come from the device-level PDOs. The samp
 
 ## Preview PDO indexes for fixed module slots
 
-Use `preview-modular-pdos` with the original ESI and an exact device identity or list index. Supply both selectors to guard the index. For manual placement, supply one module identity per slot. Slot numbers are zero-based in declaration order. A complete saved detected list can also supply the choices. The same module identity can occupy multiple slots if each slot allows it.
+Use `preview-modular-pdos` with the original ESI and an exact device identity or list index. Supply both selectors to guard the index. For manual placement, supply one module identity per slot, using zero for an empty optional position. Slot numbers are zero-based in declaration order. A complete saved detected list can also supply the choices. The same module identity can occupy multiple slots if each slot allows it.
 
 ```powershell
 .\ethercat-workbench-cli.exe esi-list samples/fixed-slot-pdos.esi.xml
@@ -41,7 +41,7 @@ Use `preview-modular-pdos` with the original ESI and an exact device identity or
 
 The JSON records the exact ESI identity and SHA-256, manual slot choices, and each candidate's declared SyncManager hint. Each mapping index, excluded mapping index, and entry object index shows its declared and resolved values. At a flagged index, the preview adds the slot number multiplied by the relevant increment. A per-slot value takes precedence over the device-wide value. PDO mappings and exclusions use `SlotPdoIncrement`. Entry objects use `SlotIndexIncrement`. Unflagged indexes, widths, subindexes, and padding are preserved. In the sample, the second slot resolves TxPDO `0x1A00` to `0x1A10` and its status object `0x6041` to `0x6841`. [HPMicro CiA 402 example](https://kb.hpmicro.com/2026/06/04/ethercat%E4%BB%A5cia402%E4%BE%8B%E7%A8%8B%E4%BB%8B%E7%BB%8Dmdp%E8%AE%BE%E5%A4%87%E7%9A%84od%E5%A4%84%E7%90%86/)
 
-This preview covers ungrouped slots that each declare exactly one instance. It needs one local module definition per chosen identity and checks each choice against that slot's declarations. Duplicate resolved mapping indexes among the chosen modules, out-of-range results, and unsupported slot group or oversampling dependencies stop the preview. A `device_level_index_match` marks an index also present in the device-level catalog for separate review. The preview describes candidates. A composed process image still requires confirmed PDO assignments, SyncManager placement, and offsets. Existing profiles use their device-level PDO layouts.
+This preview covers ungrouped slots with `MaxInstances="1"` and a declared minimum of zero or one. Each declaration has a position in the preview. It needs one local module definition per chosen identity and checks each choice against that slot's declarations. Duplicate resolved mapping indexes among the chosen modules, out-of-range results, and unsupported slot group or oversampling dependencies stop the preview. A `device_level_index_match` marks an index also present in the device-level catalog for separate review. The preview describes candidates. A composed process image still requires confirmed PDO assignments, SyncManager placement, and offsets. Existing profiles use their device-level PDO layouts.
 
 ## Compare module candidates with saved PDO readback
 
@@ -82,7 +82,7 @@ Export requires a saved length for both directions, including an explicitly obse
 
 ## Review saved module identities
 
-Use `--module-inventory` to compare fixed-slot choices with saved CoE values. The configured list at `0xF030` and detected list at `0xF050` are reviewed independently. Keep `--slot` to test explicit choices, or omit it to choose modules from a complete detected list. Automatic placement requires the same number of positions as the fixed-slot ESI and a supported, nonzero identity in every position. [ETG module-list diagnostics](https://prelive.ethercat.org/technology/knowledge-base/esm-ethercat-state-machine/)
+Use `--module-inventory` to compare fixed-slot choices with saved CoE values. The configured list at `0xF030` and detected list at `0xF050` are reviewed independently. Keep `--slot` to test explicit choices, or omit it to choose modules from a complete detected list. Automatic placement requires the same number of positions as the fixed-slot ESI. Each occupied position requires a supported identity. A zero is accepted where the ESI permits an empty slot. [ETG module-list diagnostics](https://prelive.ethercat.org/technology/knowledge-base/esm-ethercat-state-machine/)
 
 ```powershell
 .\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --module-inventory samples/fixed-slot-module-inventory.json
@@ -104,6 +104,17 @@ The preview records the evidence hash, the source of the chosen placements, and 
 ```
 
 Use `--scenario detected-differs` to compare a different detected module with manual slots. `configured-unavailable` tests an SDO abort before the detected list. `detected-entry-abort` exercises a failure after part of that list was read. A failed list records the reason and omits incomplete values. `malformed-count` stops uploads on the affected mailbox, and `empty-detected` returns a valid count of zero. With `--pdo-report`, EtherCrab configures the modeled process-data SyncManagers and FMMUs in PREOP. The shared CoE client then reads the assignment lists and mapping descriptors, and the report includes the observed SyncManager lengths. Both files carry the same SubDevice identity and serial. Use `--scenario pdo-entry-differs` with `--pdo-report` to see a descriptor mismatch at an unchanged image size. The offline export withholds the affected PDO's fields. If a malformed reply invalidates the mailbox, the report records both PDO directions as unavailable. Physical module inventory and PDO readback on the selected hardware remain pending.
+
+## Review an empty optional slot
+
+An ungrouped fixed slot with `MinInstances="0"` and `MaxInstances="1"` accepts an explicit `--slot INDEX=0` or a zero at that position in the complete detected list. CLI slot positions start at zero. Workbench keeps the vacant position in the preview and saved profile. Later modules use their original position to resolve the ESI indexes and the saved PDO readback to locate their values in the process image. Required slots reject zero. Short detected lists cannot supply automatic placements. [ETG.2000, ModuleIdent and slot instance limits](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario vacant-middle-slot --out .local/optional-modules.json --pdo-report .local/optional-pdos.json
+.\ethercat-workbench-cli.exe export-modular-profile samples/optional-fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/optional-modules.json --run-report .local/optional-pdos.json --out .local/optional-decoder.json
+```
+
+The simulator reports an axis on either side of the empty middle slot. The third slot resolves to PDOs `0x1620` and `0x1A20`. Their offsets come from the actual simulated assignments. The desktop shows vacant positions by declaration number in the offline profile's **Device → Saved modular layout** panel.
 
 ## Catalog choices
 

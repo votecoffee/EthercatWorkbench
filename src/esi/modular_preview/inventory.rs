@@ -164,18 +164,12 @@ impl Inventory {
         let Some(List::Available(values)) = &self.detected else {
             bail!("automatic placement requires an available detected module list at 0xf050");
         };
-        values
+        Ok(values
             .iter()
             .copied()
             .enumerate()
-            .map(|(slot, module_ident)| {
-                ensure!(
-                    module_ident != 0,
-                    "detected list has an empty required slot {slot}"
-                );
-                Ok(Placement { slot, module_ident })
-            })
-            .collect()
+            .map(|(slot, module_ident)| Placement { slot, module_ident })
+            .collect())
     }
 
     pub(super) fn compare(

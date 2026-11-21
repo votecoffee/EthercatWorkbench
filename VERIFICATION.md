@@ -821,3 +821,13 @@ The generated PDO report carried the same identity and serial as the inventory. 
 A same-width descriptor change retained both image lengths and withheld only the affected TxPDO's fields. An SDO abort on the configured inventory left the detected list and both layouts readable. A malformed inventory count made both later PDO directions unavailable and blocked profile export. Existing files and an aliased output name were rejected before writing.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Physical module and PDO readback, SAFEOP input, and the GUI/logger benchmark remain pending.
+
+## Version 0.88.0 empty optional fixed slots (2026-11-21)
+
+The new authored ESI declares three fixed positions, with an optional middle axis. The Windows CLI collected configured and detected lists of `[0x400, 0, 0x400]` on the virtual CoE wire. The same session uploaded the PDO assignments and mapping descriptors and confirmed INIT. The fixture made 50 uploads during setup and readback with zero counter errors, cyclic reads, SDO downloads or output writes.
+
+Manual and detected choices produced the same preview. The empty position had no PDO candidates, and the third position resolved to RxPDO `0x1620` and TxPDO `0x1A20`. The readback placed them at Rx bit 16 and Tx bit 24. The exported profile retained the zero position and the original 7-byte Tx and 4-byte Rx images. Reload and payload decoding preserved the fields and their values. The desktop's saved layout panel displays empty slots by declaration number.
+
+Required slots rejected zero. Automatic placement rejected a short detected list. Manual comparison distinguished an explicit zero from a missing position, and an occupied manual choice exposed unassigned PDOs and the detected conflict. The preview rejected a repeatable declaration and a missing manual choice. The earlier fixed-slot fixtures continued to pass. The authored XML passed well-formedness and Workbench consumer checks.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Native GUI interaction and physical qualification remain pending.

@@ -183,8 +183,9 @@ fn preview_device(
             && modular
                 .slots
                 .iter()
-                .all(|slot| { slot.min_instances == Some(1) && slot.max_instances == Some(1) }),
-        "PDO index preview requires fixed slots with exactly one instance each"
+                .all(|slot| matches!(slot.min_instances, Some(0 | 1))
+                    && slot.max_instances == Some(1)),
+        "PDO index preview requires fixed slots with MinInstances 0 or 1 and MaxInstances 1"
     );
     ensure!(
         !has_group_increment(&modular.slot_attributes)
@@ -250,6 +251,25 @@ fn preview_device(
     let mut slots = Vec::with_capacity(by_slot.len());
     for (position, ident) in by_slot {
         let slot = &modular.slots[position];
+        let pdo_increment = increment(&modular.slot_attributes, slot, "SlotPdoIncrement")?;
+        let index_increment = increment(&modular.slot_attributes, slot, "SlotIndexIncrement")?;
+        let mut preview = SlotPreview {
+            slot: position,
+            name: slot.name.clone(),
+            module_ident: ident,
+            module_name: "Empty slot".into(),
+            slot_pdo_increment: pdo_increment,
+            slot_index_increment: index_increment,
+            pdos: Vec::new(),
+        };
+        if ident == 0 {
+            ensure!(
+                slot.min_instances == Some(0),
+                "empty required slot {position}"
+            );
+            slots.push(preview);
+            continue;
+        }
         let (node, ty) = definitions
             .get(&ident)
             .with_context(|| {
@@ -269,9 +289,10 @@ fn preview_device(
             ty.attribute("ModulePdoGroup").is_none(),
             "module {ident:#010x} uses PDO grouping"
         );
-        let pdo_increment = increment(&modular.slot_attributes, slot, "SlotPdoIncrement")?;
-        let index_increment = increment(&modular.slot_attributes, slot, "SlotIndexIncrement")?;
-        let mut pdos = Vec::new();
+        preview.module_name = label(node, "Name")
+            .or_else(|| ty.text())
+            .unwrap_or("Unnamed module")
+            .into();
         for pdo in modular::pdo_nodes(node) {
             let resolved = resolve_pdo(pdo, pdo_increment, index_increment, position, source)
                 .with_context(|| {
@@ -282,20 +303,9 @@ fn preview_device(
                 "resolved PDO index {:#06x} is used more than once among the chosen modules",
                 resolved.mapping.resolved
             );
-            pdos.push(resolved);
+            preview.pdos.push(resolved);
         }
-        slots.push(SlotPreview {
-            slot: position,
-            name: slot.name.clone(),
-            module_ident: ident,
-            module_name: label(node, "Name")
-                .or_else(|| ty.text())
-                .unwrap_or("Unnamed module")
-                .into(),
-            slot_pdo_increment: pdo_increment,
-            slot_index_increment: index_increment,
-            pdos,
-        });
+        slots.push(preview);
     }
     Ok(Preview {
         schema: 1,

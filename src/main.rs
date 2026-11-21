@@ -388,6 +388,16 @@ impl App {
                             inventory.detected.state.label()
                         ));
                     }
+                    let empty_slots: Vec<_> = decoder
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, ident)| **ident == 0)
+                        .map(|(index, _)| (index + 1).to_string())
+                        .collect();
+                    if !empty_slots.is_empty() {
+                        ui.label(format!("Empty slots · {}", empty_slots.join(", ")));
+                    }
                     ui.label(format!(
                         "Saved image lengths · Tx {} / Rx {} bytes",
                         decoder.tx.image_bytes, decoder.rx.image_bytes

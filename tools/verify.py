@@ -1459,6 +1459,101 @@ def verify_virtual_modular_pdos(cli, destination, sample=None, report=None):
     assert "pdo_report" not in cli_call(cli, "read-virtual-module-inventory")
 
 
+def verify_vacant_fixed_slot(cli, destination, sample=None):
+    """An explicit empty position survives CoE readback, ESI offsets and profile reload."""
+    sample = ROOT / "samples/optional-fixed-slot-pdos.esi.xml" if sample is None else sample
+    identity = {"vendor": 0x00FF1000, "product": 12, "revision": 1}
+    selector = (sample, "--identity", "0x00ff1000/12/1")
+    inventory = destination / "inventory.json"
+    pdos = destination / "pdos.json"
+    captured = cli_call(cli, "read-virtual-module-inventory", "--scenario", "vacant-middle-slot",
+                        "--out", inventory, "--pdo-report", pdos)
+    saved = json.loads(inventory.read_bytes())
+    assert saved == captured["inventory"] and saved["identity"] == identity
+    assert saved["serial"] == 14786 and saved["source"] == "virtual_coe"
+    for entry in saved["objects"]:
+        assert entry["uploads"] == [
+            {"subindex": 0, "data_hex": "03"}, {"subindex": 1, "data_hex": "00040000"},
+            {"subindex": 2, "data_hex": "00000000"}, {"subindex": 3, "data_hex": "00040000"},
+        ]
+    report = json.loads(pdos.read_bytes())
+    assert report == captured["pdo_report"] and report["devices"] == [{"identity": identity, "serial": 14786}]
+    assert captured["preop_al"] == [2, 0] and captured["stopped_al"] == [1, 0]
+    audit = captured["audit"]
+    assert audit["coe_uploads"] == 50 and audit["mailbox_counter_errors"] == 0
+    assert audit["state_requests"] == [1, 2, 1]
+    assert not any(audit[key] for key in ("coe_downloads", "op_requests", "logical_reads",
+                                          "logical_writes", "physical_output_writes", "dc_enable_requests"))
+    layouts = report["pdo_verification"]["readback"]
+    assert [pdo["index"] for pdo in layouts["tx"]["sync_managers"][0]["pdos"]] == [0x1A00, 0x1A20, 0x1A40]
+    assert [pdo["index"] for pdo in layouts["rx"]["sync_managers"][0]["pdos"]] == [0x1600, 0x1620]
+
+    evidence = ("--module-inventory", inventory, "--run-report", pdos)
+    manual = ("--slot", "2=0x400", "--slot", "1=0", "--slot", "0=0x400")
+    reviewed = cli_call(cli, "preview-modular-pdos", *selector, *evidence,
+                        "--tx-hex", "34 12 01 CD AB FE A5", "--rx-hex", "EF BE 02 80")
+    assert [slot["slot"] for slot in reviewed["slots"]] == [0, 1, 2]
+    assert [slot["module_ident"] for slot in reviewed["slots"]] == [0x400, 0, 0x400]
+    empty = reviewed["slots"][1]
+    assert empty["name"] == "Optional middle axis" and empty["module_name"] == "Empty slot" and empty["pdos"] == []
+    rx, tx = reviewed["slots"][2]["pdos"]
+    assert (rx["mapping"]["resolved"], rx["entries"][0]["object"]["resolved"]) == (0x1620, 0x7040)
+    assert (tx["mapping"]["resolved"], tx["entries"][0]["object"]["resolved"]) == (0x1A20, 0x7041)
+    assert (rx["saved_readback"]["bit"], tx["saved_readback"]["bit"]) == (16, 24)
+    assert rx["saved_readback"]["state"] == tx["saved_readback"]["state"] == "matched"
+    assert [field["slot"] for field in reviewed["decoded_tx"]["fields"]] == [0, 0, 2, 2]
+    assert [field["value"] for field in reviewed["decoded_tx"]["fields"]] == ["4660", "true", "43981", "false"]
+    assert [field["value"] for field in reviewed["decoded_rx"]["fields"]] == ["48879", "32770"]
+    observed = reviewed["module_inventory"]
+    assert observed["placement_source"] == "saved_detected"
+    assert observed["detected"]["reported_count"] == 3 and observed["detected"]["state"] == "matched"
+    assert observed["configured"]["state"] == "matched"
+    entered = cli_call(cli, "preview-modular-pdos", *selector, *evidence, *manual)
+    assert entered["slots"] == reviewed["slots"] and entered["module_inventory"]["placement_source"] == "manual"
+
+    target = destination / "offline-decoder.json"
+    profile = cli_call(cli, "export-modular-profile", *selector, *evidence, "--out", target)
+    assert cli_call(cli, "validate", target) == profile
+    assert (profile["tx_bytes"], profile["rx_bytes"]) == (7, 4)
+    assert profile["modular_decoder"]["slots"] == [0x400, 0, 0x400]
+    tx = cli_call(cli, "decode", target, "34 12 01 CD AB FE A5")
+    assert tx[2]["field"].startswith("Slot 2 Status word") and tx[2]["value"] == "43981"
+    assert [field["object_index"] for field in profile["rx"]] == [0x6040, 0x7040]
+
+    occupied = cli_call(cli, "preview-modular-pdos", *selector, *evidence,
+                        "--slot", "0=0x400", "--slot", "1=0x400", "--slot", "2=0x400")
+    assert occupied["module_inventory"]["detected"]["differences"] == [
+        {"slot": 1, "expected": 0x400, "reported": 0},
+    ]
+    assert all(pdo["saved_readback"]["state"] == "unassigned" for pdo in occupied["slots"][1]["pdos"])
+    error = cli_call(cli, "preview-modular-pdos", *selector, "--slot", "0=0x400",
+                     "--slot", "2=0x400", success=False)
+    assert "one explicit placement for every slot" in error
+    error = cli_call(cli, "preview-modular-pdos", *selector, "--slot", "0=0",
+                     "--slot", "1=0", "--slot", "2=0x400", success=False)
+    assert "empty required slot 0" in error
+
+    short = destination / "short-list.json"
+    detected = saved["objects"][1]
+    detected["uploads"] = [{"subindex": 0, "data_hex": "01"}, detected["uploads"][1]]
+    short.write_text(json.dumps(saved), encoding="utf-8")
+    error = cli_call(cli, "preview-modular-pdos", *selector, "--module-inventory", short, success=False)
+    assert "differs from the ESI fixed slot count" in error
+    entered = cli_call(cli, "preview-modular-pdos", *selector, "--module-inventory", short, *manual)
+    assert entered["module_inventory"]["detected"]["differences"] == [
+        {"slot": 1, "expected": 0, "reported": None},
+        {"slot": 2, "expected": 0x400, "reported": None},
+    ]
+
+    repeated = destination / "repeatable.esi.xml"
+    esibytes = sample.read_bytes()
+    token = b'MinInstances="0" MaxInstances="1"'
+    assert esibytes.count(token) == 1
+    repeated.write_bytes(esibytes.replace(token, b'MinInstances="0" MaxInstances="2"'))
+    error = cli_call(cli, "preview-modular-pdos", repeated, "--device", 0, *manual, success=False)
+    assert "MaxInstances 1" in error
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -6074,6 +6169,9 @@ def main():
     virtual_modular_pdo_destination = destination / "virtual-modular-pdos"
     virtual_modular_pdo_destination.mkdir()
     verify_virtual_modular_pdos(cli, virtual_modular_pdo_destination)
+    vacant_slot_destination = destination / "vacant-fixed-slot"
+    vacant_slot_destination.mkdir()
+    verify_vacant_fixed_slot(cli, vacant_slot_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)
