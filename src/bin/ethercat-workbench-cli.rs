@@ -263,6 +263,9 @@ enum Command {
         /// Supply one zero-based SLOT=MODULE_IDENT for each fixed slot.
         #[arg(long, required = true, value_parser = esi::modular_preview::placement)]
         slot: Vec<esi::modular_preview::Placement>,
+        /// Compare against PDO readback in a saved run report for the same identity.
+        #[arg(long)]
+        run_report: Option<PathBuf>,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -932,9 +935,14 @@ fn main() -> Result<()> {
             device,
             identity,
             slot,
+            run_report,
             out,
         } => {
-            let report = esi::modular_preview::preview(&file, device, identity.as_ref(), &slot)?;
+            let mut report =
+                esi::modular_preview::preview(&file, device, identity.as_ref(), &slot)?;
+            if let Some(path) = &run_report {
+                report.compare_saved_run(path)?;
+            }
             inspection_export(&report, out.as_deref())
         }
         Command::SelectPdos {

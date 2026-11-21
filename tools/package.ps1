@@ -67,6 +67,7 @@ try {
         'samples/synthetic.esi.xml' = 'samples/synthetic.esi.xml'
         'samples/modular-device.esi.xml' = 'samples/modular-device.esi.xml'
         'samples/fixed-slot-pdos.esi.xml' = 'samples/fixed-slot-pdos.esi.xml'
+        'samples/fixed-slot-pdo-readback.json' = 'samples/fixed-slot-pdo-readback.json'
         'samples/pdo-choices.esi.xml' = 'samples/pdo-choices.esi.xml'
         'samples/pdo-choices.json' = 'samples/pdo-choices.json'
         'docs/pdo-selection.md' = 'docs/pdo-selection.md'

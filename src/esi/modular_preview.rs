@@ -1,4 +1,6 @@
 //! Resolve PDO template indexes for explicit placements in fixed, ungrouped ESI slots.
+mod readback;
+
 use super::{
     bool_attr, dc_text, default_sm, label, modular, named, node_number, number, read_file,
     select_device, unique_child, with_description,
@@ -40,6 +42,15 @@ pub struct Preview {
     esi_sha256: String,
     identity: Identity,
     slots: Vec<SlotPreview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saved_readback: Option<readback::Comparison>,
+}
+
+impl Preview {
+    pub fn compare_saved_run(&mut self, path: &Path) -> Result<()> {
+        self.saved_readback = Some(readback::compare(path, &self.identity, &mut self.slots)?);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -62,6 +73,8 @@ struct PdoPreview {
     entries: Vec<Entry>,
     excludes: Vec<Index>,
     device_level_index_match: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saved_readback: Option<readback::Candidate>,
 }
 
 #[derive(Debug, Serialize)]
@@ -209,6 +222,7 @@ fn preview_device(
         esi_sha256: source.sha256.clone(),
         identity: source.identity.clone(),
         slots,
+        saved_readback: None,
     })
 }
 
@@ -281,6 +295,7 @@ fn resolve_pdo(
         mapping,
         entries,
         excludes,
+        saved_readback: None,
     })
 }
 

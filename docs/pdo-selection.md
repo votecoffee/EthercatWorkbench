@@ -43,6 +43,18 @@ The JSON records the exact ESI identity and SHA-256, manual slot choices, and ea
 
 This preview covers ungrouped slots that each declare exactly one instance. It needs one local module definition per chosen identity and checks each choice against that slot's declarations. Duplicate resolved mapping indexes among the chosen modules, out-of-range results, and unsupported slot group or oversampling dependencies stop the preview. A `device_level_index_match` marks an index also present in the device-level catalog for separate review. The preview describes candidates. A composed process image still requires confirmed PDO assignments, SyncManager placement, and offsets. Existing profiles use their device-level PDO layouts.
 
+## Compare module candidates with saved PDO readback
+
+Add `--run-report` to the fixed-slot preview. It checks the saved report for exactly one device with the selected ESI identity, then compares each resolved PDO with the reported assignment in the same direction. The report records the input file's SHA-256 and reported backend. The bundled readback example is authored for the fixed-slot sample.
+
+```powershell
+.\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --slot '0=0x400' --slot '1=0x400' --run-report samples/fixed-slot-pdo-readback.json --out .local/module-readback-review.json
+```
+
+A candidate marked `matched` has the same ordered entry descriptors, including padding. `descriptor_mismatch` lists zero-based entry positions with expected and observed object index, subindex, and width. `unassigned` means the index was absent from an available layout. `unavailable` means the saved report supplied no layout for that direction. The recorded SyncManager and direction-relative bit position come from the saved layout. `sm_hint_matches` separately compares the reported SyncManager with the ESI hint. Read `assigned_exclusions` for conflicting indexes and `other_assignments` for reported PDOs outside the chosen module candidates.
+
+A valid comparison returns JSON even when the results differ. A wrong device identity, ambiguous assignments, or invalid layout stops before JSON creation. CoE and SII sources remain visible, including SII layout evidence from EEPROM. An older layout with no source declaration keeps that provenance unavailable. Matching descriptors alone leave module occupancy and the complete expected process image unresolved.
+
 ## Catalog choices
 
 The [pinned ESI base schema](https://github.com/synapticon/siitool/blob/c46570adb1228eada44ae1f38bd61a81fab99c98/examples/ModulesSlots_DS402_Simple/EtherCATBase.xsd) distinguishes fixed entry mapping from mandatory assignment and describes the default `Sm` and exclusion list. Workbench preserves fixed entries while allowing assignment choices. Mandatory PDOs must be selected. Exclusions are conservatively checked across all chosen PDOs. Duplicate indexes in a direction, duplicate choices, unknown candidates, out-of-range SyncManagers and sharing one SyncManager between Tx and Rx are rejected.

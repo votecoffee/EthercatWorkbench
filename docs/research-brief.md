@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.81.0** previews indexes for explicitly selected modules in fixed, ungrouped ESI slots. Installed modules, PDO assignment and composed process images require separate evidence. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Fixed-slot preview](pdo-selection.md#preview-pdo-indexes-for-fixed-module-slots) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.82.0** compares fixed-slot module PDO candidates with a saved run report for the same identity. It reports descriptor differences and observed placement. Installed module lists and composed expected images require separate evidence. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Modular readback comparison](pdo-selection.md#compare-module-candidates-with-saved-pdo-readback) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

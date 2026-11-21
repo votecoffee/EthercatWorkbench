@@ -1,0 +1,72 @@
+{
+  "backend": "authored_fixture",
+  "devices": [
+    {
+      "identity": {
+        "vendor": 16715776,
+        "product": 11,
+        "revision": 1
+      }
+    }
+  ],
+  "pdo_verification": {
+    "readback": {
+      "tx": {
+        "mapping_source": "coe",
+        "sync_managers": [
+          {
+            "index": 3,
+            "configured_bytes": 7,
+            "pdos": [
+              {
+                "index": 6656,
+                "entries": [
+                  1614872592,
+                  553648641,
+                  7
+                ]
+              },
+              {
+                "index": 6672,
+                "entries": [
+                  1749090320,
+                  553648641,
+                  7
+                ]
+              },
+              {
+                "index": 6720,
+                "entries": [
+                  570425608
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "rx": {
+        "mapping_source": "coe",
+        "sync_managers": [
+          {
+            "index": 2,
+            "configured_bytes": 4,
+            "pdos": [
+              {
+                "index": 5632,
+                "entries": [
+                  1614807056
+                ]
+              },
+              {
+                "index": 5648,
+                "entries": [
+                  1749024784
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

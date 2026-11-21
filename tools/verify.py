@@ -774,6 +774,146 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_modular_readback(cli, destination, sample=None, report=None):
+    """Compare descriptor content and placement separately against saved setup evidence."""
+    from copy import deepcopy
+
+    sample = ROOT / "samples/fixed-slot-pdos.esi.xml" if sample is None else sample
+    report = ROOT / "samples/fixed-slot-pdo-readback.json" if report is None else report
+    original_esi = sample.read_bytes()
+    original_report = report.read_bytes()
+    saved = json.loads(original_report)
+    args = ("preview-modular-pdos", sample, "--identity", "0x00ff1000/11/1",
+            "--slot", "0=0x400", "--slot", "1=0x400")
+
+    def evidence(name, edit):
+        case = deepcopy(saved)
+        edit(case)
+        path = destination / (name + ".json")
+        path.write_bytes((json.dumps(case, indent=2) + "\n").encode())
+        return path
+
+    def readback(case):
+        return case["pdo_verification"]["readback"]
+
+    def tx_sm(case):
+        return readback(case)["tx"]["sync_managers"][0]
+
+    def check(path):
+        return cli_call(cli, *args, "--run-report", path)
+
+    def comparisons(review):
+        return [pdo["saved_readback"] for slot in review["slots"] for pdo in slot["pdos"]]
+
+    out = destination / "compared.json"
+    compared = cli_call(cli, *args, "--run-report", report, "--out", out)
+    assert json.loads(out.read_bytes()) == compared
+    observed = compared["saved_readback"]
+    assert observed["sha256"] == hashlib.sha256(original_report).hexdigest()
+    assert observed["file_name"] == report.name and observed["reported_backend"] == "authored_fixture"
+    assert observed["tx"] == {
+        "mapping_source": "coe", "image_bytes": 7, "unavailable": None,
+        "other_assignments": [{"pdo_index": 0x1A40, "sync_manager": 3, "bit": 48, "entry_count": 1}],
+    }
+    assert observed["rx"] == {
+        "mapping_source": "coe", "image_bytes": 4, "unavailable": None, "other_assignments": [],
+    }
+    rx0, tx0, rx1, tx1 = comparisons(compared)
+    assert [x["bit"] for x in (rx0, tx0, rx1, tx1)] == [0, 0, 16, 24]
+    assert all(x["state"] == "matched" and x["sm_hint_matches"] and not x["differences"]
+               for x in (rx0, tx0, rx1, tx1))
+    assert compared["slots"][0]["pdos"][1]["device_level_index_match"]
+    base = cli_call(cli, *args)
+    compared.pop("saved_readback")
+    for slot in compared["slots"]:
+        for pdo in slot["pdos"]:
+            pdo.pop("saved_readback")
+    assert base == compared
+
+    def wrong_object(case):
+        tx_sm(case)["pdos"][1]["entries"][0] = 0x69410010
+
+    mismatch = check(evidence("same-width-descriptor", wrong_object))
+    difference = comparisons(mismatch)[3]
+    assert mismatch["saved_readback"]["tx"]["image_bytes"] == 7
+    assert difference["state"] == "descriptor_mismatch" and difference["sm_hint_matches"]
+    assert difference["differences"] == [{
+        "entry": 0, "expected": {"object_index": 0x6841, "subindex": 0, "width": 16},
+        "observed": {"object_index": 0x6941, "subindex": 0, "width": 16},
+    }]
+
+    def relocated(case):
+        pdo = tx_sm(case)["pdos"].pop(1)
+        tx_sm(case)["configured_bytes"] = 4
+        readback(case)["tx"]["sync_managers"].append({"index": 4, "configured_bytes": 3, "pdos": [pdo]})
+
+    moved = comparisons(check(evidence("relocated", relocated)))[3]
+    assert (moved["state"], moved["sync_manager"], moved["sm_hint_matches"], moved["bit"]) == ("matched", 4, False, 32)
+
+    def unassigned(case):
+        tx_sm(case)["pdos"].pop(1)
+        tx_sm(case)["configured_bytes"] = 4
+
+    absent = comparisons(check(evidence("unassigned", unassigned)))[3]
+    assert absent["state"] == "unassigned" and absent["bit"] is None
+
+    def incomplete(case):
+        readback(case).update(rx=None, rx_unavailable="authored mailbox timeout")
+
+    partial = check(evidence("incomplete", incomplete))
+    assert partial["saved_readback"]["rx"]["unavailable"] == "authored mailbox timeout"
+    assert [result["state"] for result in comparisons(partial)] == ["unavailable", "matched", "unavailable", "matched"]
+    missing = check(evidence("no-readback", lambda case: case.pop("pdo_verification")))
+    assert all(result["state"] == "unavailable" for result in comparisons(missing))
+
+    def exclusion(case):
+        tx_sm(case)["pdos"][-1]["index"] = 0x1A15
+        readback(case)["tx"]["mapping_source"] = "sii"
+
+    conflict = check(evidence("exclusion", exclusion))
+    assert conflict["saved_readback"]["tx"]["mapping_source"] == "sii"
+    assert comparisons(conflict)[3]["assigned_exclusions"] == [0x1A15]
+    legacy_source = check(evidence("legacy-source", lambda case: readback(case)["tx"].pop("mapping_source")))
+    assert legacy_source["saved_readback"]["tx"]["mapping_source"] is None
+    assert comparisons(legacy_source)[3]["state"] == "matched"
+
+    def short_descriptor(case):
+        tx_sm(case)["pdos"][1]["entries"] = [0x68410010, 0x21000201]
+        # The next PDO supplies seven padding bits, preserving the final length.
+        tx_sm(case)["pdos"][-1]["entries"].insert(0, 7)
+
+    shortened = comparisons(check(evidence("short-descriptor", short_descriptor)))[3]
+    assert shortened["observed_entry_count"] == 2
+    assert shortened["differences"] == [
+        {"entry": 2, "expected": {"object_index": 0, "subindex": 0, "width": 7}, "observed": None}
+    ]
+
+    def rejected(name, edit, expected):
+        path = evidence(name, edit)
+        new = destination / (name + "-result.json")
+        error = cli_call(cli, *args, "--run-report", path, "--out", new, success=False)
+        assert expected in error and not new.exists(), error
+
+    rejected("identity", lambda case: case["devices"][0]["identity"].update(revision=2), "identity differs")
+    rejected("device-count", lambda case: case["devices"].append(case["devices"][0]), "exactly one device")
+    rejected("esi-only", lambda case: readback(case)["tx"].update(mapping_source="esi"), "ESI expectation")
+    rejected("geometry", lambda case: tx_sm(case).update(configured_bytes=8), "differs from its PDO mapping length")
+    rejected("shared-sm", lambda case: readback(case)["rx"]["sync_managers"][0].update(index=3), "share a SyncManager")
+    rejected("contradictory", lambda case: readback(case).update(tx_unavailable="contradictory"), "also declares unavailable")
+    rejected("wrong-direction", lambda case: tx_sm(case)["pdos"][1].update(index=0x1601), "outside the Tx mapping range")
+
+    def duplicate(case):
+        readback(case)["tx"]["sync_managers"].append(
+            {"index": 4, "configured_bytes": 3, "pdos": [deepcopy(tx_sm(case)["pdos"][1])]}
+        )
+
+    rejected("duplicate-assignment", duplicate, "assigned to more than one SyncManager")
+    before = out.read_bytes()
+    error = cli_call(cli, *args, "--run-report", report, "--out", out, success=False)
+    assert "existing paths are preserved" in error and out.read_bytes() == before
+    assert sample.read_bytes() == original_esi and report.read_bytes() == original_report
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -5346,6 +5486,9 @@ def main():
     slots_destination = destination / "esi-fixed-slots"
     slots_destination.mkdir()
     verify_fixed_slot_pdos(cli, slots_destination)
+    module_readback_destination = destination / "esi-modular-readback"
+    module_readback_destination.mkdir()
+    verify_modular_readback(cli, module_readback_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

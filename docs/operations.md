@@ -45,6 +45,8 @@ For a modular ESI, expand **Device → ESI modules and slots** to inspect declar
 
 Use `preview-modular-pdos` for explicit module choices in fixed, ungrouped slots. It shows resolved indexes and SyncManager hints from the selected ESI. [Fixed-slot preview](pdo-selection.md#preview-pdo-indexes-for-fixed-module-slots)
 
+Add `--run-report` to compare those candidates with the matching device's saved PDO descriptors and SyncManager placement. [Readback comparison](pdo-selection.md#compare-module-candidates-with-saved-pdo-readback)
+
 For manual setup, edit/save a profile through **Device**, **Mappings** and **Profiles…**, or use a new JSON profile based on an appropriate sample. Configure exact expected identity, Tx/Rx lengths, bit offsets/widths, numeric/raw types and transformations. `Field.source` identifies the definition as manual, ESI or override. Live PDO verification is separate discovered evidence. Staged output values are manual offline entries even when their field definitions came from ESI.
 
 Profiles use schema 1 with defaults for omitted settings and validation on load/save. Saves create new paths, use UTF-8 and flush. Preserve the source profile when preparing variants. Typed staging has its own preview/apply guard; [output staging](output-staging.md) explains ranges, overlaps, zero initialization and provenance.
