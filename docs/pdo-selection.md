@@ -91,7 +91,19 @@ Use `--module-inventory` to compare fixed-slot choices with saved CoE values. Th
 
 The authored inventory illustrates the schema. Supply schema 1, the exact device identity, an optional serial, and an `objects` array keyed by numeric CoE index. Store the raw value of each upload in `data_hex` beside its numeric `subindex`. Subindex zero is a one-byte count and entries are four-byte little-endian module identities. Use `unavailable` for a reason when a list has no saved values. Unavailable and zero-count lists are distinct. The reader checks the declared count, unique contiguous subindexes, widths and identity. [Beckhoff object dictionary example](https://infosys.beckhoff.com/content/1033/ep8601-0022/16625888779.html)
 
-The preview records the evidence hash, the source of the chosen placements, and differences by zero-based slot. A reported zero and an absent position appear separately. If both the inventory and PDO run report include a serial, they must agree. Offline profile export preserves the comparison and stops if the detected list conflicts with the requested placements. The authored example and user-supplied snapshot are saved evidence. Physical collection requires a separate session.
+The preview records the evidence hash, the source of the chosen placements, and differences by zero-based slot. A reported zero and an absent position appear separately. If both the inventory and PDO run report include a serial, they must agree. Offline profile export preserves the comparison and stops if the detected list conflicts with the requested placements. Physical collection requires a separate session.
+
+## Collect module inventory in the simulator
+
+`read-virtual-module-inventory` initializes the in-memory fixed-slot SubDevice to PREOP, reads the two lists through the CoE upload client and confirms INIT on exit. EtherCrab's initialization includes modeled register writes for the address, SyncManager and FMMU setup. Standard output contains the state observations, wire counters and inventory. The optional `--out` writes a new schema-1 inventory file. The snapshot carries `source: virtual_coe` into comparisons and offline profiles.
+
+```powershell
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --out .local/virtual-modules.json
+.\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/virtual-modules.json
+.\ethercat-workbench-cli.exe export-modular-profile samples/fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/virtual-modules.json --run-report samples/fixed-slot-pdo-readback.json --out .local/virtual-module-decoder.json
+```
+
+Use `--scenario detected-differs` to compare a different detected module with manual slots. `configured-unavailable` tests an SDO abort before the detected list. `detected-entry-abort` exercises a failure after part of that list was read. A failed list records the reason and omits incomplete values. `malformed-count` stops uploads on the affected mailbox, and `empty-detected` returns a valid count of zero. The existing saved PDO run report in the example supplies the process-image layout. Physical module inventory collection remains pending.
 
 ## Catalog choices
 

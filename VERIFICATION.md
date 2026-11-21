@@ -802,3 +802,12 @@ The Windows release CLI parsed the configured and detected module objects in the
 The CLI rejected malformed upload widths, inconsistent counts, duplicate subindexes, duplicate objects, wrong identities and a serial mismatch with the PDO run report before writing results. Automatic placement required a complete detected list for the selected fixed-slot ESI. A detected conflict blocked export. The new offline decoder profile saved the inventory hash and reported matches, and reloading preserved them.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The 0.84.0 manual export and saved profile remained identical. This verifies the interpretation of supplied evidence. Physical module readback and commissioning remain pending.
+## Version 0.86.0 virtual CoE module inventory (2026-11-21)
+
+The Windows release CLI collected the two fixed-slot module lists from the in-memory ESC in PREOP through the shared CoE uploader. It made six uploads in the matched case and confirmed INIT on exit. The wire audit recorded the modeled initialization and teardown, with zero OP requests, SDO downloads, cyclic reads or logical or physical output writes.
+
+The six-scenario headless regression covered matching slots, an independently different detected identity, a configured-list SDO abort, a detected entry abort after partial readback, an invalid count width and a valid count of zero. Partial lists were unavailable and omitted their incomplete values. A malformed reply barred further uploads on that mailbox. A server abort on the configured list still allowed the detected list to be collected.
+
+The saved inventory matched the authored ESI identity, supplied two detected positions and carried its virtual source and hash through profile export and reload. The exported decoder reproduced the four expected TxPDO values using the bundled authored PDO layout. The manual conflicting placement was rejected and an existing snapshot could not be replaced. Earlier snapshots without a source still passed the saved-format regression.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless regression passed. Physical module collection and the GUI/logger bench run remain pending.

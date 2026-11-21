@@ -6,32 +6,42 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-const CONFIGURED: u16 = 0xf030;
-const DETECTED: u16 = 0xf050;
+pub(crate) const CONFIGURED: u16 = 0xf030;
+pub(crate) const DETECTED: u16 = 0xf050;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Snapshot {
-    schema: u32,
-    identity: Identity,
-    serial: Option<u32>,
-    objects: Vec<Object>,
+pub struct Snapshot {
+    pub(crate) schema: u32,
+    pub(crate) identity: Identity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) serial: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<Source>,
+    pub(crate) objects: Vec<Object>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Object {
-    index: u16,
-    #[serde(default)]
-    uploads: Vec<Upload>,
-    unavailable: Option<String>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    VirtualCoe,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Upload {
-    subindex: u8,
-    data_hex: String,
+pub(crate) struct Object {
+    pub(crate) index: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) uploads: Vec<Upload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unavailable: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Upload {
+    pub(crate) subindex: u8,
+    pub(crate) data_hex: String,
 }
 
 enum List {
@@ -43,6 +53,7 @@ pub(super) struct Inventory {
     file_name: String,
     sha256: String,
     serial: Option<u32>,
+    source: Option<Source>,
     configured: Option<List>,
     detected: Option<List>,
 }
@@ -53,6 +64,8 @@ pub struct Comparison {
     pub file_name: String,
     pub sha256: String,
     pub reported_serial: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
     pub placement_source: PlacementSource,
     pub configured: ListComparison,
     pub detected: ListComparison,
@@ -123,6 +136,7 @@ impl Inventory {
                 .into_owned(),
             sha256: hex::encode(Sha256::digest(&bytes)),
             serial: snapshot.serial,
+            source: snapshot.source,
             configured: None,
             detected: None,
         };
@@ -174,6 +188,7 @@ impl Inventory {
             file_name: self.file_name,
             sha256: self.sha256,
             reported_serial: self.serial,
+            source: self.source,
             placement_source,
             configured: compare_list(CONFIGURED, self.configured, &expected),
             detected: compare_list(DETECTED, self.detected, &expected),

@@ -1276,6 +1276,96 @@ def verify_module_inventory(cli, destination, sample=None, report=None, inventor
     assert inventory.read_bytes() == original
 
 
+def verify_virtual_module_inventory(cli, destination, sample=None, report=None):
+    """Collect CoE inventory in virtual PREOP and reuse it in ordinary offline tools."""
+    sample = ROOT / "samples/fixed-slot-pdos.esi.xml" if sample is None else sample
+    report = ROOT / "samples/fixed-slot-pdo-readback.json" if report is None else report
+    selector = (sample, "--device", 0, "--identity", "0x00ff1000/11/1")
+    manual = ("--slot", "0=0x400", "--slot", "1=0x400")
+
+    def collect(scenario, uploads):
+        path = destination / f"{scenario}.json"
+        result = cli_call(cli, "read-virtual-module-inventory", "--scenario", scenario, "--out", path)
+        snapshot = json.loads(path.read_bytes())
+        assert snapshot == result["inventory"]
+        assert snapshot["source"] == "virtual_coe"
+        assert snapshot["identity"] == {"vendor": 0x00FF1000, "product": 11, "revision": 1}
+        assert snapshot["serial"] == 14785 and snapshot["schema"] == 1
+        assert result["scenario"] == scenario.replace("-", "_")
+        assert result["preop_al"] == [2, 0] and result["stopped_al"] == [1, 0]
+        audit = result["audit"]
+        assert audit["coe_uploads"] == uploads and audit["mailbox_counter_errors"] == 0
+        assert audit["sii_reads"] > 0
+        assert 2 in audit["state_requests"] and set(audit["state_requests"]) == {1, 2}
+        assert audit["final_al_status"] == 1 and audit["final_al_code"] == 0
+        for key in ("coe_downloads", "op_requests", "logical_reads", "logical_writes",
+                    "physical_output_writes", "dc_enable_requests", "dc_clock_distribution"):
+            assert audit[key] == 0, (scenario, key, audit)
+        return path, {item["index"]: item for item in snapshot["objects"]}
+
+    def preview(path, *slots):
+        return cli_call(cli, "preview-modular-pdos", *selector, "--module-inventory", path, *slots)
+
+    captured, lists = collect("matched", 6)
+    for index in (0xF030, 0xF050):
+        assert lists[index]["uploads"] == [
+            {"subindex": 0, "data_hex": "02"},
+            {"subindex": 1, "data_hex": "00040000"},
+            {"subindex": 2, "data_hex": "00040000"},
+        ]
+    reviewed = preview(captured)["module_inventory"]
+    assert reviewed["configured"]["state"] == reviewed["detected"]["state"] == "matched"
+    assert reviewed["sha256"] == hashlib.sha256(captured.read_bytes()).hexdigest()
+    assert reviewed["source"] == "virtual_coe" and reviewed["placement_source"] == "saved_detected"
+    target = destination / "exported-profile.json"
+    created = cli_call(cli, "export-modular-profile", *selector, "--module-inventory", captured,
+                       "--run-report", report, "--out", target)
+    assert cli_call(cli, "validate", target) == created
+    assert created["modular_decoder"]["module_inventory"] == reviewed
+    values = cli_call(cli, "decode", target, "34 12 01 CD AB FE A5")
+    assert [field["value"] for field in values] == ["4660", "true", "43981", "false"]
+
+    different, _ = collect("detected-differs", 6)
+    compared = preview(different, *manual)["module_inventory"]
+    assert compared["configured"]["state"] == "matched"
+    assert compared["detected"]["differences"] == [{"slot": 1, "expected": 0x400, "reported": 0x401}]
+    assert [slot["module_ident"] for slot in preview(different)["slots"]] == [0x400, 0x401]
+    rejected = destination / "rejected-profile.json"
+    error = cli_call(cli, "export-modular-profile", *selector, *manual, "--module-inventory",
+                     different, "--run-report", report, "--out", rejected, success=False)
+    assert "detected module list differs" in error and not rejected.exists(), error
+
+    configured_absent, lists = collect("configured-unavailable", 4)
+    assert "0xf030:00" in lists[0xF030]["unavailable"] and "uploads" not in lists[0xF030]
+    reviewed = preview(configured_absent)["module_inventory"]
+    assert reviewed["configured"]["state"] == "unavailable" and reviewed["detected"]["state"] == "matched"
+
+    partial, lists = collect("detected-entry-abort", 6)
+    assert "0xf050:02" in lists[0xF050]["unavailable"] and "uploads" not in lists[0xF050]
+    reviewed = preview(partial, *manual)["module_inventory"]
+    assert reviewed["configured"]["state"] == "matched" and reviewed["detected"]["state"] == "unavailable"
+    error = cli_call(cli, "preview-modular-pdos", *selector, "--module-inventory", partial, success=False)
+    assert "available detected module list" in error
+
+    malformed, lists = collect("malformed-count", 1)
+    assert "expedited CoE payload exceeds bound" in lists[0xF030]["unavailable"]
+    assert "CoE readback integrity failed" in lists[0xF050]["unavailable"]
+    assert all("uploads" not in item for item in lists.values())
+    reviewed = preview(malformed, *manual)["module_inventory"]
+    assert reviewed["configured"]["state"] == reviewed["detected"]["state"] == "unavailable"
+
+    empty, lists = collect("empty-detected", 4)
+    assert lists[0xF050]["uploads"] == [{"subindex": 0, "data_hex": "00"}]
+    reviewed = preview(empty, *manual)["module_inventory"]
+    assert reviewed["detected"]["state"] == "mismatch" and reviewed["detected"]["reported_count"] == 0
+    error = cli_call(cli, "preview-modular-pdos", *selector, "--module-inventory", empty, success=False)
+    assert "differs from the ESI fixed slot count" in error
+
+    original = captured.read_bytes()
+    error = cli_call(cli, "read-virtual-module-inventory", "--out", captured, success=False)
+    assert "output path already exists" in error and captured.read_bytes() == original
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -5885,6 +5975,9 @@ def main():
     module_inventory_destination = destination / "esi-module-inventory"
     module_inventory_destination.mkdir()
     verify_module_inventory(cli, module_inventory_destination)
+    virtual_module_destination = destination / "virtual-module-inventory"
+    virtual_module_destination.mkdir()
+    verify_virtual_module_inventory(cli, virtual_module_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

@@ -53,6 +53,8 @@ Use `export-modular-profile` to save the matched fields and complete image lengt
 
 Use `--module-inventory` to review configured and detected module IDs from saved CoE values. A complete detected list can supply the fixed-slot choices. [Module inventory review](pdo-selection.md#review-saved-module-identities)
 
+Use `read-virtual-module-inventory --out .local/virtual-modules.json` to collect a fixed-slot sample in PREOP on the in-memory transport. The CLI reports any failed list and confirms the final INIT state. [Virtual module inventory](pdo-selection.md#collect-module-inventory-in-the-simulator)
+
 For manual setup, edit/save a profile through **Device**, **Mappings** and **Profiles…**, or use a new JSON profile based on an appropriate sample. Configure exact expected identity, Tx/Rx lengths, bit offsets/widths, numeric/raw types and transformations. `Field.source` identifies the definition as manual, ESI or override. Live PDO verification is separate discovered evidence. Staged output values are manual offline entries even when their field definitions came from ESI.
 
 Profiles use schema 1 with defaults for omitted settings and validation on load/save. Saves create new paths, use UTF-8 and flush. Preserve the source profile when preparing variants. Typed staging has its own preview/apply guard; [output staging](output-staging.md) explains ranges, overlaps, zero initialization and provenance.

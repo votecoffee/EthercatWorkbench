@@ -67,6 +67,18 @@ pub enum ScanCase {
     SecondDeviceCoreTimeout,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleInventoryCase {
+    #[default]
+    Matched,
+    DetectedDiffers,
+    ConfiguredUnavailable,
+    DetectedEntryAbort,
+    MalformedCount,
+    EmptyDetected,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum VirtualFault {
     #[default]
@@ -404,6 +416,15 @@ impl VirtualWire {
         }
     }
 
+    pub fn for_module_inventory(case: ModuleInventoryCase) -> Self {
+        let mut esc = VirtualEsc::new(VirtualModel::Coe, VirtualFault::None);
+        // Identity for the authored fixed-slot ESI, independent of the normal CoE fixture.
+        esc.eeprom[0x14..0x18].copy_from_slice(&11u32.to_le_bytes());
+        esc.eeprom[0x1c..0x20].copy_from_slice(&14_785u32.to_le_bytes());
+        esc.module_inventory = Some(case);
+        Self::single(esc)
+    }
+
     pub fn for_scan(model: VirtualModel, case: ScanCase) -> Self {
         let downstream = match case {
             ScanCase::TwoDevices => ScanCase::Normal,
@@ -650,6 +671,7 @@ pub(crate) struct VirtualEsc {
     scan_case: ScanCase,
     read_only: bool,
     pdo_readback: bool,
+    module_inventory: Option<ModuleInventoryCase>,
     registers: Box<[u8; 65_536]>,
     eeprom: Vec<u8>,
     mailbox: Option<[u8; MAILBOX_BYTES]>,
@@ -688,6 +710,7 @@ impl VirtualEsc {
             scan_case: ScanCase::Normal,
             read_only: false,
             pdo_readback: false,
+            module_inventory: None,
             registers,
             eeprom: eeprom(model, fault),
             mailbox: None,
@@ -1514,6 +1537,22 @@ impl VirtualEsc {
     }
 
     fn object(&self, index: u16, sub: u8) -> Option<(u32, u8)> {
+        use crate::esi::modular_preview::inventory::{CONFIGURED, DETECTED};
+        use ModuleInventoryCase::*;
+
+        if matches!(index, CONFIGURED | DETECTED) {
+            let case = self.module_inventory?;
+            return match (index, sub, case) {
+                (CONFIGURED, _, ConfiguredUnavailable) | (DETECTED, 2, DetectedEntryAbort) => None,
+                (CONFIGURED, 0, MalformedCount) => Some((2, 2)),
+                (DETECTED, 0, EmptyDetected) => Some((0, 1)),
+                (DETECTED, _, EmptyDetected) => None,
+                (_, 0, _) => Some((2, 1)),
+                (DETECTED, 2, DetectedDiffers) => Some((0x401, 4)),
+                (_, 1 | 2, _) => Some((0x400, 4)),
+                _ => None,
+            };
+        }
         let entries = if self.fault == VirtualFault::PdoOrder {
             [0x6000_0320, 0x6000_0201, 15, 0x6000_0110]
         } else {

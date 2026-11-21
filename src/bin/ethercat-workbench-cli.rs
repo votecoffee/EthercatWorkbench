@@ -280,7 +280,15 @@ enum Command {
         #[arg(long)]
         rx_pdo: Vec<String>,
     },
-    /// Resolve module PDO candidate indexes for explicit placements in fixed ESI slots.
+    /// Read the configured and detected module lists on the fixed-slot virtual fixture.
+    ReadVirtualModuleInventory {
+        #[arg(long, value_enum, default_value = "matched")]
+        scenario: ethercat_workbench::live::virtual_inventory::ModuleInventoryCase,
+        /// Save only the schema-1 inventory for use with --module-inventory.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Resolve module PDO candidate indexes for explicit or detected placements in fixed ESI slots.
     #[command(group(clap::ArgGroup::new("module_device").required(true).multiple(true).args(["device", "identity"])))]
     PreviewModularPdos {
         #[command(flatten)]
@@ -565,19 +573,23 @@ fn output(value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn save_inspection(value: &impl Serialize, path: &std::path::Path) -> Result<()> {
+    use std::io::Write;
+    ensure!(
+        path.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json")),
+        "inspection output must end in .json"
+    );
+    let mut file = std::fs::File::create_new(path)
+        .context("create new inspection output; existing paths are preserved")?;
+    serde_json::to_writer_pretty(&mut file, value)?;
+    writeln!(file)?;
+    file.sync_all().context("flush inspection output")
+}
+
 fn inspection_export(value: &impl Serialize, path: Option<&std::path::Path>) -> Result<()> {
     if let Some(path) = path {
-        use std::io::Write;
-        ensure!(
-            path.extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("json")),
-            "inspection output must end in .json"
-        );
-        let mut file = std::fs::File::create_new(path)
-            .context("create new inspection output; existing paths are preserved")?;
-        serde_json::to_writer_pretty(&mut file, value)?;
-        writeln!(file)?;
-        file.sync_all().context("flush inspection output")?;
+        save_inspection(value, path)?;
     }
     output(value)
 }
@@ -967,6 +979,14 @@ fn main() -> Result<()> {
             profile.sync_unit_cycle_ns = sync_unit_cycle_ns;
             profile.save(&out)?;
             output(&selected.notes)
+        }
+        Command::ReadVirtualModuleInventory { scenario, out } => {
+            shared_outputs(out.as_deref(), None)?;
+            let report = ethercat_workbench::live::virtual_inventory::read(scenario)?;
+            if let Some(path) = out.as_deref() {
+                save_inspection(&report.inventory, path)?;
+            }
+            output(&report)
         }
         Command::PreviewModularPdos {
             selection,
