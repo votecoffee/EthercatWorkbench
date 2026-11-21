@@ -70,20 +70,28 @@ impl From<SavedLayout> for ReportedLayout {
 
 #[derive(Debug, Serialize)]
 pub(super) struct Comparison {
-    file_name: String,
-    sha256: String,
-    reported_backend: String,
+    pub(super) file_name: String,
+    pub(super) sha256: String,
+    pub(super) reported_backend: String,
     reported_serial: Option<u32>,
     tx: ObservedDirection,
     rx: ObservedDirection,
 }
 
 impl Comparison {
-    pub(super) fn image_bytes(&self, direction: Direction) -> Result<usize> {
-        let layout = match direction {
+    fn direction(&self, direction: Direction) -> &ObservedDirection {
+        match direction {
             Direction::Tx => &self.tx,
             Direction::Rx => &self.rx,
-        };
+        }
+    }
+
+    pub(super) fn mapping_source(&self, direction: Direction) -> Option<MappingSource> {
+        self.direction(direction).mapping_source
+    }
+
+    pub(super) fn image_bytes(&self, direction: Direction) -> Result<usize> {
+        let layout = self.direction(direction);
         layout.image_bytes.with_context(|| {
             format!(
                 "saved {:?} PDO layout is unavailable: {}",

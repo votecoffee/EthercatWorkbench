@@ -67,6 +67,19 @@ The decoder reports only fields from candidates with matching ordered descriptor
 
 The example decodes the two Tx status words as 4660 and 43981. Their Boolean fields are true and false. Padding and PDOs outside the chosen module candidates remain visible in the raw image. An unavailable layout, malformed hex, or incorrect length rejects the requested decode before creating its JSON receipt. The report records an interpretation of user-supplied bytes from the saved layout. Profiles and physical commissioning follow their existing workflows.
 
+## Export a reusable modular decoder profile
+
+Use `export-modular-profile` with the same fixed-slot ESI choices and saved run report. The operation creates a standard profile with the saved directional image lengths and the fields whose module PDO descriptors match.
+
+```powershell
+.\ethercat-workbench-cli.exe export-modular-profile samples/fixed-slot-pdos.esi.xml --device 0 --slot '0=0x400' --slot '1=0x400' --run-report samples/fixed-slot-pdo-readback.json --out .local/module-decoder.json
+.\ethercat-workbench-cli.exe decode .local/module-decoder.json '34 12 01 CD AB FE A5'
+```
+
+In the desktop, load the file through **Profiles…** and open **Inputs → Offline decoder…**. **Device → Saved modular layout** shows the report hash and the saved image lengths alongside the ESI baseline. The profile also retains the slot choices, reported mapping sources, withheld PDOs and fields with unsupported widths or alignments. Supported Rx fields are available for offline output staging. Offline and synthetic capture workflows use the same profile.
+
+Export requires a saved length for both directions, including an explicitly observed zero-length image. It preserves complete image lengths when some fields are withheld and creates a new file. The exported decoder is scoped to offline use. A hardware session uses a separately configured commissioning profile and the normal approvals.
+
 ## Catalog choices
 
 The [pinned ESI base schema](https://github.com/synapticon/siitool/blob/c46570adb1228eada44ae1f38bd61a81fab99c98/examples/ModulesSlots_DS402_Simple/EtherCATBase.xsd) distinguishes fixed entry mapping from mandatory assignment and describes the default `Sm` and exclusion list. Workbench preserves fixed entries while allowing assignment choices. Mandatory PDOs must be selected. Exclusions are conservatively checked across all chosen PDOs. Duplicate indexes in a direction, duplicate choices, unknown candidates, out-of-range SyncManagers and sharing one SyncManager between Tx and Rx are rejected.

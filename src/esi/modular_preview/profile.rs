@@ -1,0 +1,105 @@
+//! Build standard offline profiles from ESI labels and matched saved PDO positions.
+use super::{SlotPreview, decode::field_positions, readback::Comparison};
+use crate::{
+    model::{EsiSource, Field, Profile},
+    pdo::MappingSource,
+    pdo_catalog::Direction,
+};
+use anyhow::{Result, ensure};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Provenance {
+    pub report_file_name: String,
+    pub report_sha256: String,
+    pub reported_backend: String,
+    pub slots: Vec<u32>,
+    pub tx: ImageSource,
+    pub rx: ImageSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageSource {
+    pub image_bytes: usize,
+    pub mapping_source: Option<MappingSource>,
+    pub withheld_pdos: Vec<u16>,
+    pub unavailable_fields: Vec<UnavailableField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnavailableField {
+    pub name: String,
+    pub reason: String,
+}
+
+pub(super) fn build(
+    mut esi: EsiSource,
+    readback: &Comparison,
+    slots: &[SlotPreview],
+) -> Result<Profile> {
+    let (tx_source, tx) = image(Direction::Tx, readback, slots)?;
+    let (rx_source, rx) = image(Direction::Rx, readback, slots)?;
+    ensure!(
+        !tx.is_empty() || !rx.is_empty(),
+        "saved PDO layouts have no decodable module fields"
+    );
+    esi.default_tx_bytes = None;
+    esi.default_rx_bytes = None;
+    esi.pdo_catalog.clear();
+    esi.dc_modes.clear();
+    esi.notes.clear();
+
+    let profile = Profile {
+        name: format!("{} · Modular offline decoder", esi.device),
+        expected_identity: Some(esi.identity.clone()),
+        esi: Some(esi),
+        tx_bytes: tx_source.image_bytes,
+        rx_bytes: rx_source.image_bytes,
+        tx,
+        rx,
+        modular_decoder: Some(Provenance {
+            report_file_name: readback.file_name.clone(),
+            report_sha256: readback.sha256.clone(),
+            reported_backend: readback.reported_backend.clone(),
+            slots: slots.iter().map(|slot| slot.module_ident).collect(),
+            tx: tx_source,
+            rx: rx_source,
+        }),
+        ..Profile::default()
+    };
+    profile.validate()?;
+    Ok(profile)
+}
+
+fn image(
+    direction: Direction,
+    readback: &Comparison,
+    slots: &[SlotPreview],
+) -> Result<(ImageSource, Vec<Field>)> {
+    let image_bytes = readback.image_bytes(direction)?;
+    let (positions, withheld_pdos) = field_positions(direction, slots);
+    let mut fields = Vec::new();
+    let mut unavailable_fields = Vec::new();
+    for position in positions {
+        let field = position.definition();
+        match field.validate() {
+            Ok(()) => fields.push(field),
+            Err(error) => unavailable_fields.push(UnavailableField {
+                name: field.name,
+                reason: error.to_string(),
+            }),
+        }
+    }
+    Ok((
+        ImageSource {
+            image_bytes,
+            mapping_source: readback.mapping_source(direction),
+            withheld_pdos,
+            unavailable_fields,
+        },
+        fields,
+    ))
+}

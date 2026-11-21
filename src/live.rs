@@ -381,6 +381,7 @@ pub fn safeop(
         profile.expected_identity.is_some(),
         "live profile needs exact vendor, product and revision"
     );
+    profile.require_native_scope()?;
     let mut port = Transport::open(&profile.nic)?;
     safeop_on(profile, stop, view, report, &mut port, run)
 }

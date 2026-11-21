@@ -1,5 +1,6 @@
 //! Resolve PDO template indexes for explicit placements in fixed, ungrouped ESI slots.
 mod decode;
+pub mod profile;
 mod readback;
 
 use super::{
@@ -7,7 +8,7 @@ use super::{
     select_device, unique_child, with_description,
 };
 use crate::{
-    model::{EsiSource, Identity},
+    model::{EsiSource, Identity, Profile},
     pdo_catalog::Direction,
 };
 use anyhow::{Context, Result, ensure};
@@ -43,6 +44,8 @@ pub struct Preview {
     esi_sha256: String,
     identity: Identity,
     slots: Vec<SlotPreview>,
+    #[serde(skip)]
+    esi: EsiSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     saved_readback: Option<readback::Comparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +55,14 @@ pub struct Preview {
 }
 
 impl Preview {
+    pub fn offline_profile(self) -> Result<Profile> {
+        let readback = self
+            .saved_readback
+            .as_ref()
+            .context("profile export requires saved PDO readback")?;
+        profile::build(self.esi, readback, &self.slots)
+    }
+
     pub fn compare_saved_run(&mut self, path: &Path) -> Result<()> {
         self.saved_readback = Some(readback::compare(path, &self.identity, &mut self.slots)?);
         self.decoded_tx = None;
@@ -244,6 +255,7 @@ fn preview_device(
         esi_sha256: source.sha256.clone(),
         identity: source.identity.clone(),
         slots,
+        esi: source.clone(),
         saved_readback: None,
         decoded_tx: None,
         decoded_rx: None,

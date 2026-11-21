@@ -1064,6 +1064,95 @@ def verify_modular_payload(cli, destination, sample=None, report=None):
     assert sample.read_bytes() == original_esi and report.read_bytes() == original_report
 
 
+def verify_modular_profile(cli, destination, sample=None, report=None):
+    """Export, reload and reuse fixed-slot mappings through the ordinary offline profile workflows."""
+    from copy import deepcopy
+
+    sample = ROOT / "samples/fixed-slot-pdos.esi.xml" if sample is None else sample
+    report = ROOT / "samples/fixed-slot-pdo-readback.json" if report is None else report
+    original_esi = sample.read_bytes()
+    original_report = report.read_bytes()
+    saved_run = json.loads(original_report)
+    selections = ("--device", 0, "--identity", "0x00ff1000/11/1", "--slot", "0=0x400", "--slot", "1=0x400")
+    args = ("export-modular-profile", sample, *selections)
+    target = destination / "modular-profile.json"
+    created = cli_call(cli, *args, "--run-report", report, "--out", target)
+    assert json.loads(target.read_bytes()) == cli_call(cli, "validate", target) == created
+    assert created["expected_identity"] == {"vendor": 0x00FF1000, "product": 11, "revision": 1}
+    assert created["esi"]["identity"] == created["expected_identity"]
+    assert created["esi"]["sha256"] == hashlib.sha256(original_esi).hexdigest()
+    assert created["esi"]["modular"] and not created["esi"]["pdo_catalog"]
+    assert created["esi_pdo_selection"] is None and created["nic"] == "" and created["staged_rx_hex"] == ""
+    source = created["modular_decoder"]
+    assert source["report_file_name"] == report.name and source["reported_backend"] == "authored_fixture"
+    assert source["report_sha256"] == hashlib.sha256(original_report).hexdigest()
+    assert source["slots"] == [0x400, 0x400]
+    assert source["tx"] == {"image_bytes": 7, "mapping_source": "coe", "withheld_pdos": [], "unavailable_fields": []}
+    assert source["rx"] == {"image_bytes": 4, "mapping_source": "coe", "withheld_pdos": [], "unavailable_fields": []}
+    assert (created["tx_bytes"], created["rx_bytes"]) == (7, 4)
+    assert [field["bit"] for field in created["tx"]] == [0, 16, 24, 40]
+    assert [field["bit"] for field in created["rx"]] == [0, 16]
+    assert all(field["source"] == "esi" and field["log"] for field in created["tx"])
+    assert all(field["source"] == "esi" and not field["log"] for field in created["rx"])
+    tx = cli_call(cli, "decode", target, "34 12 01 CD AB FE A5")
+    assert [v["value"] for v in tx] == ["4660", "true", "43981", "false"]
+    rx = cli_call(cli, "decode", target, "EF BE 02 80", "--rx")
+    assert [v["value"] for v in rx] == ["48879", "32770"]
+    assert tx[2]["field"].startswith("Slot 1 Status word") and tx[2]["bit"] == 24
+
+    staged = destination / "staged.json"
+    cli_call(cli, "stage-rx", target, "--zero", "--set", "1=257", "--out", staged)
+    staged_profile = cli_call(cli, "validate", staged)
+    assert bytes.fromhex(staged_profile["staged_rx_hex"]) == b"\x00\x00\x01\x01"
+    assert staged_profile["modular_decoder"] == source
+
+    capture, receipt = destination / "modular.csv", destination / "synthetic-run.json"
+    run = cli_call(cli, "run", target, "--seconds", 1, "--csv", capture, "--report", receipt)
+    audited = audit_capture(cli, receipt, capture, run)
+    assert audited["fields"] == [field["name"] for field in created["tx"]] and audited["rows"] >= 1
+    assert run["context"]["profile"]["modular_decoder"] == source
+
+    prohibited_report = destination / "blocked-live.json"
+    prohibited_csv = destination / "blocked-live.csv"
+    result = cli_call(cli, "run", target, "--backend", "safeop", "--csv", prohibited_csv,
+                      "--report", prohibited_report, success=False)
+    assert "modular decoder profiles are for offline use" in result
+    assert not prohibited_report.exists() and not prohibited_csv.exists()
+
+    def altered(name, mutation):
+        data = deepcopy(saved_run)
+        mutation(data["pdo_verification"]["readback"])
+        path = destination / (name + "-readback.json")
+        path.write_bytes((json.dumps(data, indent=2) + "\n").encode())
+        return path
+
+    def mismatch(rd):
+        rd["tx"]["sync_managers"][0]["pdos"][1]["entries"][0] = 0x69410010
+
+    partial = cli_call(cli, *args, "--run-report", altered("mismatch", mismatch),
+                       "--out", destination / "partial.json")
+    assert partial["tx_bytes"] == 7 and len(partial["tx"]) == 2
+    assert partial["modular_decoder"]["tx"]["withheld_pdos"] == [0x1A10]
+
+    def empty_rx(rd):
+        rd["rx"]["sync_managers"] = []
+
+    tx_only = cli_call(cli, *args, "--run-report", altered("empty-rx", empty_rx),
+                       "--out", destination / "known-zero-rx.json")
+    assert tx_only["rx_bytes"] == 0 and tx_only["rx"] == []
+    assert tx_only["modular_decoder"]["rx"]["withheld_pdos"] == [0x1600, 0x1610]
+
+    no_rx = altered("no-rx", lambda rd: rd.update(rx=None, rx_unavailable="authored unavailable Rx"))
+    denied = destination / "unavailable.json"
+    assert "authored unavailable Rx" in cli_call(cli, *args, "--run-report", no_rx, "--out", denied, success=False)
+    assert not denied.exists()
+
+    before = target.read_bytes()
+    cli_call(cli, *args, "--run-report", report, "--out", target, success=False)
+    assert target.read_bytes() == before
+    assert sample.read_bytes() == original_esi and report.read_bytes() == original_report
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -5667,6 +5756,9 @@ def main():
     modular_payload_destination = destination / "esi-modular-payload"
     modular_payload_destination.mkdir()
     verify_modular_payload(cli, modular_payload_destination)
+    modular_profile_destination = destination / "esi-modular-profile"
+    modular_profile_destination.mkdir()
+    verify_modular_profile(cli, modular_profile_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

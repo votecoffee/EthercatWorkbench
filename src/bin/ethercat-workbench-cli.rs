@@ -23,6 +23,27 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Args)]
+#[group(skip)]
+struct ModularSelection {
+    file: PathBuf,
+    /// Zero-based device entry in esi-list.
+    #[arg(long)]
+    device: Option<usize>,
+    /// Exact VENDOR/PRODUCT/REVISION, optionally guarding the device index.
+    #[arg(long, value_parser = esi::identity_selector)]
+    identity: Option<ethercat_workbench::model::Identity>,
+    /// Supply one zero-based SLOT=MODULE_IDENT for each fixed slot.
+    #[arg(long, required = true, value_parser = esi::modular_preview::placement)]
+    slot: Vec<esi::modular_preview::Placement>,
+}
+
+impl ModularSelection {
+    fn preview(&self) -> Result<esi::modular_preview::Preview> {
+        esi::modular_preview::preview(&self.file, self.device, self.identity.as_ref(), &self.slot)
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Inspect Windows Npcap host files, service and policy without opening a NIC.
@@ -253,16 +274,8 @@ enum Command {
     /// Resolve module PDO candidate indexes for explicit placements in fixed ESI slots.
     #[command(group(clap::ArgGroup::new("module_device").required(true).multiple(true).args(["device", "identity"])))]
     PreviewModularPdos {
-        file: PathBuf,
-        /// Zero-based device entry in esi-list.
-        #[arg(long)]
-        device: Option<usize>,
-        /// Exact VENDOR/PRODUCT/REVISION, optionally guarding the device index.
-        #[arg(long, value_parser = esi::identity_selector)]
-        identity: Option<ethercat_workbench::model::Identity>,
-        /// Supply one zero-based SLOT=MODULE_IDENT for each fixed slot.
-        #[arg(long, required = true, value_parser = esi::modular_preview::placement)]
-        slot: Vec<esi::modular_preview::Placement>,
+        #[command(flatten)]
+        selection: ModularSelection,
         /// Compare against PDO readback in a saved run report for the same identity.
         #[arg(long)]
         run_report: Option<PathBuf>,
@@ -274,6 +287,16 @@ enum Command {
         rx_hex: Option<String>,
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Export an offline decoder profile from matched module PDOs and a saved run.
+    #[command(group(clap::ArgGroup::new("module_device").required(true).multiple(true).args(["device", "identity"])))]
+    ExportModularProfile {
+        #[command(flatten)]
+        selection: ModularSelection,
+        #[arg(long)]
+        run_report: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Build a new offline profile from a retained ESI catalog. Sends no bus writes.
     SelectPdos {
@@ -937,18 +960,14 @@ fn main() -> Result<()> {
             output(&selected.notes)
         }
         Command::PreviewModularPdos {
-            file,
-            device,
-            identity,
-            slot,
+            selection,
             run_report,
             tx_hex,
             rx_hex,
             out,
         } => {
             use ethercat_workbench::pdo_catalog::Direction;
-            let mut report =
-                esi::modular_preview::preview(&file, device, identity.as_ref(), &slot)?;
+            let mut report = selection.preview()?;
             if let Some(path) = &run_report {
                 report.compare_saved_run(path)?;
             }
@@ -958,6 +977,17 @@ fn main() -> Result<()> {
                 }
             }
             inspection_export(&report, out.as_deref())
+        }
+        Command::ExportModularProfile {
+            selection,
+            run_report,
+            out,
+        } => {
+            let mut review = selection.preview()?;
+            review.compare_saved_run(&run_report)?;
+            let profile = review.offline_profile()?;
+            profile.save(&out)?;
+            output(&profile)
         }
         Command::SelectPdos {
             profile,
@@ -1231,6 +1261,7 @@ fn main() -> Result<()> {
                     ),
                 "selected virtual fault requires the coe-segmented model"
             );
+            let mut profile = Profile::load(&profile)?;
             let mode = match backend {
                 Backend::Simulate => Mode::Simulate {
                     faults: simulate_faults,
@@ -1255,6 +1286,7 @@ fn main() -> Result<()> {
                     }
                 }
                 Backend::Safeop => {
+                    profile.require_native_scope()?;
                     ensure!(
                         !simulate_faults,
                         "--simulate-faults is for the synthetic backend"
@@ -1264,7 +1296,6 @@ fn main() -> Result<()> {
                     }
                 }
             };
-            let mut profile = Profile::load(&profile)?;
             if let Some(port) = http_port {
                 profile.http.get_or_insert_with(Default::default).port = port;
             }

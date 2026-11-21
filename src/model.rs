@@ -233,6 +233,8 @@ pub struct Profile {
     pub nic: String,
     pub expected_identity: Option<Identity>,
     pub esi: Option<EsiSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modular_decoder: Option<crate::esi::modular_preview::profile::Provenance>,
     pub staged_esi_dc_mode: Option<usize>,
     pub esi_pdo_selection: Option<crate::pdo_catalog::Selection>,
     pub sync_unit_cycle_ns: Option<u32>,
@@ -263,6 +265,7 @@ impl Default for Profile {
             nic: String::new(),
             expected_identity: None,
             esi: None,
+            modular_decoder: None,
             staged_esi_dc_mode: None,
             esi_pdo_selection: None,
             sync_unit_cycle_ns: None,
@@ -285,6 +288,14 @@ impl Default for Profile {
 }
 
 impl Profile {
+    pub fn require_native_scope(&self) -> Result<()> {
+        ensure!(
+            self.modular_decoder.is_none(),
+            "modular decoder profiles are for offline use"
+        );
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.version == 1,
@@ -337,6 +348,16 @@ impl Profile {
             "sync-unit assumption requires a staged ESI DC mode"
         );
         crate::sync_review::review(self, None)?;
+        if self.modular_decoder.is_some() {
+            ensure!(
+                self.esi.is_some(),
+                "modular decoder requires ESI provenance"
+            );
+            ensure!(
+                self.esi_pdo_selection.is_none(),
+                "a modular decoder cannot carry a device-level PDO selection"
+            );
+        }
         if let Some(selection) = &self.esi_pdo_selection {
             let esi = self
                 .esi

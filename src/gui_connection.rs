@@ -62,6 +62,9 @@ impl App {
         if let Err(error) = self.profile.validate() {
             issues.push(format!("Profile needs attention: {error:#}"));
         }
+        if let Err(error) = self.profile.require_native_scope() {
+            issues.push(format!("Session scope: {error:#}"));
+        }
         if self.profile.nic.trim().is_empty() {
             issues.push("Select the isolated bench NIC.".into());
         }
@@ -247,6 +250,33 @@ mod tests {
         });
         app
     }
+    #[test]
+    fn saved_modular_profile_blocks_native_preflight() {
+        let mut app = app();
+        let samples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples");
+        let slots =
+            ["0=0x400", "1=0x400"].map(|value| esi::modular_preview::placement(value).unwrap());
+        let mut preview = esi::modular_preview::preview(
+            &samples.join("fixed-slot-pdos.esi.xml"),
+            Some(0),
+            None,
+            &slots,
+        )
+        .unwrap();
+        preview
+            .compare_saved_run(&samples.join("fixed-slot-pdo-readback.json"))
+            .unwrap();
+        app.profile = preview.offline_profile().unwrap();
+        app.profile.nic = "authored-nic-A".into();
+        app.profile.validate().unwrap();
+        assert!(
+            app.bench_issues()
+                .iter()
+                .any(|issue| issue.contains("modular decoder profiles are for offline use"))
+        );
+        assert!(!app.bench_ready());
+    }
+
     fn acknowledge(app: &mut App) {
         assert!(app.bench_issues().is_empty(), "{:?}", app.bench_issues());
         app.approved = true;

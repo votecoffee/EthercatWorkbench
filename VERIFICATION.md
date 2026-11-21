@@ -786,3 +786,11 @@ Moving the second TxPDO to SM4 moved its first decoded field to bit 32, includin
 Formatting, locked Clippy, 193 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The 0.82.0 saved comparison remained identical when run without payload arguments. The decode uses supplied bytes and verified saved geometry. Native device and module commissioning remain pending.
 
 The cross-part CSV audit test now repartitions copies of the captured rows. It verified a rotation boundary and rejected a repeated sample index using the same 297-row trial that produced only one CSV part on the first regression run.
+
+## Version 0.84.0 reusable modular decoder profile (2026-11-21)
+
+The Windows release CLI exported a profile from the authored fixed-slot ESI and its matching saved run. The profile retained seven Tx bytes and four Rx bytes, four Tx fields and two Rx fields, both source hashes, the selected modules and the saved layout provenance. Reloaded decode reproduced all six values. Offline Rx staging wrote a new profile with the staged bytes and preserved the readback provenance. The standard synthetic CSV writer and auditor checked the four selected input fields.
+
+A changed Tx descriptor left the image size intact and withheld the affected fields. An observed zero-length Rx image exported as zero bytes, while unavailable Rx evidence rejected export before file creation. Existing profiles and input files were preserved. The native CLI rejected the modular profile before reserving run files. The headless desktop preflight reported the same offline scope.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The 0.83.0 payload preview remained identical and an existing device-level profile still loaded. The exported profile supports offline use with saved geometry. Physical commissioning remains pending.

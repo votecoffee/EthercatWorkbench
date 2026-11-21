@@ -373,6 +373,19 @@ impl App {
                     ui.small(note);
                 }
             }
+            if let Some(decoder) = &self.profile.modular_decoder {
+                ui.collapsing("Saved modular layout · offline decoder", |ui| {
+                    ui.label(format!(
+                        "{} · {}",
+                        decoder.report_file_name, decoder.reported_backend
+                    ));
+                    ui.small(format!("Saved run SHA-256 {}", decoder.report_sha256));
+                    ui.label(format!(
+                        "Saved image lengths · Tx {} / Rx {} bytes",
+                        decoder.tx.image_bytes, decoder.rx.image_bytes
+                    ));
+                });
+            }
             if let (Some(tx), Some(rx)) = (source.default_tx_bytes, source.default_rx_bytes) {
                 let provenance = if (tx, rx) == (self.profile.tx_bytes, self.profile.rx_bytes) {
                     "ESI"
