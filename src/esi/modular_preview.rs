@@ -111,8 +111,16 @@ struct SlotPreview {
     slot_pdo_increment: Option<u32>,
     slot_index_increment: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    slot_instance: Option<SlotInstance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<GroupPreview>,
     pdos: Vec<PdoPreview>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct SlotInstance {
+    declaration_index: usize,
+    instance_index: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,15 +208,8 @@ fn preview_device(
         .modular
         .as_ref()
         .context("selected ESI device has no slot declarations")?;
-    ensure!(
-        !modular.slots.is_empty()
-            && modular
-                .slots
-                .iter()
-                .all(|slot| matches!(slot.min_instances, Some(0 | 1))
-                    && slot.max_instances == Some(1)),
-        "PDO index preview requires fixed slots with MinInstances 0 or 1 and MaxInstances 1"
-    );
+    let positions = fixed_slot_positions(modular)?;
+    let repeated = positions.len() > modular.slots.len();
     ensure!(
         modular
             .additional_elements
@@ -224,7 +225,7 @@ fn preview_device(
             .context("supply fixed slot choices or a saved module inventory")?;
         detected = inventory.detected_placements()?;
         ensure!(
-            detected.len() == modular.slots.len(),
+            detected.len() == positions.len(),
             "detected module count differs from the ESI fixed slot count"
         );
         (
@@ -237,7 +238,7 @@ fn preview_device(
     let mut by_slot = BTreeMap::new();
     for selection in placements {
         ensure!(
-            selection.slot < modular.slots.len(),
+            selection.slot < positions.len(),
             "slot {} is out of range",
             selection.slot
         );
@@ -250,7 +251,7 @@ fn preview_device(
         );
     }
     ensure!(
-        by_slot.len() == modular.slots.len(),
+        by_slot.len() == positions.len(),
         "supply one explicit placement for every slot"
     );
 
@@ -268,7 +269,8 @@ fn preview_device(
     let mut seen = BTreeSet::new();
     let mut slots = Vec::with_capacity(by_slot.len());
     for (position, ident) in by_slot {
-        let slot = &modular.slots[position];
+        let instance = positions[position];
+        let slot = &modular.slots[instance.declaration_index];
         let pdo_increment = increment(&modular.slot_attributes, slot, "SlotPdoIncrement")?;
         let index_increment = increment(&modular.slot_attributes, slot, "SlotIndexIncrement")?;
         let group = if let Some((number, base)) = slot.group.zip(group_base) {
@@ -304,6 +306,7 @@ fn preview_device(
             module_name: "Empty slot".into(),
             slot_pdo_increment: pdo_increment,
             slot_index_increment: index_increment,
+            slot_instance: repeated.then_some(instance),
             group,
             pdos: Vec::new(),
         };
@@ -364,6 +367,43 @@ fn preview_device(
         decoded_tx: None,
         decoded_rx: None,
     })
+}
+
+fn fixed_slot_positions(modular: &modular::Description) -> Result<Vec<SlotInstance>> {
+    ensure!(
+        !modular.slots.is_empty(),
+        "ESI has no slot positions to preview"
+    );
+    let mut positions = Vec::new();
+    for (declaration_index, slot) in modular.slots.iter().enumerate() {
+        let count = match (slot.min_instances, slot.max_instances) {
+            (Some(0 | 1), Some(1)) => 1,
+            (Some(min), Some(max)) if min == max && max > 1 => usize::try_from(max)?,
+            _ => anyhow::bail!(
+                "slot declaration {declaration_index} requires equal MinInstances and MaxInstances for repeatable slots, or a single optional position"
+            ),
+        };
+        ensure!(
+            count <= modular::MAX_DECLARATIONS - positions.len(),
+            "ESI expands to more than {} slot positions",
+            modular::MAX_DECLARATIONS
+        );
+        positions.extend((0..count).map(|instance_index| SlotInstance {
+            declaration_index,
+            instance_index,
+        }));
+    }
+    if positions.len() > modular.slots.len()
+        && let Some(max) = modular.slot_attributes.get("MaxSlotCount")
+    {
+        let max = usize::try_from(number(max).context("invalid MaxSlotCount")?)?;
+        ensure!(
+            positions.len() <= max,
+            "ESI expands to {} slot positions, exceeding MaxSlotCount {max}",
+            positions.len()
+        );
+    }
+    Ok(positions)
 }
 
 fn group_base(modular: &modular::Description) -> Result<Option<u32>> {

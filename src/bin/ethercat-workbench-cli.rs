@@ -33,7 +33,7 @@ struct ModularSelection {
     /// Exact VENDOR/PRODUCT/REVISION, optionally guarding the device index.
     #[arg(long, value_parser = esi::identity_selector)]
     identity: Option<ethercat_workbench::model::Identity>,
-    /// Supply one zero-based SLOT=MODULE_IDENT for each fixed slot. Use 0 for an empty optional slot.
+    /// Supply one zero-based SLOT=MODULE_IDENT for each expanded position. Use 0 for an empty optional slot.
     #[arg(long, required_unless_present = "module_inventory", value_parser = esi::modular_preview::placement)]
     slot: Vec<esi::modular_preview::Placement>,
     /// Use saved configured/detected CoE module IDs to review or fill the slot choices.

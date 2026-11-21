@@ -32,7 +32,7 @@ The profile's image lengths and fields come from the device-level PDOs. The samp
 
 ## Preview PDO indexes for fixed module slots
 
-Use `preview-modular-pdos` with the original ESI and an exact device identity or list index. Supply both selectors to guard the index. For manual placement, supply one module identity per slot, using zero for an empty optional position. Slot numbers are zero-based in declaration order. A complete saved detected list can also supply the choices. The same module identity can occupy multiple slots if each slot allows it.
+Use `preview-modular-pdos` with the original ESI and an exact device identity or list index. Supply both selectors to guard the index. For manual placement, supply one module identity per slot, using zero for an empty optional position. Slot numbers are zero-based after expanding declarations in order. A complete saved detected list can also supply the choices. The same module identity can occupy multiple slots if each slot allows it.
 
 ```powershell
 .\ethercat-workbench-cli.exe esi-list samples/fixed-slot-pdos.esi.xml
@@ -41,7 +41,18 @@ Use `preview-modular-pdos` with the original ESI and an exact device identity or
 
 The JSON records the exact ESI identity and SHA-256, manual slot choices, and each candidate's declared SyncManager hint. Each mapping index, excluded mapping index, and entry object index shows its declared and resolved values. At a flagged index, the preview adds the slot number multiplied by the relevant increment. A per-slot value takes precedence over the device-wide value. PDO mappings and exclusions use `SlotPdoIncrement`. Entry objects use `SlotIndexIncrement`. Unflagged indexes, widths, subindexes, and padding are preserved. In the sample, the second slot resolves TxPDO `0x1A00` to `0x1A10` and its status object `0x6041` to `0x6841`. [HPMicro CiA 402 example](https://kb.hpmicro.com/2026/06/04/ethercat%E4%BB%A5cia402%E4%BE%8B%E7%A8%8B%E4%BB%8B%E7%BB%8Dmdp%E8%AE%BE%E5%A4%87%E7%9A%84od%E5%A4%84%E7%90%86/)
 
-The fixed-slot preview covers `MaxInstances="1"` and a declared minimum of zero or one. Each declaration has a position in the preview. It needs one local module definition per chosen identity and checks each choice against that slot's declarations. Duplicate resolved mapping indexes among the chosen modules, out-of-range indexes and oversampled templates stop the preview. A `device_level_index_match` marks an index also present in the device-level catalog for separate review. The preview describes candidates. A composed process image still requires confirmed PDO assignments, SyncManager placement, and offsets. Existing profiles use their device-level PDO layouts.
+A single-slot declaration has a minimum of zero or one and a maximum of one. A repeated declaration with equal positive minimum and maximum values contributes one position per instance. It needs one local module definition per chosen identity and checks each choice against that slot's declarations. Duplicate resolved mapping indexes among the chosen modules, out-of-range indexes and oversampled templates stop the preview. A `device_level_index_match` marks an index also present in the device-level catalog for separate review. The preview describes candidates. A composed process image still requires confirmed PDO assignments, SyncManager placement, and offsets. Existing profiles use their device-level PDO layouts.
+
+## Expand fixed-count slot declarations
+
+A declaration with equal `MinInstances` and `MaxInstances` greater than one contributes that many consecutive positions. In the sample, declaration 0 contributes positions 0 and 1, and declaration 1 starts at position 2. Each position inherits its declaration's module choices. Use one `--slot` per expanded position or a complete detected list with the expanded count. The preview retains the zero-based declaration and instance indexes for each slot. The preview accepts up to 512 manual positions and checks the ESI's `MaxSlotCount` when expanding repeated declarations. The saved detected-list format has a one-byte count and can supply up to 255 positions. Variable-count repetition still needs a separate layout rule. [ETG.2000, SlotType instance limits](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario repeated-fixed-slots --out .local/repeated-modules.json --pdo-report .local/repeated-pdos.json
+.\ethercat-workbench-cli.exe export-modular-profile samples/repeated-fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/repeated-modules.json --run-report .local/repeated-pdos.json --out .local/repeated-decoder.json
+```
+
+The following axis resolves to TxPDO `0x1A20` at bit 48 in the simulator's saved process image. Indexes follow the expanded slot positions. Payload offsets come from PDO readback.
 
 ## Resolve fixed slot groups
 

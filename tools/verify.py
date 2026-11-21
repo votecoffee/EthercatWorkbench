@@ -1459,6 +1459,101 @@ def verify_virtual_modular_pdos(cli, destination, sample=None, report=None):
     assert "pdo_report" not in cli_call(cli, "read-virtual-module-inventory")
 
 
+def verify_repeated_fixed_slots(cli, destination, sample=None):
+    """Expand a fixed-count declaration before comparing uploaded inventory and PDOs."""
+    sample = ROOT / "samples/repeated-fixed-slot-pdos.esi.xml" if sample is None else sample
+    identity = {"vendor": 0x00FF1000, "product": 14, "revision": 1}
+    selector = ("--identity", "0x00ff1000/14/1")
+    manual = ("--slot", "2=0x400", "--slot", "0=0x400", "--slot", "1=0x400")
+    inventory = destination / "inventory.json"
+    pdos = destination / "pdos.json"
+    captured = cli_call(cli, "read-virtual-module-inventory", "--scenario", "repeated-fixed-slots",
+                        "--out", inventory, "--pdo-report", pdos)
+    saved = json.loads(inventory.read_bytes())
+    assert saved == captured["inventory"] and saved["identity"] == identity and saved["serial"] == 14788
+    assert all([entry["data_hex"] for entry in obj["uploads"]] ==
+               ["03", "00040000", "00040000", "00040000"] for obj in saved["objects"])
+    report = json.loads(pdos.read_bytes())
+    assert report == captured["pdo_report"] and report["devices"] == [{"identity": identity, "serial": 14788}]
+    assert captured["preop_al"] == [2, 0] and captured["stopped_al"] == [1, 0]
+    audit = captured["audit"]
+    assert audit["coe_uploads"] == 66 and audit["mailbox_counter_errors"] == 0
+    assert audit["state_requests"] == [1, 2, 1]
+    assert not any(audit[key] for key in ("coe_downloads", "op_requests", "logical_reads",
+                                         "logical_writes", "physical_output_writes"))
+    evidence = ("--module-inventory", inventory, "--run-report", pdos)
+    review = cli_call(cli, "preview-modular-pdos", sample, *selector, *evidence)
+    entered = cli_call(cli, "preview-modular-pdos", sample, *selector, *evidence, *manual)
+    slots = review["slots"]
+    assert slots == entered["slots"]
+    assert [(slot["slot"], slot["slot_instance"]["declaration_index"], slot["slot_instance"]["instance_index"])
+            for slot in slots] == [(0, 0, 0), (1, 0, 1), (2, 1, 0)]
+    assert [slot["name"] for slot in slots] == ["Repeated axis", "Repeated axis", "Following axis"]
+    assert review["module_inventory"]["detected"]["state"] == "matched"
+    assert review["module_inventory"]["detected"]["reported_count"] == 3
+    for position, slot in enumerate(slots):
+        rx, tx = slot["pdos"]
+        assert rx["saved_readback"]["state"] == tx["saved_readback"]["state"] == "matched"
+        assert rx["mapping"]["resolved"] == 0x1600 + 0x10 * position
+        assert tx["mapping"]["resolved"] == 0x1A00 + 0x10 * position
+        assert tx["entries"][0]["object"]["resolved"] == 0x6041 + 0x800 * position
+        assert (rx["saved_readback"]["bit"], tx["saved_readback"]["bit"]) == (16 * position, 24 * position)
+
+    target = destination / "repeated-decoder.json"
+    profile = cli_call(cli, "export-modular-profile", sample, *selector, *evidence, "--out", target)
+    assert cli_call(cli, "validate", target) == profile
+    assert profile["modular_decoder"]["slots"] == [0x400] * 3
+    assert (profile["tx_bytes"], profile["rx_bytes"]) == (10, 6)
+    assert [field["object_index"] for field in profile["rx"]] == [0x6040, 0x6840, 0x7040]
+    assert [field["value"] for field in cli_call(cli, "decode", target, "34 12 01 CD AB FE 21 43 01 A5")] == [
+        "4660", "true", "43981", "false", "17185", "true",
+    ]
+    assert [field["value"] for field in cli_call(cli, "decode", target, "EF BE 02 80 34 12", "--rx")] == [
+        "48879", "32770", "4660",
+    ]
+
+    def rejected(args, expected, name):
+        out = destination / (name + "-result.json")
+        error = cli_call(cli, "preview-modular-pdos", *args, "--out", out, success=False)
+        assert expected in error and not out.exists(), (name, error)
+
+    rejected((sample, *selector, "--slot", "0=0x400", "--slot", "1=0x400"),
+             "supply one explicit placement for every slot", "missing-expanded-position")
+    rejected((sample, *selector, "--slot", "0=0x400", "--slot", "1=0x401", "--slot", "2=0x400"),
+             "not allowed in slot 1", "shared-declaration-restriction")
+    rejected((sample, *selector, "--slot", "0=0x400", "--slot", "1=0", "--slot", "2=0x400"),
+             "empty required slot 1", "missing-required-instance")
+    after_repeat = cli_call(cli, "preview-modular-pdos", sample, *selector,
+                            "--slot", "0=0x400", "--slot", "1=0x400", "--slot", "2=0x401")
+    assert after_repeat["slots"][2]["module_ident"] == 0x401 and after_repeat["slots"][2]["pdos"] == []
+
+    short = destination / "short-list.json"
+    detected = saved["objects"][1]
+    detected["uploads"].pop()
+    detected["uploads"][0]["data_hex"] = "02"
+    short.write_text(json.dumps(saved), encoding="utf-8")
+    rejected((sample, *selector, "--module-inventory", short),
+             "detected module count differs from the ESI fixed slot count", "unexpanded-detected-list")
+
+    original = sample.read_bytes()
+    bounds = b'MinInstances="2" MaxInstances="2"'
+    assert original.count(bounds) == 1
+    mutations = [
+        ("variable-count", original.replace(bounds, b'MinInstances="1" MaxInstances="2"'),
+         "requires equal MinInstances and MaxInstances"),
+        ("excessive-expansion", original.replace(bounds, b'MinInstances="4294967295" MaxInstances="4294967295"'),
+         "more than 512 slot positions"),
+        ("max-slot-count", original.replace(b'MaxSlotCount="3"', b'MaxSlotCount="2"'),
+         "exceeding MaxSlotCount 2"),
+    ]
+    for name, altered, expected in mutations:
+        variant = destination / (name + ".esi.xml")
+        assert altered != original
+        variant.write_bytes(altered)
+        rejected((variant, *selector, *manual), expected, name)
+    assert sample.read_bytes() == original
+
+
 def verify_grouped_fixed_slots(cli, destination, sample=None):
     """Cross-check group-relative indexes against PDOs uploaded from the virtual ESC."""
     sample = ROOT / "samples/grouped-fixed-slot-pdos.esi.xml" if sample is None else sample
@@ -1648,7 +1743,7 @@ def verify_vacant_fixed_slot(cli, destination, sample=None):
     assert esibytes.count(token) == 1
     repeated.write_bytes(esibytes.replace(token, b'MinInstances="0" MaxInstances="2"'))
     error = cli_call(cli, "preview-modular-pdos", repeated, "--device", 0, *manual, success=False)
-    assert "MaxInstances 1" in error
+    assert "requires equal MinInstances and MaxInstances" in error
 
 
 def verify_mode_pdo_staging(cli, destination):
@@ -6272,6 +6367,9 @@ def main():
     grouped_slot_destination = destination / "grouped-fixed-slots"
     grouped_slot_destination.mkdir()
     verify_grouped_fixed_slots(cli, grouped_slot_destination)
+    repeated_slot_destination = destination / "repeated-fixed-slots"
+    repeated_slot_destination.mkdir()
+    verify_repeated_fixed_slots(cli, repeated_slot_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

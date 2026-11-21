@@ -6,7 +6,7 @@ use roxmltree::Node;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-const MAX_DECLARATIONS: usize = 512;
+pub(super) const MAX_DECLARATIONS: usize = 512;
 const MAX_TEXT: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

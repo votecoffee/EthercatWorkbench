@@ -841,3 +841,13 @@ The third slot used group position one. Its local increments overrode the device
 The focused regression checked equivalent zero-based group numbering and device defaults when a per-slot override was absent. It rejected missing group declarations, nonconsecutive numbering, unsupported mixed dependencies, missing increments, overflow, duplicate PDOs and module PDO alignment declarations before writing a preview. Older ungrouped and optional fixed-slot scenarios passed.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Physical device acceptance, repeatable slot types, mixed slot/group dependencies and module PDO alignment remain pending.
+
+## Version 0.90.0 fixed-count repeated slot declarations (2026-11-21)
+
+The authored ESI declares two instances of the first slot type and one instance of the following type. The Windows CLI expanded the declaration order into three positions. Manual choices and the complete detected list produced the same layout and retained both the declaration and instance index for each position.
+
+The virtual PREOP session made 66 CoE uploads including setup and returned to INIT. The audit showed zero mailbox counter errors, SDO downloads, cyclic reads, output writes or OP requests. The following module matched TxPDO `0x1A20` with entry `0x7041` at bit 48 and RxPDO `0x1620` at bit 32. The exported profile reloaded with all three module choices, a 10-byte TxPDO image and a 6-byte RxPDO image. Both payloads decoded at their observed offsets.
+
+The CLI rejected a short detected list, a missing manual position, an empty required instance, an identity disallowed by the repeated declaration, variable instance counts, a count above the preview limit and a count over the ESI's `MaxSlotCount`. The original, optional and grouped fixed-slot fixtures still passed. The new authored fixture passed XML well-formedness, the cached ESI 1.14 schema and the Workbench consumer.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression retry passed. The first run recovered from its injected 40-reply outage and confirmed INIT with 887 missed deadlines and 77 valid exchanges, below the sample-count threshold. The isolated case passed with 713 valid exchanges. The next suite run reported a PDU timeout during the segmented-upload fault. The isolated CoE suite reproduced the expected upload timeout and passed. Variable-count repetition and physical qualification remain pending.
