@@ -1,8 +1,9 @@
 //! Resolve PDO template indexes for explicit placements in fixed, ungrouped ESI slots.
+mod decode;
 mod readback;
 
 use super::{
-    bool_attr, dc_text, default_sm, label, modular, named, node_number, number, read_file,
+    bool_attr, child, dc_text, default_sm, label, modular, named, node_number, number, read_file,
     select_device, unique_child, with_description,
 };
 use crate::{
@@ -44,11 +45,30 @@ pub struct Preview {
     slots: Vec<SlotPreview>,
     #[serde(skip_serializing_if = "Option::is_none")]
     saved_readback: Option<readback::Comparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decoded_tx: Option<decode::DecodedPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decoded_rx: Option<decode::DecodedPayload>,
 }
 
 impl Preview {
     pub fn compare_saved_run(&mut self, path: &Path) -> Result<()> {
         self.saved_readback = Some(readback::compare(path, &self.identity, &mut self.slots)?);
+        self.decoded_tx = None;
+        self.decoded_rx = None;
+        Ok(())
+    }
+
+    pub fn decode_saved_payload(&mut self, direction: Direction, bytes: &[u8]) -> Result<()> {
+        let readback = self
+            .saved_readback
+            .as_ref()
+            .context("payload decoding requires saved PDO readback")?;
+        let decoded = decode::payload(direction, bytes, readback, &self.slots)?;
+        match direction {
+            Direction::Tx => self.decoded_tx = Some(decoded),
+            Direction::Rx => self.decoded_rx = Some(decoded),
+        }
         Ok(())
     }
 }
@@ -83,6 +103,8 @@ struct Entry {
     subindex: u8,
     width: u8,
     name: Option<String>,
+    #[serde(skip)]
+    data_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -223,6 +245,8 @@ fn preview_device(
         identity: source.identity.clone(),
         slots,
         saved_readback: None,
+        decoded_tx: None,
+        decoded_rx: None,
     })
 }
 
@@ -323,6 +347,7 @@ fn resolve_entry(entry: Node<'_, '_>, increment: Option<u32>, position: usize) -
         subindex,
         width,
         name: label(entry, "Name").map(str::to_owned),
+        data_type: child(entry, "DataType").map(|node| dc_text(node).trim().to_owned()),
     })
 }
 

@@ -266,6 +266,12 @@ enum Command {
         /// Compare against PDO readback in a saved run report for the same identity.
         #[arg(long)]
         run_report: Option<PathBuf>,
+        /// Decode a supplied TxPDO image using the matching saved descriptors.
+        #[arg(long, requires = "run_report")]
+        tx_hex: Option<String>,
+        /// Decode a supplied RxPDO image using the matching saved descriptors.
+        #[arg(long, requires = "run_report")]
+        rx_hex: Option<String>,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -936,12 +942,20 @@ fn main() -> Result<()> {
             identity,
             slot,
             run_report,
+            tx_hex,
+            rx_hex,
             out,
         } => {
+            use ethercat_workbench::pdo_catalog::Direction;
             let mut report =
                 esi::modular_preview::preview(&file, device, identity.as_ref(), &slot)?;
             if let Some(path) = &run_report {
                 report.compare_saved_run(path)?;
+            }
+            for (direction, hex) in [(Direction::Tx, tx_hex), (Direction::Rx, rx_hex)] {
+                if let Some(hex) = hex {
+                    report.decode_saved_payload(direction, &payload_hex(&hex)?)?;
+                }
             }
             inspection_export(&report, out.as_deref())
         }

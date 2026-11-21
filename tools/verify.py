@@ -914,6 +914,156 @@ def verify_modular_readback(cli, destination, sample=None, report=None):
     assert sample.read_bytes() == original_esi and report.read_bytes() == original_report
 
 
+def verify_modular_payload(cli, destination, sample=None, report=None):
+    """Use saved bit positions for full directional images and suppress unmatched candidates."""
+    from copy import deepcopy
+
+    sample = ROOT / "samples/fixed-slot-pdos.esi.xml" if sample is None else sample
+    report = ROOT / "samples/fixed-slot-pdo-readback.json" if report is None else report
+    original_esi = sample.read_bytes()
+    original_report = report.read_bytes()
+    saved = json.loads(original_report)
+    choices = ("--device", 0, "--slot", "0=0x400", "--slot", "1=0x400")
+    args = ("preview-modular-pdos", sample, *choices, "--run-report", report)
+    tx_hex = "34 12 01 CD AB FE A5"
+    rx_hex = "EF BE 02 80"
+
+    def tx_sm(data):
+        return data["pdo_verification"]["readback"]["tx"]["sync_managers"][0]
+
+    def save(name, patch):
+        changed = deepcopy(saved)
+        patch(changed)
+        path = destination / (name + ".json")
+        path.write_bytes((json.dumps(changed, indent=2) + "\n").encode())
+        return path
+
+    def decode_with(path, *params):
+        return cli_call(cli, "preview-modular-pdos", sample, *choices, "--run-report", path, *params)
+
+    def fields(image):
+        return [(value["slot"], value["pdo_index"], value["object_index"], value["subindex"],
+                 value["bit"], value["kind"], value["value"]) for value in image["fields"]]
+
+    target = destination / "decoded.json"
+    result = cli_call(cli, *args, "--tx-hex", tx_hex, "--rx-hex", rx_hex, "--out", target)
+    assert json.loads(target.read_bytes()) == result
+    tx = result.pop("decoded_tx")
+    rx = result.pop("decoded_rx")
+    assert (tx["payload_hex"], tx["image_bytes"], tx["withheld_pdos"]) == ("341201CDABFEA5", 7, [])
+    assert (rx["payload_hex"], rx["image_bytes"], rx["withheld_pdos"]) == ("EFBE0280", 4, [])
+    assert fields(tx) == [
+        (0, 0x1A00, 0x6041, 0, 0, "unsigned", "4660"),
+        (0, 0x1A00, 0x2100, 2, 16, "bool", "true"),
+        (1, 0x1A10, 0x6841, 0, 24, "unsigned", "43981"),
+        (1, 0x1A10, 0x2100, 2, 40, "bool", "false"),
+    ]
+    assert fields(rx) == [
+        (0, 0x1600, 0x6040, 0, 0, "unsigned", "48879"),
+        (1, 0x1610, 0x6840, 0, 16, "unsigned", "32770"),
+    ]
+    assert tx["fields"][2]["name"] == "Status word" and tx["fields"][2]["data_type"] == "UINT"
+    assert tx["fields"][3]["data_type"] == "BOOL" and not tx["fields"][3]["unavailable"]
+    assert all(field["module_ident"] == 0x400 and field["sync_manager"] == 3 for field in tx["fields"])
+    assert result == cli_call(cli, *args)
+    assert "decoded_tx" not in cli_call(cli, *args, "--rx-hex", rx_hex)
+
+    def relocated(data):
+        first = tx_sm(data)
+        assignment = first["pdos"].pop(1)
+        first["pdos"][1]["entries"][0] = 0x22000105
+        first["configured_bytes"] = 4
+        data["pdo_verification"]["readback"]["tx"]["sync_managers"].append(
+            {"index": 4, "configured_bytes": 3, "pdos": [assignment]}
+        )
+
+    moved = decode_with(save("relocated", relocated), "--tx-hex", "34 12 01 A5 CD AB FE")
+    assert moved["slots"][1]["pdos"][1]["saved_readback"]["sm_hint_matches"] is False
+    moved_fields = moved["decoded_tx"]["fields"]
+    assert [(f["bit"], f["value"], f["sync_manager"]) for f in moved_fields[2:]] == [(32, "43981", 4), (48, "false", 4)]
+
+    def changed_object(data):
+        tx_sm(data)["pdos"][1]["entries"][0] = 0x69410010
+
+    mismatch = decode_with(save("descriptor-mismatch", changed_object), "--tx-hex", tx_hex)["decoded_tx"]
+    assert mismatch["withheld_pdos"] == [0x1A10] and fields(mismatch) == fields(tx)[:2]
+
+    def unassigned(data):
+        tx_sm(data)["pdos"].pop(1)
+        tx_sm(data)["configured_bytes"] = 4
+
+    missing = decode_with(save("unassigned", unassigned), "--tx-hex", "34 12 01 A5")["decoded_tx"]
+    assert missing["withheld_pdos"] == [0x1A10] and fields(missing) == fields(tx)[:2]
+
+    signed = destination / "signed-control.esi.xml"
+    old = b'<Name>Control word</Name><DataType>UINT</DataType>'
+    assert original_esi.count(old) == 1
+    signed.write_bytes(original_esi.replace(old, old.replace(b"UINT", b"INT")))
+    signed_fields = cli_call(cli, "preview-modular-pdos", signed, *choices, "--run-report", report,
+                             "--rx-hex", rx_hex)["decoded_rx"]["fields"]
+    assert [(f["kind"], f["value"]) for f in signed_fields] == [("signed", "-16657"), ("signed", "-32766")]
+
+    wide = destination / "wide-status.esi.xml"
+    old = b'<BitLen>16</BitLen><Name>Status word</Name><DataType>UINT</DataType>'
+    assert original_esi.count(old) == 1
+    wide.write_bytes(original_esi.replace(old, b'<BitLen>72</BitLen><Name>Status word</Name><DataType>CUSTOM</DataType>'))
+
+    def wider(data):
+        sm = tx_sm(data)
+        for pdo in sm["pdos"][:2]:
+            pdo["entries"][0] = (pdo["entries"][0] & ~0xFF) | 72
+        sm["configured_bytes"] = 21
+
+    wide_fields = cli_call(cli, "preview-modular-pdos", wide, *choices, "--run-report", save("wider", wider),
+                           "--tx-hex", "11223344556677889901102132435465768798FEA5")["decoded_tx"]["fields"]
+    assert [(f["bit"], f["width"], f["kind"], f["value"]) for f in wide_fields[::2]] == [
+        (0, 72, "raw", "112233445566778899"), (80, 72, "raw", "102132435465768798"),
+    ]
+
+    import xml.etree.ElementTree as ET
+    tree = ET.fromstring(wide.read_bytes())
+    template = tree.find("Descriptions/Modules/Module/TxPdo")
+    first, second, _ = template.findall("Entry")
+    position = list(template).index(first)
+    template.remove(second)
+    template.insert(position, second)
+    unaligned = destination / "unaligned-wide-status.esi.xml"
+    unaligned.write_bytes(ET.tostring(tree, encoding="utf-8"))
+
+    def unaligned_wide(data):
+        wider(data)
+        for pdo in tx_sm(data)["pdos"][:2]:
+            entries = pdo["entries"]
+            entries[0], entries[1] = entries[1], entries[0]
+
+    unaligned_fields = cli_call(cli, "preview-modular-pdos", unaligned, *choices,
+                                 "--run-report", save("unaligned-wide", unaligned_wide),
+                                 "--tx-hex", "00" * 21)["decoded_tx"]["fields"]
+    assert [f["value"] for f in unaligned_fields[::2]] == ["false", "false"]
+    assert all(f["kind"] == "raw" and f["value"] is None and "invalid width or alignment" in f["unavailable"]
+               for f in unaligned_fields[1::2])
+
+    def no_rx(data):
+        data["pdo_verification"]["readback"].update(rx=None, rx_unavailable="authored teardown")
+
+    def rejected(name, command, message):
+        out = destination / (name + "-result.json")
+        failure = cli_call(cli, *command, "--out", out, success=False)
+        assert message in failure and not out.exists(), failure
+
+    rejected("no-report", ("preview-modular-pdos", sample, *choices, "--tx-hex", tx_hex), "--run-report")
+    rejected("short", (*args, "--tx-hex", "34 12"), "requires 7 bytes")
+    rejected("long", (*args, "--rx-hex", rx_hex + " 00"), "requires 4 bytes")
+    rejected("bad-hex", (*args, "--rx-hex", "bad"), "pairs of hexadecimal digits")
+    incomplete = save("unavailable", no_rx)
+    rejected("unavailable", ("preview-modular-pdos", sample, *choices, "--run-report", incomplete,
+                             "--tx-hex", tx_hex, "--rx-hex", rx_hex), "authored teardown")
+    before = target.read_bytes()
+    failure = cli_call(cli, *args, "--tx-hex", tx_hex, "--out", target, success=False)
+    assert "existing paths are preserved" in failure and target.read_bytes() == before
+    assert sample.read_bytes() == original_esi and report.read_bytes() == original_report
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -1620,6 +1770,14 @@ def verify_capture_audit(cli, destination, comparison):
     names = list(entries[0])
     clone = lambda value: json.loads(json.dumps(value))
 
+    def rehash_context(report):
+        ctx = report["context"]
+        ctx["profile_sha256"] = hashlib.sha256(json.dumps(ctx["profile"], ensure_ascii=False,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
+        common = dict(ctx["profile"]); common["scheduler"] = "deadline"
+        ctx["comparison_sha256"] = hashlib.sha256(json.dumps(common, ensure_ascii=False,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
+
     def fixture(name, records=None, change=None, eol="\n", bom=False):
         folder = destination / name; folder.mkdir()
         report = clone(original)
@@ -1628,12 +1786,7 @@ def verify_capture_audit(cli, destination, comparison):
         report["capture"].update(parts=1, written=len(records), selected=len(records), overruns=0)
         report["error"] = "Authored offline CSV audit fixture; not a measured fault"
         if change: change(report)
-        ctx = report["context"]
-        ctx["profile_sha256"] = hashlib.sha256(json.dumps(ctx["profile"], ensure_ascii=False,
-            separators=(",", ":")).encode("utf-8")).hexdigest()
-        common = dict(ctx["profile"]); common["scheduler"] = "deadline"
-        ctx["comparison_sha256"] = hashlib.sha256(json.dumps(common, ensure_ascii=False,
-            separators=(",", ":")).encode("utf-8")).hexdigest()
+        rehash_context(report)
         path = folder / "report.json"; path.write_text(json.dumps(report), encoding="utf-8")
         base = folder / "capture.csv"
         with base.open("w", encoding="utf-8-sig" if bom else "utf-8", newline="") as stream:
@@ -1701,23 +1854,45 @@ def verify_capture_audit(cli, destination, comparison):
         error = cli_call(cli,"verify-capture",path,base,success=False)
         assert expected in error,(case,error)
 
-    # Metadata ordering persists across rotation boundaries and comparison reads actual CSV bytes.
-    report_path = comparison / "trial-0.json"
-    corrupt = destination / "rotated"; corrupt.mkdir()
-    rotated_base = corrupt / "capture.csv"
-    sources = sorted(comparison.glob("trial-0.*.csv"))
-    for index, source in enumerate(sources,1):
-        target = corrupt / f"capture.{index:04}.csv"
-        target.write_bytes(source.read_bytes())
-    second = corrupt / "capture.0002.csv"
-    assert second.exists()
-    with second.open(encoding="utf-8",newline="") as stream: records = list(csv.DictReader(stream))
-    records[0]["sample_index"] = "1"
-    with second.open("w",encoding="utf-8",newline="") as stream:
-        writer=csv.DictWriter(stream,fieldnames=names,lineterminator="\n"); writer.writeheader(); writer.writerows(records)
-    assert "out of order" in cli_call(cli,"verify-capture",report_path,rotated_base,success=False)
-    assert "out of order" in cli_call(cli,"compare-runs",report_path,comparison/"trial-1.json",
-        "--csv",rotated_base,"--csv",comparison/"trial-1.csv",success=False)
+    # Repartition copies of the measured rows so the boundary exists regardless of trial timing.
+    rotation = len(entries) // 2
+    assert rotation > 0
+    rotated = destination / "rotated"
+    rotated.mkdir()
+    trials = []
+    for index in (0, 1):
+        stem = f"trial-{index}"
+        source = json.loads((comparison / f"{stem}.json").read_bytes())
+        _, records = rows(comparison / f"{stem}.csv")
+        assert len(records) == source["capture"]["written"]
+        source["context"]["profile"]["rotate_rows"] = rotation
+        source["capture"]["parts"] = (len(records) + rotation - 1) // rotation
+        rehash_context(source)
+        path = rotated / f"{stem}.json"
+        path.write_text(json.dumps(source), encoding="utf-8")
+        base = rotated / f"{stem}.csv"
+        for start in range(0, len(records), rotation):
+            part = rotated / f"{stem}.{start // rotation + 1:04}.csv"
+            with part.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=names, lineterminator="\n")
+                writer.writeheader()
+                writer.writerows(records[start:start + rotation])
+        trials.append((path, base))
+
+    (report_path, rotated_base), (other_path, other_base) = trials
+    # Verify the fixture before repeating the sample index at the second part's boundary.
+    assert cli_call(cli, "verify-capture", report_path, rotated_base)["rows"] == len(entries)
+    second = rotated / "trial-0.0002.csv"
+    with second.open(encoding="utf-8", newline="") as stream:
+        records = list(csv.DictReader(stream))
+    records[0]["sample_index"] = entries[rotation - 1]["sample_index"]
+    with second.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=names, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(records)
+    assert "out of order" in cli_call(cli, "verify-capture", report_path, rotated_base, success=False)
+    assert "out of order" in cli_call(cli, "compare-runs", report_path, other_path,
+        "--csv", rotated_base, "--csv", other_base, success=False)
 
     # Exercise native writer quoting and multiple decoded kinds, including signed/endian and raw fields.
     profile = clone(original["context"]["profile"])
@@ -5489,6 +5664,9 @@ def main():
     module_readback_destination = destination / "esi-modular-readback"
     module_readback_destination.mkdir()
     verify_modular_readback(cli, module_readback_destination)
+    modular_payload_destination = destination / "esi-modular-payload"
+    modular_payload_destination.mkdir()
+    verify_modular_payload(cli, modular_payload_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

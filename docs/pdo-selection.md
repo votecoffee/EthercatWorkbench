@@ -55,6 +55,18 @@ A candidate marked `matched` has the same ordered entry descriptors, including p
 
 A valid comparison returns JSON even when the results differ. A wrong device identity, ambiguous assignments, or invalid layout stops before JSON creation. CoE and SII sources remain visible, including SII layout evidence from EEPROM. An older layout with no source declaration keeps that provenance unavailable. Matching descriptors alone leave module occupancy and the complete expected process image unresolved.
 
+## Decode a modular payload from saved placement
+
+Use `--tx-hex` or `--rx-hex` with the fixed-slot preview and `--run-report`. Supply the complete image for each direction. The saved layout determines the image length, including bytes assigned to PDOs outside the selected modules.
+
+```powershell
+.\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --slot '0=0x400' --slot '1=0x400' --run-report samples/fixed-slot-pdo-readback.json --tx-hex '34 12 01 CD AB FE A5' --rx-hex 'EF BE 02 80' --out .local/module-payload-review.json
+```
+
+The decoder reports only fields from candidates with matching ordered descriptors. `decoded_tx` and `decoded_rx` show the supplied bytes, fields in saved bit order, and withheld PDO indexes. The saved layout supplies each field's SyncManager and direction-relative bit position, even if the ESI hint differed. The ESI supplies names and datatype hints. Numeric values use the existing little-endian PDO decoder. Other byte-aligned values wider than 64 bits are shown as raw hex, and unsupported widths or alignments have an unavailable reason.
+
+The example decodes the two Tx status words as 4660 and 43981. Their Boolean fields are true and false. Padding and PDOs outside the chosen module candidates remain visible in the raw image. An unavailable layout, malformed hex, or incorrect length rejects the requested decode before creating its JSON receipt. The report records an interpretation of user-supplied bytes from the saved layout. Profiles and physical commissioning follow their existing workflows.
+
 ## Catalog choices
 
 The [pinned ESI base schema](https://github.com/synapticon/siitool/blob/c46570adb1228eada44ae1f38bd61a81fab99c98/examples/ModulesSlots_DS402_Simple/EtherCATBase.xsd) distinguishes fixed entry mapping from mandatory assignment and describes the default `Sm` and exclusion list. Workbench preserves fixed entries while allowing assignment choices. Mandatory PDOs must be selected. Exclusions are conservatively checked across all chosen PDOs. Duplicate indexes in a direction, duplicate choices, unknown candidates, out-of-range SyncManagers and sharing one SyncManager between Tx and Rx are rejected.

@@ -776,3 +776,13 @@ The Windows release CLI compared four fixed-slot candidates with the authored sa
 An equal-width object-index change produced a descriptor mismatch at the original image length. Moving a PDO to another SyncManager kept the descriptor match and changed its recorded bit position and hint result. Missing entries, absent assignments, unavailable directions, unreported legacy source and assigned exclusions produced separate results. The CLI protected existing receipts and rejected a mismatched identity, multiple devices, expected-only ESI layouts, inconsistent sizes, shared SyncManagers, duplicate assignments and invalid direction ranges before JSON creation. An unchanged virtual run report for a different product was rejected.
 
 Formatting, locked Clippy, 193 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The 0.81.0 preview without a readback matched its saved JSON. The comparison uses historical or authored evidence. Physical module occupancy and independent commissioning remain pending.
+
+## Version 0.83.0 offline modular payload decode (2026-11-21)
+
+The Windows release CLI decoded four TxPDO fields and two RxPDO fields using the authored fixed-slot comparison. The two Tx status words decoded as 4660 and 43981. The shared Boolean object appeared at bit 16 in the first slot and bit 40 in the second slot. The complete raw Tx image retained the padding and the separate PDO outside the module candidates.
+
+Moving the second TxPDO to SM4 moved its first decoded field to bit 32, including alignment at the preceding SyncManager boundary. The unchanged descriptor sequence still decoded despite the ESI SyncManager hint difference. A same-width descriptor change and an unassigned PDO each withheld the affected values while retaining other matched fields. Checks covered signed Rx values, a 72-bit aligned raw entry and a wider unaligned entry reported as unavailable. Missing readback, malformed hex and incorrect image lengths stopped before writing a receipt. Existing receipts were protected.
+
+Formatting, locked Clippy, 193 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The 0.82.0 saved comparison remained identical when run without payload arguments. The decode uses supplied bytes and verified saved geometry. Native device and module commissioning remain pending.
+
+The cross-part CSV audit test now repartitions copies of the captured rows. It verified a rotation boundary and rejected a repeated sample index using the same 297-row trial that produced only one CSV part on the first regression run.

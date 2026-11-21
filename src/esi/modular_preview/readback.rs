@@ -78,6 +78,22 @@ pub(super) struct Comparison {
     rx: ObservedDirection,
 }
 
+impl Comparison {
+    pub(super) fn image_bytes(&self, direction: Direction) -> Result<usize> {
+        let layout = match direction {
+            Direction::Tx => &self.tx,
+            Direction::Rx => &self.rx,
+        };
+        layout.image_bytes.with_context(|| {
+            format!(
+                "saved {:?} PDO layout is unavailable: {}",
+                direction,
+                layout.unavailable.as_deref().unwrap_or("no image length")
+            )
+        })
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ObservedDirection {
     mapping_source: Option<MappingSource>,
@@ -112,6 +128,15 @@ pub(super) struct Candidate {
     observed_entry_count: Option<usize>,
     differences: Vec<EntryDifference>,
     assigned_exclusions: Vec<u16>,
+}
+
+impl Candidate {
+    pub(super) fn matched_location(&self) -> Option<(usize, u8)> {
+        match self.state {
+            State::Matched => self.bit.zip(self.sync_manager),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

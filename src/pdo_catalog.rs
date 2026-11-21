@@ -218,6 +218,17 @@ pub fn build(catalog: &[Definition], selection: &Selection) -> Result<Built> {
     })
 }
 
+pub(crate) fn esi_entry_kind(data_type: &str, width: usize, bit: usize) -> Kind {
+    match data_type {
+        "BOOL" | "BIT" if width == 1 => Kind::Bool,
+        "SINT" | "INT" | "DINT" | "LINT" | "INT24" | "INT40" | "INT48" | "INT56" => Kind::Signed,
+        "REAL" | "REAL32" if width == 32 && bit.is_multiple_of(8) => Kind::F32,
+        "LREAL" | "REAL64" if width == 64 && bit.is_multiple_of(8) => Kind::F64,
+        _ if width <= 64 => Kind::Unsigned,
+        _ => Kind::Raw,
+    }
+}
+
 fn direction(
     selected: &[(&Assignment, &Definition)],
     dir: Direction,
@@ -259,16 +270,7 @@ fn direction(
                     | u32::from(width),
             );
             if entry.index != 0 {
-                let kind = match entry.data_type.as_str() {
-                    "BOOL" | "BIT" if entry.width == 1 => Kind::Bool,
-                    "SINT" | "INT" | "DINT" | "LINT" | "INT24" | "INT40" | "INT48" | "INT56" => {
-                        Kind::Signed
-                    }
-                    "REAL" | "REAL32" if entry.width == 32 && bit.is_multiple_of(8) => Kind::F32,
-                    "LREAL" | "REAL64" if entry.width == 64 && bit.is_multiple_of(8) => Kind::F64,
-                    _ if entry.width <= 64 => Kind::Unsigned,
-                    _ => Kind::Raw,
-                };
+                let kind = esi_entry_kind(&entry.data_type, entry.width, bit);
                 let mut name = format!(
                     "{} [{:04X}/{:04X}:{:02X}]",
                     entry.name, pdo.index, entry.index, entry.subindex
