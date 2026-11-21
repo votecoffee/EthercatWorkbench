@@ -4,6 +4,8 @@ use roxmltree::{Document, Node};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+pub mod modular;
+
 #[derive(Debug)]
 pub struct Device {
     pub source: EsiSource,
@@ -114,11 +116,8 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
             .and_then(|n| n.text())
             .context("ESI Vendor Id missing")?,
     )?;
-    let devices = child(
-        child(root, "Descriptions").context("ESI Descriptions missing")?,
-        "Devices",
-    )
-    .context("ESI Devices missing")?;
+    let descriptions = child(root, "Descriptions").context("ESI Descriptions missing")?;
+    let devices = child(descriptions, "Devices").context("ESI Devices missing")?;
     let sha256 = hex::encode(Sha256::digest(bytes));
     let result = devices
         .children()
@@ -134,7 +133,12 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
                 .or_else(|| ty.text())
                 .unwrap_or("Unnamed device")
                 .to_owned();
+            let modular = modular::parse(device, descriptions, vendor)
+                .with_context(|| format!("read ESI module and slot declarations for {label}"))?;
             let mut notes = Vec::new();
+            if modular.is_some() {
+                notes.push("ESI declares modular slots. PDO image sizes cover device-level entries only. Module layout requires separate verification.".into());
+            }
             if ty.attribute("RevisionNo").is_none() {
                 notes.push("RevisionNo is absent. Verify revision manually.".into());
             }
@@ -167,6 +171,7 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<Vec<Device>> {
                     default_rx_bytes: default_known.then_some(rx_bytes),
                     dc_modes,
                     pdo_catalog,
+                    modular,
                     notes: notes.clone(),
                     identity: Identity {
                         vendor,

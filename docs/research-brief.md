@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.79.0** rebuilds TxPDO layouts from each virtual connection generation’s raw CoE and SII exchanges before opening CSV. Portable bundles retain the fixture for repeat audit, and the desktop shows the verified counts. [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Desktop review](desktop-review.md#review-a-grouped-capture-bundle) · [Verification history](../VERIFICATION.md)
+Version **0.80.0** retains modular ESI slot declarations and local PDO template summaries alongside the device-level image. Installed modules and the composed PDO layout require separate evidence. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Modular ESI review](pdo-selection.md#review-modular-device-declarations) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

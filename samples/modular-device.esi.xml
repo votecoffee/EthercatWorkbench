@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.14">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored modular fixture</Name></Vendor>
+  <Descriptions>
+    <Groups><Group><Type>Fixture</Type><Name>Authored sample group</Name></Group></Groups>
+    <Devices>
+      <Device Physics="YY">
+        <Type ProductCode="#x0000000A" RevisionNo="1">VirtualModular</Type>
+        <Name>Authored modular device</Name>
+        <GroupType>Fixture</GroupType>
+        <TxPdo Sm="3">
+          <Index>#x1A00</Index>
+          <Name>Base status</Name>
+          <Entry><Index>#x6000</Index><SubIndex>1</SubIndex><BitLen>8</BitLen><Name>Base status</Name><DataType>USINT</DataType></Entry>
+        </TxPdo>
+        <Slots MaxSlotCount="3" SlotPdoIncrement="#x10" SlotIndexIncrement="#x0800" DownloadModuleIdentList="1">
+          <Slot MinInstances="1" MaxInstances="1" SlotGroup="1">
+            <Name>Digital I/O</Name>
+            <ModuleIdent Default="1">#x0100</ModuleIdent>
+            <ModuleIdent Default="0">#x0199</ModuleIdent>
+            <ModuleIdent>#x019A</ModuleIdent>
+          </Slot>
+          <Slot MinInstances="0" MaxInstances="2" SlotGroup="2" SlotIndexIncrement="#x0100">
+            <Name>Optional analog channels</Name>
+            <ModuleClass><Class>Analog</Class><VendorId>#x00FF1000</VendorId></ModuleClass>
+            <ModuleClass><Class>Analog</Class><VendorId>#x00FF1001</VendorId></ModuleClass>
+          </Slot>
+          <SlotGroupData SlotGroup="1"><Name>Fixed station area</Name></SlotGroupData>
+          <SlotSelections><Name>Factory declaration</Name><ModuleIdent>#x0100</ModuleIdent></SlotSelections>
+        </Slots>
+      </Device>
+      <Device Physics="YY">
+        <Type ProductCode="#x0000000A" RevisionNo="2">VirtualFlat</Type>
+        <Name>Authored non-modular revision</Name>
+        <GroupType>Fixture</GroupType>
+        <TxPdo Sm="3">
+          <Index>#x1A00</Index>
+          <Name>Base status</Name>
+          <Entry><Index>#x6000</Index><SubIndex>1</SubIndex><BitLen>8</BitLen><Name>Base status</Name><DataType>USINT</DataType></Entry>
+        </TxPdo>
+      </Device>
+    </Devices>
+    <Modules>
+      <Module>
+        <Type ModuleIdent="#x0100" ModuleClass="Digital">VirtualDigital</Type>
+        <Name>Digital module</Name>
+        <RxPdo Sm="2">
+          <Index DependOnSlotGroup="1">#x1600</Index>
+          <Name>Outputs</Name>
+          <Entry><Index>#x7000</Index><SubIndex>1</SubIndex><BitLen>8</BitLen><Name>Digital outputs</Name><DataType>USINT</DataType></Entry>
+        </RxPdo>
+        <TxPdo Sm="3">
+          <Index DependOnSlot="1">#x1A10</Index>
+          <Name>Inputs</Name>
+          <Entry><Index DependOnSlotGroup="true">#x6010</Index><SubIndex>1</SubIndex><BitLen>1</BitLen><Name>Digital input</Name><DataType>BOOL</DataType></Entry>
+          <Entry><Index>0</Index><BitLen>7</BitLen></Entry>
+        </TxPdo>
+      </Module>
+      <Module>
+        <Type ModuleIdent="#x0200" ModuleClass="Analog">VirtualAnalog</Type>
+        <Name>Analog module</Name>
+        <TxPdo Sm="3">
+          <Index>#x1A20</Index>
+          <Name>Analog inputs</Name>
+          <Entry><Index DependOnSlot="1">#x6020</Index><SubIndex>1</SubIndex><BitLen>16</BitLen><Name>Analog input</Name><DataType>UINT</DataType></Entry>
+        </TxPdo>
+      </Module>
+      <Module>
+        <Type ModuleIdent="#x0300" ModuleClass="Unrelated">VirtualUnrelated</Type>
+        <Name>Unreferenced module</Name>
+      </Module>
+    </Modules>
+  </Descriptions>
+</EtherCATInfo>

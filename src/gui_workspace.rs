@@ -547,6 +547,42 @@ mod tests {
     }
 
     #[test]
+    fn modular_esi_details_are_collapsed_and_survive_loading_the_profile() {
+        let mut app = app();
+        let mut entries = esi::parse(
+            "modular-device.esi.xml",
+            include_bytes!("../samples/modular-device.esi.xml"),
+        )
+        .unwrap();
+        let flat = entries.pop().unwrap();
+        entries[0].apply(&mut app.profile).unwrap();
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1100.0, 840.0);
+        let text = draw(&mut app, &ctx, size, vec![]);
+        assert!(text.iter().any(|(s, _)| s == "ESI modules and slots"));
+        assert!(!text.iter().any(|(s, _)| s.contains("Digital I/O")));
+        click(&mut app, &ctx, "ESI modules and slots");
+        click(&mut app, &ctx, "Slot declaration 1 · Digital I/O");
+        let text = draw(&mut app, &ctx, size, vec![]);
+        assert!(
+            text.iter()
+                .any(|(s, _)| s == "Module 0x00000199 · Default instances 0 · 0 local definitions")
+        );
+        app.esi = entries;
+        let text = draw(&mut app, &ctx, size, vec![]);
+        assert_eq!(
+            text.iter()
+                .filter(|(s, _)| s == "ESI modules and slots")
+                .count(),
+            1
+        );
+        app.esi.clear();
+        flat.apply(&mut app.profile).unwrap();
+        let text = draw(&mut app, &ctx, size, vec![]);
+        assert!(!text.iter().any(|(s, _)| s == "ESI modules and slots"));
+    }
+
+    #[test]
     fn offline_demo_prompts_for_unsaved_edits_and_cancel_preserves_them() {
         let mut app = app();
         app.profile.name = "Edited manual profile".into();

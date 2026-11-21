@@ -37,6 +37,8 @@ pub struct EsiSource {
     pub dc_modes: Vec<crate::sync_review::DcMode>,
     #[serde(default)]
     pub pdo_catalog: Vec<crate::pdo_catalog::Definition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modular: Option<crate::esi::modular::Description>,
     #[serde(default)]
     pub notes: Vec<String>,
 }
@@ -319,6 +321,9 @@ impl Profile {
         if let Some(esi) = &self.esi {
             ensure!(esi.dc_modes.len() <= 64, "ESI has more than 64 DC modes");
             crate::pdo_catalog::validate_catalog(&esi.pdo_catalog)?;
+            if let Some(modular) = &esi.modular {
+                modular.validate()?;
+            }
             for mode in &esi.dc_modes {
                 mode.validate()?;
             }

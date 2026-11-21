@@ -16,6 +16,20 @@ The three slash-separated components accept decimal, `0x` or `#x` hexadecimal in
 
 An unknown identity, ambiguous match, out-of-range index, identity/index mismatch or invalid selector fails before creating a profile. Existing destinations remain protected. Mode staging, cycle assumptions and explicit PDO choices work with either selector. The profile retains the selected entry's catalog, labels, imported identity and the complete ESI file's basename/hash; reordering the XML therefore changes source provenance even when the selected configuration is otherwise unchanged. Selector checks use imported values, so warnings about an absent revision still apply. They do not discover a bus or establish physical identity, device compatibility, ESI authenticity or hardware permission.
 
+## Review modular device declarations
+
+For ESI devices with a `Slots` declaration, **Device → ESI modules and slots** shows slot declarations and local module descriptions in a collapsed panel. Each slot shows its name, group and instance limits when present, plus its declared module identities or vendor-qualified class choices. Expand a choice's slot to see how many definitions in the same file match it. Zero means this file supplies no matching definition. Multiple definitions remain visible. A default instance count of zero is distinct from an unspecified default.
+
+```powershell
+.\ethercat-workbench-cli.exe esi-list samples/modular-device.esi.xml
+.\ethercat-workbench-cli.exe esi-import samples/modular-device.esi.xml --identity '0x00FF1000/10/1' --out .local/modular.json
+.\ethercat-workbench-cli.exe validate .local/modular.json
+```
+
+The CLI shows the inventory under `source.modular` in `esi-list` and `esi.modular` in a saved profile. Module templates show declared TxPDO or RxPDO indexes, total declared bits including padding, and whether any indexes depend on a slot or slot group. Slot attributes such as index increments are retained as ESI text. Group and preset declarations such as `SlotGroupData` and `SlotSelections` are flagged for separate review.
+
+The profile's image lengths and fields come from the device-level PDOs. The sample's modular revision therefore produces only the one-byte base status input, even though it declares additional module data. An installed module list, resolved index offsets, and the composed PDO mapping require separate evidence. Source references and module-list download hints are descriptive. [Beckhoff's module and slot overview](https://infosys.beckhoff.com/content/1033/ep8601-0022/17946536971.html)
+
 ## Catalog choices
 
 The [pinned ESI base schema](https://github.com/synapticon/siitool/blob/c46570adb1228eada44ae1f38bd61a81fab99c98/examples/ModulesSlots_DS402_Simple/EtherCATBase.xsd) distinguishes fixed entry mapping from mandatory assignment and describes the default `Sm` and exclusion list. Workbench preserves fixed entries while allowing assignment choices. Mandatory PDOs must be selected. Exclusions are conservatively checked across all chosen PDOs. Duplicate indexes in a direction, duplicate choices, unknown candidates, out-of-range SyncManagers and sharing one SyncManager between Tx and Rx are rejected.

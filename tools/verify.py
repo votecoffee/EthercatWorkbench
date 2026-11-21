@@ -605,6 +605,87 @@ def verify_esi_identity(cli, destination):
         "reordered_selection": selected, "explicit_duplicate": str(chosen)}, indent=2), encoding="utf-8")
 
 
+def verify_esi_modular(cli, destination, sample=None):
+    """Retain literal slot and module evidence without adding fields to the process image."""
+    import xml.etree.ElementTree as ET
+
+    sample = ROOT / "samples/modular-device.esi.xml" if sample is None else sample
+    original = sample.read_bytes()
+    modular, flat = cli_call(cli, "esi-list", sample)
+    source = modular["source"]
+    assert source["sha256"] == hashlib.sha256(original).hexdigest()
+    assert [entry["source"]["identity"]["revision"] for entry in (modular, flat)] == [1, 2]
+    assert "modular" not in flat["source"]
+    assert [(entry["tx_bytes"], entry["rx_bytes"]) for entry in (modular, flat)] == [(1, 0), (1, 0)]
+    inventory = source["modular"]
+    assert inventory["slot_attributes"]["DownloadModuleIdentList"] == "1"
+    assert inventory["slot_attributes"]["SlotIndexIncrement"] == "#x0800"
+    assert inventory["additional_elements"] == ["SlotGroupData", "SlotSelections"]
+    digital, analog = inventory["slots"]
+    assert (digital["name"], digital["group"], digital["min_instances"], digital["max_instances"]) == (
+        "Digital I/O", 1, 1, 1
+    )
+    assert digital["choices"] == [
+        {"kind": "ident", "ident": 0x100, "default_instances": 1},
+        {"kind": "ident", "ident": 0x199, "default_instances": 0},
+        {"kind": "ident", "ident": 0x19A, "default_instances": None},
+    ]
+    assert (analog["group"], analog["min_instances"], analog["max_instances"]) == (2, 0, 2)
+    assert analog["attributes"]["SlotIndexIncrement"] == "#x0100"
+    assert analog["choices"] == [
+        {"kind": "class", "class": "Analog", "vendor_id": 0x00FF1000},
+        {"kind": "class", "class": "Analog", "vendor_id": 0x00FF1001},
+    ]
+    assert [item["ident"] for item in inventory["modules"]] == [0x100, 0x200]
+    output, inputs = inventory["modules"][0]["pdo_templates"]
+    assert output["direction"] == "rx" and output["index"] == 0x1600
+    assert output["declared_bits"] == 8 and output["depends_on_slot_group"]
+    assert inputs == {
+        "direction": "tx", "index": 0x1A10, "name": "Inputs",
+        "entry_count": 2, "declared_bits": 8, "depends_on_slot": True,
+        "depends_on_slot_group": True,
+    }
+    assert inventory["modules"][1]["pdo_templates"][0]["declared_bits"] == 16
+    assert inventory["modules"][1]["pdo_templates"][0]["depends_on_slot"]
+    assert "device-level entries only" in " ".join(modular["notes"])
+
+    for entry, path in [(modular, destination / "modular.json"), (flat, destination / "flat.json")]:
+        ident = entry["source"]["identity"]
+        selector = f'{ident["vendor"]}/{ident["product"]}/{ident["revision"]}'
+        cli_call(cli, "esi-import", sample, "--identity", selector, "--out", path)
+        saved = cli_call(cli, "validate", path)
+        assert saved["esi"] == entry["source"]
+        assert saved["esi_pdo_selection"] == {"tx": [{"index": 0x1A00, "sm": 3}], "rx": []}
+        assert saved["tx_bytes"] == 1 and saved["rx_bytes"] == 0
+        decoded = cli_call(cli, "decode", path, "2a")
+        assert decoded == [{"field": "Base status [1A00/6000:01]", "value": "42",
+                            "source": "esi", "bit": 0, "width": 8}]
+        blocked = destination / f'bad-module-pdo-{ident["revision"]}.json'
+        cli_call(cli, "esi-import", sample, "--identity", selector, "--tx-pdo", "0x1a10@3",
+                 "--out", blocked, success=False)
+        assert not blocked.exists()
+
+    # A same-named class restricted to another vendor cannot select the local module.
+    tree = ET.fromstring(original)
+    slots = tree.find("Descriptions/Devices/Device/Slots")
+    class_slot = slots.findall("Slot")[1]
+    class_slot.remove(class_slot.findall("ModuleClass")[0])
+    foreign = destination / "foreign-class.esi.xml"
+    foreign.write_bytes(ET.tostring(tree, encoding="utf-8"))
+    foreign_result = cli_call(cli, "esi-list", foreign)[0]["source"]["modular"]
+    assert [item["ident"] for item in foreign_result["modules"]] == [0x100]
+
+    # Duplicate descriptions remain visible and the fixture's original bytes are untouched.
+    from copy import deepcopy
+    definitions = tree.find("Descriptions/Modules")
+    definitions.append(deepcopy(definitions[0]))
+    duplicate = destination / "duplicate-module.esi.xml"
+    duplicate.write_bytes(ET.tostring(tree, encoding="utf-8"))
+    candidates = cli_call(cli, "esi-list", duplicate)[0]["source"]["modular"]["modules"]
+    assert [item["ident"] for item in candidates] == [0x100, 0x100]
+    assert sample.read_bytes() == original
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -5171,6 +5252,9 @@ def main():
     identity_destination = destination / "esi-identity"
     identity_destination.mkdir()
     verify_esi_identity(cli, identity_destination)
+    modular_destination = destination / "esi-modular"
+    modular_destination.mkdir()
+    verify_esi_modular(cli, modular_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

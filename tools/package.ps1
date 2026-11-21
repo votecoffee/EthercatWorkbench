@@ -65,6 +65,7 @@ try {
         'samples/output-staging.json' = 'samples/output-staging.json'
         'samples/esc-diagnostics.json' = 'samples/esc-diagnostics.json'
         'samples/synthetic.esi.xml' = 'samples/synthetic.esi.xml'
+        'samples/modular-device.esi.xml' = 'samples/modular-device.esi.xml'
         'samples/pdo-choices.esi.xml' = 'samples/pdo-choices.esi.xml'
         'samples/pdo-choices.json' = 'samples/pdo-choices.json'
         'docs/pdo-selection.md' = 'docs/pdo-selection.md'

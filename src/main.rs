@@ -2,6 +2,7 @@
 
 mod gui_capture_review;
 mod gui_connection;
+mod gui_esi_modules;
 mod gui_mode_pdo;
 mod gui_profiles;
 mod gui_review;
@@ -330,6 +331,9 @@ impl App {
                 *index = self.esi_selected;
                 *draft = pdo_catalog::defaults(&device.source.pdo_catalog);
             }
+            ui.push_id("loaded_esi_modules", |ui| {
+                gui_esi_modules::show(ui, &device.source)
+            });
             ui.push_id("loaded_pdos", |ui| {
                 ui.collapsing("ESI PDO candidates and offline choices", |ui| {
                     pdo_choices(ui, &device.source.pdo_catalog, draft)
@@ -358,10 +362,16 @@ impl App {
                 "ESI baseline · {} · {} · SHA-256 {}",
                 source.file_name, source.identity, source.sha256
             ));
-        }
-        if let Some(source) = &self.profile.esi {
-            for note in &source.notes {
-                ui.small(note);
+            let same_source = self.esi.get(self.esi_selected).is_some_and(|device| {
+                device.source.sha256 == source.sha256
+                    && device.source.identity == source.identity
+                    && device.source.modular == source.modular
+            });
+            if !same_source {
+                ui.push_id("saved_esi_modules", |ui| gui_esi_modules::show(ui, source));
+                for note in &source.notes {
+                    ui.small(note);
+                }
             }
             if let (Some(tx), Some(rx)) = (source.default_tx_bytes, source.default_rx_bytes) {
                 let provenance = if (tx, rx) == (self.profile.tx_bytes, self.profile.rx_bytes) {
@@ -370,7 +380,12 @@ impl App {
                     "Override"
                 };
                 ui.small(format!(
-                    "Image lengths · {provenance} · ESI Tx {tx} / Rx {rx} bytes"
+                    "Image lengths · {provenance} · {} Tx {tx} / Rx {rx} bytes",
+                    if source.modular.is_some() {
+                        "ESI device-level"
+                    } else {
+                        "ESI"
+                    }
                 ));
             }
         }
