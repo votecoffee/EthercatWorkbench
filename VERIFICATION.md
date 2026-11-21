@@ -794,3 +794,11 @@ The Windows release CLI exported a profile from the authored fixed-slot ESI and 
 A changed Tx descriptor left the image size intact and withheld the affected fields. An observed zero-length Rx image exported as zero bytes, while unavailable Rx evidence rejected export before file creation. Existing profiles and input files were preserved. The native CLI rejected the modular profile before reserving run files. The headless desktop preflight reported the same offline scope.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The 0.83.0 payload preview remained identical and an existing device-level profile still loaded. The exported profile supports offline use with saved geometry. Physical commissioning remains pending.
+
+## Version 0.85.0 saved modular inventory (2026-11-21)
+
+The Windows release CLI parsed the configured and detected module objects in the authored inventory. It compared both with manually entered fixed-slot choices, then reproduced the same choices from the complete detected list. A changed detected slot was reported independently of the configured list. An explicit empty module identity, a zero-count list and unavailable readback retained separate meanings.
+
+The CLI rejected malformed upload widths, inconsistent counts, duplicate subindexes, duplicate objects, wrong identities and a serial mismatch with the PDO run report before writing results. Automatic placement required a complete detected list for the selected fixed-slot ESI. A detected conflict blocked export. The new offline decoder profile saved the inventory hash and reported matches, and reloading preserved them.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The 0.84.0 manual export and saved profile remained identical. This verifies the interpretation of supplied evidence. Physical module readback and commissioning remain pending.

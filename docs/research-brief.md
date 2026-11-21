@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.84.0** exports reusable offline modular decoder profiles with matched fields, both saved image lengths and report provenance. Installed module lists and composed expected images require separate evidence. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Modular profile export](pdo-selection.md#export-a-reusable-modular-decoder-profile) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.85.0** reviews saved configured and detected module lists and can take fixed-slot choices from a complete detected list. Offline decoder exports retain that evidence. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Saved module identities](pdo-selection.md#review-saved-module-identities) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

@@ -380,6 +380,14 @@ impl App {
                         decoder.report_file_name, decoder.reported_backend
                     ));
                     ui.small(format!("Saved run SHA-256 {}", decoder.report_sha256));
+                    if let Some(inventory) = &decoder.module_inventory {
+                        ui.label(format!(
+                            "Module inventory · {} · Configured {} · Detected {}",
+                            inventory.file_name,
+                            inventory.configured.state.label(),
+                            inventory.detected.state.label()
+                        ));
+                    }
                     ui.label(format!(
                         "Saved image lengths · Tx {} / Rx {} bytes",
                         decoder.tx.image_bytes, decoder.rx.image_bytes

@@ -1153,6 +1153,129 @@ def verify_modular_profile(cli, destination, sample=None, report=None):
     assert sample.read_bytes() == original_esi and report.read_bytes() == original_report
 
 
+def verify_module_inventory(cli, destination, sample=None, report=None, inventory=None):
+    """Keep configured, detected and entered module identities distinct across preview and export."""
+    from copy import deepcopy
+
+    sample = ROOT / "samples/fixed-slot-pdos.esi.xml" if sample is None else sample
+    report = ROOT / "samples/fixed-slot-pdo-readback.json" if report is None else report
+    inventory = ROOT / "samples/fixed-slot-module-inventory.json" if inventory is None else inventory
+    original = inventory.read_bytes()
+    saved = json.loads(original)
+    selector = (sample, "--device", 0, "--identity", "0x00ff1000/11/1")
+    manual = ("--slot", "0=0x400", "--slot", "1=0x400")
+
+    def preview(source, *choices, more=()):
+        return cli_call(cli, "preview-modular-pdos", *selector, "--module-inventory", source, *choices, *more)
+
+    def mutate(name, change):
+        altered = deepcopy(saved)
+        change(altered)
+        path = destination / (name + ".json")
+        path.write_bytes((json.dumps(altered, indent=2) + "\n").encode())
+        return path
+
+    def reject(name, command, message):
+        target = destination / (name + "-result.json")
+        error = cli_call(cli, *command, "--out", target, success=False)
+        assert message in error and not target.exists(), error
+
+    entered = preview(inventory, *manual)
+    observed = preview(inventory)
+    typed = entered["module_inventory"]
+    detected = observed["module_inventory"]
+    assert typed["placement_source"] == "manual"
+    assert detected["placement_source"] == "saved_detected"
+    assert detected["sha256"] == hashlib.sha256(original).hexdigest()
+    assert detected["file_name"] == inventory.name and detected["reported_serial"] == 14785
+    assert detected["configured"] == {
+        "index": 0xF030, "state": "matched", "reported_count": 2, "differences": [], "unavailable": None,
+    }
+    assert detected["detected"] == {
+        "index": 0xF050, "state": "matched", "reported_count": 2, "differences": [], "unavailable": None,
+    }
+    assert entered["slots"] == observed["slots"]
+    assert [slot["module_ident"] for slot in observed["slots"]] == [0x400, 0x400]
+    assert "module_inventory" not in cli_call(cli, "preview-modular-pdos", *selector, *manual)
+
+    def detected_choice(data):
+        data["objects"][1]["uploads"][2]["data_hex"] = "01040000"
+
+    different = mutate("different-module", detected_choice)
+    manual_difference = preview(different, *manual)
+    conflict = manual_difference["module_inventory"]
+    assert conflict["configured"]["state"] == "matched"
+    assert conflict["detected"]["state"] == "mismatch"
+    assert conflict["detected"]["differences"] == [{"slot": 1, "expected": 0x400, "reported": 0x401}]
+    selected = preview(different)
+    assert [slot["module_ident"] for slot in selected["slots"]] == [0x400, 0x401]
+    assert selected["module_inventory"]["configured"]["differences"] == [
+        {"slot": 1, "expected": 0x401, "reported": 0x400},
+    ]
+    assert selected["module_inventory"]["detected"]["state"] == "matched"
+    reject("contradictory-export", ("export-modular-profile", *selector, *manual, "--module-inventory", different,
+                                    "--run-report", report), "detected module list differs")
+
+    def unavailable(data):
+        data["objects"][1] = {"index": 0xF050, "unavailable": "recorded CoE abort"}
+
+    no_detected = mutate("unavailable", unavailable)
+    manual_unknown = preview(no_detected, *manual)["module_inventory"]
+    assert manual_unknown["configured"]["state"] == "matched"
+    assert manual_unknown["detected"]["state"] == "unavailable"
+    assert manual_unknown["detected"]["unavailable"] == "recorded CoE abort"
+    reject("configured-only-automatic", ("preview-modular-pdos", *selector, "--module-inventory", no_detected),
+           "requires an available detected module list")
+
+    ordered = mutate("out-of-order-uploads", lambda data: data["objects"][1]["uploads"].reverse())
+    assert preview(ordered)["slots"] == observed["slots"]
+    zeros = mutate("zero-module", lambda data: data["objects"][1]["uploads"][1].update(data_hex="00000000"))
+    zero_difference = preview(zeros, *manual)["module_inventory"]["detected"]["differences"]
+    assert zero_difference == [{"slot": 0, "expected": 0x400, "reported": 0}]
+    reject("empty-fixed-slot", ("preview-modular-pdos", *selector, "--module-inventory", zeros),
+           "empty required slot 0")
+    empty = mutate("empty-list", lambda data: data["objects"][1].update(uploads=[{"subindex": 0, "data_hex": "00"}]))
+    empty_review = preview(empty, *manual)["module_inventory"]["detected"]
+    assert empty_review["reported_count"] == 0 and empty_review["state"] == "mismatch"
+    assert all(row["reported"] is None for row in empty_review["differences"])
+    reject("wrong-fixed-count", ("preview-modular-pdos", *selector, "--module-inventory", empty),
+           "differs from the ESI fixed slot count")
+
+    reject(
+        "wrong-identity", ("preview-modular-pdos", *selector, *manual, "--module-inventory",
+                           mutate("wrong-identity", lambda data: data["identity"].update(revision=2))),
+        "inventory identity differs",
+    )
+    invalid = [
+        ("count", lambda data: data["objects"][1]["uploads"][0].update(data_hex="03"), "count differs"),
+        ("count-width", lambda data: data["objects"][1]["uploads"][0].update(data_hex="0200"), "requires 1 raw bytes"),
+        ("module-width", lambda data: data["objects"][1]["uploads"][1].update(data_hex="000400"), "requires 4 raw bytes"),
+        ("duplicate-subindex", lambda data: data["objects"][1]["uploads"][2].update(subindex=1), "unique and contiguous"),
+        ("duplicate-object", lambda data: data["objects"].append(data["objects"][0]), "duplicate module inventory object"),
+        ("wrong-index", lambda data: data["objects"][1].update(index=0x1018), "unsupported module inventory object"),
+        ("contradiction", lambda data: data["objects"][1].update(unavailable="recorded abort"), "reason and no upload values"),
+    ]
+    for name, change, expected in invalid:
+        reject(name, ("preview-modular-pdos", *selector, *manual, "--module-inventory", mutate(name, change)), expected)
+
+    def serial_report(name, serial):
+        archived = json.loads(report.read_bytes())
+        archived["devices"][0]["serial"] = serial
+        out = destination / (name + ".json")
+        out.write_bytes((json.dumps(archived, indent=2) + "\n").encode())
+        return out
+
+    target = destination / "detected-profile.json"
+    created = cli_call(cli, "export-modular-profile", *selector, "--module-inventory", inventory,
+                       "--run-report", serial_report("matching-run", 14785), "--out", target)
+    assert cli_call(cli, "validate", target) == created
+    assert created["modular_decoder"]["module_inventory"] == detected
+    assert len(created["tx"]) == 4 and len(created["rx"]) == 2
+    reject("wrong-serial", ("preview-modular-pdos", *selector, "--module-inventory", inventory,
+                             "--run-report", serial_report("mismatched-run", 14786)), "inventory serial differs")
+    assert inventory.read_bytes() == original
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -5759,6 +5882,9 @@ def main():
     modular_profile_destination = destination / "esi-modular-profile"
     modular_profile_destination.mkdir()
     verify_modular_profile(cli, modular_profile_destination)
+    module_inventory_destination = destination / "esi-module-inventory"
+    module_inventory_destination.mkdir()
+    verify_module_inventory(cli, module_inventory_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

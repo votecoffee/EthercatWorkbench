@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "identity": {
+    "vendor": 16715776,
+    "product": 11,
+    "revision": 1
+  },
+  "serial": 14785,
+  "objects": [
+    {
+      "index": 61488,
+      "uploads": [
+        {
+          "subindex": 0,
+          "data_hex": "02"
+        },
+        {
+          "subindex": 1,
+          "data_hex": "00040000"
+        },
+        {
+          "subindex": 2,
+          "data_hex": "00040000"
+        }
+      ]
+    },
+    {
+      "index": 61520,
+      "uploads": [
+        {
+          "subindex": 0,
+          "data_hex": "02"
+        },
+        {
+          "subindex": 1,
+          "data_hex": "00040000"
+        },
+        {
+          "subindex": 2,
+          "data_hex": "00040000"
+        }
+      ]
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 //! Resolve PDO template indexes for explicit placements in fixed, ungrouped ESI slots.
 mod decode;
+pub mod inventory;
 pub mod profile;
 mod readback;
 
@@ -47,6 +48,8 @@ pub struct Preview {
     #[serde(skip)]
     esi: EsiSource,
     #[serde(skip_serializing_if = "Option::is_none")]
+    module_inventory: Option<inventory::Comparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     saved_readback: Option<readback::Comparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
     decoded_tx: Option<decode::DecodedPayload>,
@@ -60,11 +63,26 @@ impl Preview {
             .saved_readback
             .as_ref()
             .context("profile export requires saved PDO readback")?;
-        profile::build(self.esi, readback, &self.slots)
+        ensure!(
+            self.module_inventory
+                .as_ref()
+                .is_none_or(|report| report.detected.state != inventory::State::Mismatch),
+            "saved detected module list differs from the requested slot placements"
+        );
+        profile::build(self.esi, readback, &self.slots, self.module_inventory)
     }
 
     pub fn compare_saved_run(&mut self, path: &Path) -> Result<()> {
-        self.saved_readback = Some(readback::compare(path, &self.identity, &mut self.slots)?);
+        let serial = self
+            .module_inventory
+            .as_ref()
+            .and_then(|report| report.reported_serial);
+        self.saved_readback = Some(readback::compare(
+            path,
+            &self.identity,
+            serial,
+            &mut self.slots,
+        )?);
         self.decoded_tx = None;
         self.decoded_rx = None;
         Ok(())
@@ -130,10 +148,23 @@ pub fn preview(
     identity: Option<&Identity>,
     placements: &[Placement],
 ) -> Result<Preview> {
+    preview_with_inventory(path, device, identity, placements, None)
+}
+
+pub fn preview_with_inventory(
+    path: &Path,
+    device: Option<usize>,
+    identity: Option<&Identity>,
+    placements: &[Placement],
+    saved_inventory: Option<&Path>,
+) -> Result<Preview> {
     let (file, bytes) = read_file(path)?;
     with_description(&file, &bytes, |descriptions, devices| {
         let selected = select_device(&devices, device, identity)?;
-        preview_device(&selected.source, descriptions, placements)
+        let inventory = saved_inventory
+            .map(|path| inventory::Inventory::load(path, &selected.source.identity))
+            .transpose()?;
+        preview_device(&selected.source, descriptions, placements, inventory)
     })
 }
 
@@ -141,6 +172,7 @@ fn preview_device(
     source: &EsiSource,
     descriptions: Node<'_, '_>,
     placements: &[Placement],
+    inventory: Option<inventory::Inventory>,
 ) -> Result<Preview> {
     let modular = source
         .modular
@@ -166,6 +198,23 @@ fn preview_device(
                 .all(|slot| slot.group.is_none() && !has_group_increment(&slot.attributes)),
         "PDO index preview requires ungrouped slots without PDO grouping"
     );
+    let detected;
+    let (placements, placement_source) = if placements.is_empty() {
+        let inventory = inventory
+            .as_ref()
+            .context("supply fixed slot choices or a saved module inventory")?;
+        detected = inventory.detected_placements()?;
+        ensure!(
+            detected.len() == modular.slots.len(),
+            "detected module count differs from the ESI fixed slot count"
+        );
+        (
+            detected.as_slice(),
+            inventory::PlacementSource::SavedDetected,
+        )
+    } else {
+        (placements, inventory::PlacementSource::Manual)
+    };
     let mut by_slot = BTreeMap::new();
     for selection in placements {
         ensure!(
@@ -254,6 +303,7 @@ fn preview_device(
         esi_file_name: source.file_name.clone(),
         esi_sha256: source.sha256.clone(),
         identity: source.identity.clone(),
+        module_inventory: inventory.map(|inventory| inventory.compare(&slots, placement_source)),
         slots,
         esi: source.clone(),
         saved_readback: None,

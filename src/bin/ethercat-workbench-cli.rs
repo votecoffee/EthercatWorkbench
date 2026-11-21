@@ -34,13 +34,22 @@ struct ModularSelection {
     #[arg(long, value_parser = esi::identity_selector)]
     identity: Option<ethercat_workbench::model::Identity>,
     /// Supply one zero-based SLOT=MODULE_IDENT for each fixed slot.
-    #[arg(long, required = true, value_parser = esi::modular_preview::placement)]
+    #[arg(long, required_unless_present = "module_inventory", value_parser = esi::modular_preview::placement)]
     slot: Vec<esi::modular_preview::Placement>,
+    /// Use saved configured/detected CoE module IDs to review or fill the slot choices.
+    #[arg(long)]
+    module_inventory: Option<PathBuf>,
 }
 
 impl ModularSelection {
     fn preview(&self) -> Result<esi::modular_preview::Preview> {
-        esi::modular_preview::preview(&self.file, self.device, self.identity.as_ref(), &self.slot)
+        esi::modular_preview::preview_with_inventory(
+            &self.file,
+            self.device,
+            self.identity.as_ref(),
+            &self.slot,
+            self.module_inventory.as_deref(),
+        )
     }
 }
 

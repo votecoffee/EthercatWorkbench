@@ -337,6 +337,7 @@ impl<'a> CheckedDirection<'a> {
 pub(super) fn compare(
     path: &Path,
     identity: &Identity,
+    inventory_serial: Option<u32>,
     slots: &mut [SlotPreview],
 ) -> Result<Comparison> {
     let bytes = read_report_bytes_with_stop(path, None)?;
@@ -348,6 +349,12 @@ pub(super) fn compare(
     ensure!(
         device.identity.as_ref() == Some(identity),
         "saved run device identity differs from the ESI selection"
+    );
+    ensure!(
+        inventory_serial
+            .zip(device.serial)
+            .is_none_or(|(inventory, run)| inventory == run),
+        "saved module inventory serial differs from the saved PDO run"
     );
     let readback = report
         .pdo_verification

@@ -32,7 +32,7 @@ The profile's image lengths and fields come from the device-level PDOs. The samp
 
 ## Preview PDO indexes for fixed module slots
 
-Use `preview-modular-pdos` with the original ESI and an exact device identity or list index. Supply both selectors to guard the index. Supply one explicitly chosen module identity per slot. Slot numbers are zero-based in declaration order, so the first slot is 0. The same module identity can occupy multiple slots if each slot allows it.
+Use `preview-modular-pdos` with the original ESI and an exact device identity or list index. Supply both selectors to guard the index. For manual placement, supply one module identity per slot. Slot numbers are zero-based in declaration order. A complete saved detected list can also supply the choices. The same module identity can occupy multiple slots if each slot allows it.
 
 ```powershell
 .\ethercat-workbench-cli.exe esi-list samples/fixed-slot-pdos.esi.xml
@@ -79,6 +79,19 @@ Use `export-modular-profile` with the same fixed-slot ESI choices and saved run 
 In the desktop, load the file through **Profiles…** and open **Inputs → Offline decoder…**. **Device → Saved modular layout** shows the report hash and the saved image lengths alongside the ESI baseline. The profile also retains the slot choices, reported mapping sources, withheld PDOs and fields with unsupported widths or alignments. Supported Rx fields are available for offline output staging. Offline and synthetic capture workflows use the same profile.
 
 Export requires a saved length for both directions, including an explicitly observed zero-length image. It preserves complete image lengths when some fields are withheld and creates a new file. The exported decoder is scoped to offline use. A hardware session uses a separately configured commissioning profile and the normal approvals.
+
+## Review saved module identities
+
+Use `--module-inventory` to compare fixed-slot choices with saved CoE values. The configured list at `0xF030` and detected list at `0xF050` are reviewed independently. Keep `--slot` to test explicit choices, or omit it to choose modules from a complete detected list. Automatic placement requires the same number of positions as the fixed-slot ESI and a supported, nonzero identity in every position. [ETG module-list diagnostics](https://prelive.ethercat.org/technology/knowledge-base/esm-ethercat-state-machine/)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --module-inventory samples/fixed-slot-module-inventory.json
+.\ethercat-workbench-cli.exe export-modular-profile samples/fixed-slot-pdos.esi.xml --device 0 --module-inventory samples/fixed-slot-module-inventory.json --run-report samples/fixed-slot-pdo-readback.json --out .local/detected-decoder.json
+```
+
+The authored inventory illustrates the schema. Supply schema 1, the exact device identity, an optional serial, and an `objects` array keyed by numeric CoE index. Store the raw value of each upload in `data_hex` beside its numeric `subindex`. Subindex zero is a one-byte count and entries are four-byte little-endian module identities. Use `unavailable` for a reason when a list has no saved values. Unavailable and zero-count lists are distinct. The reader checks the declared count, unique contiguous subindexes, widths and identity. [Beckhoff object dictionary example](https://infosys.beckhoff.com/content/1033/ep8601-0022/16625888779.html)
+
+The preview records the evidence hash, the source of the chosen placements, and differences by zero-based slot. A reported zero and an absent position appear separately. If both the inventory and PDO run report include a serial, they must agree. Offline profile export preserves the comparison and stops if the detected list conflicts with the requested placements. The authored example and user-supplied snapshot are saved evidence. Physical collection requires a separate session.
 
 ## Catalog choices
 

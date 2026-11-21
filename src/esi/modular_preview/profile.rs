@@ -15,6 +15,8 @@ pub struct Provenance {
     pub report_sha256: String,
     pub reported_backend: String,
     pub slots: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_inventory: Option<super::inventory::Comparison>,
     pub tx: ImageSource,
     pub rx: ImageSource,
 }
@@ -39,6 +41,7 @@ pub(super) fn build(
     mut esi: EsiSource,
     readback: &Comparison,
     slots: &[SlotPreview],
+    module_inventory: Option<super::inventory::Comparison>,
 ) -> Result<Profile> {
     let (tx_source, tx) = image(Direction::Tx, readback, slots)?;
     let (rx_source, rx) = image(Direction::Rx, readback, slots)?;
@@ -65,6 +68,7 @@ pub(super) fn build(
             report_sha256: readback.sha256.clone(),
             reported_backend: readback.reported_backend.clone(),
             slots: slots.iter().map(|slot| slot.module_ident).collect(),
+            module_inventory,
             tx: tx_source,
             rx: rx_source,
         }),
