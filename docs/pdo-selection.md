@@ -98,12 +98,12 @@ The preview records the evidence hash, the source of the chosen placements, and 
 `read-virtual-module-inventory` initializes the in-memory fixed-slot SubDevice to PREOP, reads the two lists through the CoE upload client and confirms INIT on exit. EtherCrab's initialization includes modeled register writes for the address, SyncManager and FMMU setup. Standard output contains the state observations, wire counters and inventory. The optional `--out` writes a new schema-1 inventory file. The snapshot carries `source: virtual_coe` into comparisons and offline profiles.
 
 ```powershell
-.\ethercat-workbench-cli.exe read-virtual-module-inventory --out .local/virtual-modules.json
-.\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/virtual-modules.json
-.\ethercat-workbench-cli.exe export-modular-profile samples/fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/virtual-modules.json --run-report samples/fixed-slot-pdo-readback.json --out .local/virtual-module-decoder.json
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --out .local/virtual-modules.json --pdo-report .local/virtual-pdos.json
+.\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/virtual-modules.json --run-report .local/virtual-pdos.json
+.\ethercat-workbench-cli.exe export-modular-profile samples/fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/virtual-modules.json --run-report .local/virtual-pdos.json --out .local/virtual-module-decoder.json
 ```
 
-Use `--scenario detected-differs` to compare a different detected module with manual slots. `configured-unavailable` tests an SDO abort before the detected list. `detected-entry-abort` exercises a failure after part of that list was read. A failed list records the reason and omits incomplete values. `malformed-count` stops uploads on the affected mailbox, and `empty-detected` returns a valid count of zero. The existing saved PDO run report in the example supplies the process-image layout. Physical module inventory collection remains pending.
+Use `--scenario detected-differs` to compare a different detected module with manual slots. `configured-unavailable` tests an SDO abort before the detected list. `detected-entry-abort` exercises a failure after part of that list was read. A failed list records the reason and omits incomplete values. `malformed-count` stops uploads on the affected mailbox, and `empty-detected` returns a valid count of zero. With `--pdo-report`, EtherCrab configures the modeled process-data SyncManagers and FMMUs in PREOP. The shared CoE client then reads the assignment lists and mapping descriptors, and the report includes the observed SyncManager lengths. Both files carry the same SubDevice identity and serial. Use `--scenario pdo-entry-differs` with `--pdo-report` to see a descriptor mismatch at an unchanged image size. The offline export withholds the affected PDO's fields. If a malformed reply invalidates the mailbox, the report records both PDO directions as unavailable. Physical module inventory and PDO readback on the selected hardware remain pending.
 
 ## Catalog choices
 

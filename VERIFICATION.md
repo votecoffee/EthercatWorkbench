@@ -811,3 +811,13 @@ The six-scenario headless regression covered matching slots, an independently di
 The saved inventory matched the authored ESI identity, supplied two detected positions and carried its virtual source and hash through profile export and reload. The exported decoder reproduced the four expected TxPDO values using the bundled authored PDO layout. The manual conflicting placement was rejected and an existing snapshot could not be replaced. Earlier snapshots without a source still passed the saved-format regression.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless regression passed. Physical module collection and the GUI/logger bench run remain pending.
+
+## Version 0.87.0 paired virtual module and PDO readback (2026-11-21)
+
+The Windows CLI collected the configured and detected module lists, both PDO assignments and all mapping descriptors in the same modeled PREOP session. EtherCrab configured the process-data SyncManagers and FMMUs before handing the observed mailbox counter to the shared CoE uploader. The matched case made 48 uploads including setup, with zero counter errors, SDO downloads, cyclic reads, output writes or OP requests. The wire saw INIT, PREOP and final INIT.
+
+The generated PDO report carried the same identity and serial as the inventory. The CLI matched all four module PDOs to the ESI, measured seven configured TxPDO bytes and four RxPDO bytes, and retained both evidence hashes in a reloaded offline profile. The sample TxPDO and RxPDO payloads decoded at their observed offsets.
+
+A same-width descriptor change retained both image lengths and withheld only the affected TxPDO's fields. An SDO abort on the configured inventory left the detected list and both layouts readable. A malformed inventory count made both later PDO directions unavailable and blocked profile export. Existing files and an aliased output name were rejected before writing.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Physical module and PDO readback, SAFEOP input, and the GUI/logger benchmark remain pending.

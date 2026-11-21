@@ -1366,6 +1366,99 @@ def verify_virtual_module_inventory(cli, destination, sample=None, report=None):
     assert "output path already exists" in error and captured.read_bytes() == original
 
 
+def verify_virtual_modular_pdos(cli, destination, sample=None, report=None):
+    """Bind layout evidence and module IDs to a single virtual PREOP exchange sequence."""
+    sample = ROOT / "samples/fixed-slot-pdos.esi.xml" if sample is None else sample
+    report = ROOT / "samples/fixed-slot-pdo-readback.json" if report is None else report
+    selector = (sample, "--identity", "0x00ff1000/11/1")
+    expected = json.loads(report.read_bytes())["pdo_verification"]["readback"]
+
+    def collect(scenario):
+        inventory = destination / f"{scenario}-inventory.json"
+        pdos = destination / f"{scenario}-pdos.json"
+        result = cli_call(cli, "read-virtual-module-inventory", "--scenario", scenario,
+                          "--out", inventory, "--pdo-report", pdos)
+        saved = json.loads(pdos.read_bytes())
+        ids = json.loads(inventory.read_bytes())
+        assert result["pdo_report"] == saved and result["inventory"] == ids
+        assert saved["backend"] == "virtual_modular_preop"
+        assert saved["devices"] == [{"identity": ids["identity"], "serial": ids["serial"]}]
+        assert result["preop_al"] == saved["preop_al"] == [2, 0]
+        assert result["stopped_al"] == saved["stopped_al"] == [1, 0]
+        audit = result["audit"]
+        assert audit["coe_uploads"] > 6 and audit["mailbox_counter_errors"] == 0
+        assert set(audit["state_requests"]) == {1, 2}
+        assert audit["final_al_status"] == 1 and audit["final_al_code"] == 0
+        for key in ("coe_downloads", "op_requests", "logical_reads", "logical_writes",
+                    "physical_output_writes", "dc_enable_requests"):
+            assert audit[key] == 0, (scenario, key, audit)
+        evidence = (*selector, "--module-inventory", inventory, "--run-report", pdos)
+        return evidence, inventory, pdos, saved["pdo_verification"]["readback"]
+
+    evidence, inventory, pdos, readback = collect("matched")
+    assert all(readback[direction] == expected[direction] for direction in ("tx", "rx"))
+    assert readback["tx_unavailable"] is None and readback["rx_unavailable"] is None
+    reviewed = cli_call(cli, "preview-modular-pdos", *evidence, "--tx-hex", "34 12 01 CD AB FE A5")
+    candidates = [pdo["saved_readback"] for slot in reviewed["slots"] for pdo in slot["pdos"]]
+    assert [item["state"] for item in candidates] == ["matched"] * 4
+    assert [item["bit"] for item in candidates] == [0, 0, 16, 24]
+    assert reviewed["module_inventory"]["placement_source"] == "saved_detected"
+    assert reviewed["saved_readback"]["sha256"] == hashlib.sha256(pdos.read_bytes()).hexdigest()
+    target = destination / "virtual-decoder.json"
+    profile = cli_call(cli, "export-modular-profile", *evidence, "--out", target)
+    provenance = profile["modular_decoder"]
+    assert cli_call(cli, "validate", target) == profile
+    assert provenance["reported_backend"] == "virtual_modular_preop"
+    assert provenance["report_sha256"] == reviewed["saved_readback"]["sha256"]
+    assert provenance["module_inventory"]["sha256"] == hashlib.sha256(inventory.read_bytes()).hexdigest()
+    assert (profile["tx_bytes"], profile["rx_bytes"]) == (7, 4)
+    tx = cli_call(cli, "decode", target, "34 12 01 CD AB FE A5")
+    rx = cli_call(cli, "decode", target, "EF BE 02 80", "--rx")
+    assert [field["value"] for field in tx] == ["4660", "true", "43981", "false"]
+    assert [field["value"] for field in rx] == ["48879", "32770"]
+
+    fault, _, _, changed = collect("pdo-entry-differs")
+    assert changed["rx"] == readback["rx"]
+    assert changed["tx"]["sync_managers"][0]["configured_bytes"] == 7
+    reviewed = cli_call(cli, "preview-modular-pdos", *fault)
+    assert reviewed["module_inventory"]["detected"]["state"] == "matched"
+    rx_slot, tx_slot = [pdo["saved_readback"] for pdo in reviewed["slots"][1]["pdos"]]
+    assert rx_slot["state"] == "matched"
+    assert tx_slot["state"] == "descriptor_mismatch" and tx_slot["bit"] == 24
+    assert tx_slot["differences"] == [{
+        "entry": 0, "expected": {"object_index": 0x6841, "subindex": 0, "width": 16},
+        "observed": {"object_index": 0x6842, "subindex": 0, "width": 16},
+    }]
+    limited = cli_call(cli, "export-modular-profile", *fault, "--out", destination / "limited.json")
+    assert (limited["tx_bytes"], limited["rx_bytes"]) == (7, 4)
+    assert len(limited["tx"]) == len(limited["rx"]) == 2
+    assert limited["modular_decoder"]["tx"]["withheld_pdos"] == [0x1A10]
+
+    aborted, _, _, after_abort = collect("configured-unavailable")
+    assert after_abort == readback
+    reviewed = cli_call(cli, "preview-modular-pdos", *aborted)
+    assert reviewed["module_inventory"]["configured"]["state"] == "unavailable"
+    assert reviewed["module_inventory"]["detected"]["state"] == "matched"
+
+    malformed, _, _, untrusted = collect("malformed-count")
+    assert untrusted["tx"] is None and untrusted["rx"] is None
+    assert all("CoE readback integrity failed" in untrusted[key]
+               for key in ("tx_unavailable", "rx_unavailable"))
+    rejected = destination / "malformed-profile.json"
+    error = cli_call(cli, "export-modular-profile", *malformed, "--slot", "0=0x400",
+                     "--slot", "1=0x400", "--out", rejected, success=False)
+    assert "saved Tx PDO layout is unavailable" in error and not rejected.exists(), error
+
+    fresh = destination / "fresh.json"
+    before = pdos.read_bytes()
+    error = cli_call(cli, "read-virtual-module-inventory", "--out", fresh, "--pdo-report", pdos, success=False)
+    assert "output path already exists" in error and not fresh.exists() and pdos.read_bytes() == before
+    error = cli_call(cli, "read-virtual-module-inventory", "--out", fresh,
+                     "--pdo-report", fresh.with_name("FRESH.JSON"), success=False)
+    assert "require different output paths" in error and not fresh.exists()
+    assert "pdo_report" not in cli_call(cli, "read-virtual-module-inventory")
+
+
 def verify_mode_pdo_staging(cli, destination):
     """Exercise offline candidate saving and independent actual-mapping rejection."""
     esi = ROOT / "samples/mode-pdo-staging.esi.xml"
@@ -5978,6 +6071,9 @@ def main():
     virtual_module_destination = destination / "virtual-module-inventory"
     virtual_module_destination.mkdir()
     verify_virtual_module_inventory(cli, virtual_module_destination)
+    virtual_modular_pdo_destination = destination / "virtual-modular-pdos"
+    virtual_modular_pdo_destination.mkdir()
+    verify_virtual_modular_pdos(cli, virtual_modular_pdo_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

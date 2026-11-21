@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.86.0** collects configured and detected module lists through CoE uploads in virtual PREOP and confirms INIT on exit. Fixed-slot choices can come from a complete detected list, and offline decoder exports retain its virtual source. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Saved module identities](pdo-selection.md#review-saved-module-identities) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.87.0** can read the fixed-slot device's PDO assignments, descriptors and SyncManager lengths in the same virtual PREOP session as the module inventory. Offline decoder exports retain both evidence hashes and withhold fields affected by mapping differences. The simulator confirms INIT on exit. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Saved module identities](pdo-selection.md#review-saved-module-identities) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

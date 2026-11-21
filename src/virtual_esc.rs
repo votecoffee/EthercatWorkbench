@@ -77,6 +77,7 @@ pub enum ModuleInventoryCase {
     DetectedEntryAbort,
     MalformedCount,
     EmptyDetected,
+    PdoEntryDiffers,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -1553,6 +1554,11 @@ impl VirtualEsc {
                 _ => None,
             };
         }
+        if let Some(case) = self.module_inventory
+            && matches!(index, 0x1c12 | 0x1c13 | 0x1600..=0x17ff | 0x1a00..=0x1bff)
+        {
+            return modular_pdo_object(index, sub, case);
+        }
         let entries = if self.fault == VirtualFault::PdoOrder {
             [0x6000_0320, 0x6000_0201, 15, 0x6000_0110]
         } else {
@@ -1632,6 +1638,28 @@ fn word(bytes: &[u8]) -> u16 {
 
 fn dword(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<(u32, u8)> {
+    let second_status_word = if case == ModuleInventoryCase::PdoEntryDiffers {
+        0x6842_0010
+    } else {
+        0x6841_0010
+    };
+    let (width, entries): (u8, &[u32]) = match index {
+        0x1c12 => (2, &[0x1600, 0x1610]),
+        0x1c13 => (2, &[0x1a00, 0x1a10, 0x1a40]),
+        0x1600 => (4, &[0x6040_0010]),
+        0x1610 => (4, &[0x6840_0010]),
+        0x1a00 => (4, &[0x6041_0010, 0x2100_0201, 7]),
+        0x1a10 => (4, &[second_status_word, 0x2100_0201, 7]),
+        0x1a40 => (4, &[0x2200_0108]),
+        _ => return None,
+    };
+    if sub == 0 {
+        return Some((entries.len() as u32, 1));
+    }
+    Some((*entries.get(usize::from(sub - 1))?, width))
 }
 
 fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {

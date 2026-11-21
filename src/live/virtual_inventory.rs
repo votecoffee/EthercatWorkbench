@@ -1,10 +1,12 @@
-//! Collect fixed-slot inventory through the bounded CoE client on the in-memory transport.
+//! Collect fixed-slot inventory and PDOs through CoE on the in-memory transport.
 use super::{
-    AL_STATUS, PacketIo, Transport, coe::Client, ethercat_now, request_init, setup_timeouts,
+    AL_STATUS, PacketIo, Transport, coe::Client, ethercat_now, pdo_readback, request_init,
+    setup_timeouts,
 };
 use crate::{
     esi::modular_preview::inventory::{CONFIGURED, DETECTED, Object, Snapshot, Source, Upload},
     model::Identity,
+    pdo::Readback,
     virtual_esc::{VirtualStats, VirtualWire},
 };
 use anyhow::{Context, Result, ensure};
@@ -18,12 +20,41 @@ pub use crate::virtual_esc::ModuleInventoryCase;
 pub struct Report {
     scenario: ModuleInventoryCase,
     pub inventory: Snapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pdo_report: Option<PdoReport>,
     preop_al: (u16, u16),
     stopped_al: (u16, u16),
     audit: VirtualStats,
 }
 
-pub fn read(scenario: ModuleInventoryCase) -> Result<Report> {
+/// Subset of the saved run report consumed by modular PDO comparison.
+#[derive(Serialize)]
+pub struct PdoReport {
+    backend: &'static str,
+    devices: [PdoDevice; 1],
+    pdo_verification: PdoVerification,
+    preop_al: (u16, u16),
+    stopped_al: (u16, u16),
+}
+
+#[derive(Serialize)]
+struct PdoDevice {
+    identity: Identity,
+    serial: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct PdoVerification {
+    readback: Readback,
+}
+
+struct Capture {
+    inventory: Snapshot,
+    preop_al: (u16, u16),
+    pdos: Option<Readback>,
+}
+
+pub fn read(scenario: ModuleInventoryCase, with_pdos: bool) -> Result<Report> {
     let mut port = Transport {
         io: PacketIo::Virtual(Box::new(VirtualWire::for_module_inventory(scenario))),
         seq: 0,
@@ -54,39 +85,42 @@ pub fn read(scenario: ModuleInventoryCase) -> Result<Report> {
             )
             .context("initialize virtual SubDevice in PREOP")?;
         ensure!(group.len() == 1, "expected one virtual SubDevice");
-        let device = group.subdevice(&main, 0)?;
-        let identity = device.identity();
-        let station = device.configured_address();
-        port.drive(&mut tx, &mut rx, Some(&stop), async {
-            let [status, _, code] = Command::fprd(station, AL_STATUS)
-                .receive::<[u16; 3]>(&main)
-                .await?;
-            ensure!(
-                status & 0x1f == 2 && code == 0,
-                "module upload requires clean PREOP: AL {status:#06x}, code {code:#06x}"
+        if !with_pdos {
+            let device = group.subdevice(&main, 0)?;
+            return port.drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                capture(&device, &main, &stop, None),
             );
-            let mut client = Client::discover(&device, &stop).await?;
-            // EtherCrab's mailbox-only PREOP setup has not started any CoE transaction.
-            let configured = upload_list(&mut client, &device, &main, &stop, CONFIGURED).await;
-            let detected = upload_list(&mut client, &device, &main, &stop, DETECTED).await;
-            Ok::<_, anyhow::Error>((
-                Snapshot {
-                    schema: 1,
-                    identity: Identity {
-                        vendor: identity.vendor_id,
-                        product: identity.product_id,
-                        revision: identity.revision,
-                    },
-                    serial: Some(identity.serial),
-                    source: Some(Source::VirtualCoe),
-                    objects: vec![configured, detected],
-                },
-                (status, code),
-            ))
-        })
+        }
+        let original = {
+            let device = group.subdevice(&main, 0)?;
+            let client = port.drive(
+                &mut tx,
+                &mut rx,
+                Some(&stop),
+                Client::discover(&device, &stop),
+            )?;
+            port.mailbox_watch = Some((device.configured_address(), client.write_address()));
+            client
+        };
+        let group = port
+            .drive(&mut tx, &mut rx, Some(&stop), group.into_pre_op_pdi(&main))
+            .context("configure virtual SyncManagers and FMMUs from CoE mapping")?;
+        let device = group.subdevice(&main, 0)?;
+        let counter = port
+            .mailbox_counter
+            .context("no EtherCrab mailbox counter observed for PDO readback")?;
+        port.drive(
+            &mut tx,
+            &mut rx,
+            Some(&stop),
+            capture(&device, &main, &stop, Some((&original, counter))),
+        )
     })();
     let cleanup = request_init(&mut port, &mut tx, &mut rx, &main);
-    let ((inventory, preop_al), stopped_al) = match (result, cleanup) {
+    let (capture, stopped_al) = match (result, cleanup) {
         (Ok(result), Ok(stopped_al)) => (result, stopped_al),
         (Err(error), Err(cleanup)) => {
             return Err(error.context(format!("virtual INIT cleanup also failed: {cleanup:#}")));
@@ -96,12 +130,74 @@ pub fn read(scenario: ModuleInventoryCase) -> Result<Report> {
     let PacketIo::Virtual(wire) = &port.io else {
         unreachable!("virtual module inventory transport")
     };
+    let Capture {
+        inventory,
+        preop_al,
+        pdos,
+    } = capture;
+    let pdo_report = pdos.map(|readback| PdoReport {
+        backend: "virtual_modular_preop",
+        devices: [PdoDevice {
+            identity: inventory.identity.clone(),
+            serial: inventory.serial,
+        }],
+        pdo_verification: PdoVerification { readback },
+        preop_al,
+        stopped_al,
+    });
     Ok(Report {
         scenario,
         inventory,
+        pdo_report,
         preop_al,
         stopped_al,
         audit: wire.stats(),
+    })
+}
+
+async fn capture<S: Deref<Target = SubDevice>>(
+    device: &SubDeviceRef<'_, S>,
+    main: &MainDevice<'_>,
+    stop: &AtomicBool,
+    pdi_handoff: Option<(&Client, u8)>,
+) -> Result<Capture> {
+    let [status, _, code] = Command::fprd(device.configured_address(), AL_STATUS)
+        .receive::<[u16; 3]>(main)
+        .await?;
+    ensure!(
+        status & 0x1f == 2 && code == 0,
+        "module upload requires clean PREOP: AL {status:#06x}, code {code:#06x}"
+    );
+    let mut client = Client::discover(device, stop).await?;
+    if let Some((original, counter)) = pdi_handoff {
+        ensure!(
+            original.same_mailboxes(&client),
+            "mailbox layout changed during EtherCrab PDI setup"
+        );
+        client.seed(counter);
+    }
+    let configured = upload_list(&mut client, device, main, stop, CONFIGURED).await;
+    let detected = upload_list(&mut client, device, main, stop, DETECTED).await;
+    let pdos = if pdi_handoff.is_some() {
+        Some(pdo_readback::readback(device, main, Some(&mut client), stop).await)
+    } else {
+        None
+    };
+    let identity = device.identity();
+    Ok(Capture {
+        inventory: Snapshot {
+            schema: 1,
+            identity: Identity {
+                vendor: identity.vendor_id,
+                product: identity.product_id,
+                revision: identity.revision,
+            },
+            serial: Some(identity.serial),
+            source: Some(Source::VirtualCoe),
+            objects: vec![configured, detected],
+        },
+        preop_al: (status, code),
+        pdos,
     })
 }
 

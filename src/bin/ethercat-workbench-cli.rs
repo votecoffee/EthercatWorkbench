@@ -284,9 +284,12 @@ enum Command {
     ReadVirtualModuleInventory {
         #[arg(long, value_enum, default_value = "matched")]
         scenario: ethercat_workbench::live::virtual_inventory::ModuleInventoryCase,
-        /// Save only the schema-1 inventory for use with --module-inventory.
+        /// Save the schema-1 inventory for use with --module-inventory.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Read PDOs in the same virtual PREOP session and save a new --run-report input.
+        #[arg(long)]
+        pdo_report: Option<PathBuf>,
     },
     /// Resolve module PDO candidate indexes for explicit or detected placements in fixed ESI slots.
     #[command(group(clap::ArgGroup::new("module_device").required(true).multiple(true).args(["device", "identity"])))]
@@ -980,11 +983,38 @@ fn main() -> Result<()> {
             profile.save(&out)?;
             output(&selected.notes)
         }
-        Command::ReadVirtualModuleInventory { scenario, out } => {
+        Command::ReadVirtualModuleInventory {
+            scenario,
+            out,
+            pdo_report,
+        } => {
             shared_outputs(out.as_deref(), None)?;
-            let report = ethercat_workbench::live::virtual_inventory::read(scenario)?;
+            shared_outputs(pdo_report.as_deref(), None)?;
+            if let (Some(inventory), Some(pdos)) = (&out, &pdo_report) {
+                let absolute_destination = |path: &PathBuf| -> Result<PathBuf> {
+                    let absolute = std::path::absolute(path)?;
+                    let parent = absolute
+                        .parent()
+                        .context("output has no parent directory")?;
+                    let name = absolute.file_name().context("output has no file name")?;
+                    Ok(parent.canonicalize()?.join(name))
+                };
+                let inventory = absolute_destination(inventory)?;
+                let pdos = absolute_destination(pdos)?;
+                ensure!(
+                    !inventory
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(&pdos.to_string_lossy()),
+                    "inventory and PDO report require different output paths"
+                );
+            }
+            let report =
+                ethercat_workbench::live::virtual_inventory::read(scenario, pdo_report.is_some())?;
             if let Some(path) = out.as_deref() {
                 save_inspection(&report.inventory, path)?;
+            }
+            if let (Some(path), Some(evidence)) = (pdo_report.as_deref(), &report.pdo_report) {
+                save_inspection(evidence, path)?;
             }
             output(&report)
         }
