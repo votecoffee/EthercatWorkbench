@@ -51,6 +51,27 @@ pub struct ImageSource {
     pub mapping_source: Option<MappingSource>,
     pub withheld_pdos: Vec<u16>,
     pub unavailable_fields: Vec<UnavailableField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_pdo_groups: Option<PdoGroupAudit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PdoGroupAudit {
+    pub group_order: Vec<u32>,
+    pub padding: Vec<PdoGroupPadding>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PdoGroupPadding {
+    pub group: usize,
+    pub pdo_index: u16,
+    pub alignment_bytes: Option<u32>,
+    pub assigned: bool,
+    pub bit: Option<usize>,
+    pub width_bits: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +88,7 @@ pub(super) fn build(
     slot_counts: Vec<SlotCount>,
     module_inventory: Option<super::inventory::Comparison>,
 ) -> Result<Profile> {
+    readback.require_group_agreement()?;
     let (tx_source, tx) = image(Direction::Tx, readback, slots)?;
     let (rx_source, rx) = image(Direction::Rx, readback, slots)?;
     ensure!(
@@ -128,6 +150,7 @@ fn image(
             mapping_source: readback.mapping_source(direction),
             withheld_pdos,
             unavailable_fields,
+            module_pdo_groups: readback.module_pdo_groups(direction).cloned(),
         },
         fields,
     ))

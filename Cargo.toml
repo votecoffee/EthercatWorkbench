@@ -1,6 +1,6 @@
 [package]
 name = "ethercat-workbench"
-version = "0.92.0"
+version = "0.93.0"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT"

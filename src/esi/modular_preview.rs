@@ -66,6 +66,8 @@ pub struct Preview {
     identity: Identity,
     slots: Vec<SlotPreview>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    module_pdo_groups: Vec<modular::ModulePdoGroup>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     slot_counts: Vec<SlotCount>,
     #[serde(skip)]
     esi: EsiSource,
@@ -110,6 +112,7 @@ impl Preview {
             &self.identity,
             serial,
             &mut self.slots,
+            &self.module_pdo_groups,
         )?);
         self.decoded_tx = None;
         self.decoded_rx = None;
@@ -142,6 +145,8 @@ struct SlotPreview {
     slot_instance: Option<SlotInstance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<GroupPreview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module_pdo_group: Option<u32>,
     pdos: Vec<PdoPreview>,
 }
 
@@ -264,7 +269,7 @@ fn preview_device(
             .additional_elements
             .iter()
             .all(|item| matches!(item.as_str(), "SlotSelections" | "SlotGroupData")),
-        "PDO index preview does not support module PDO grouping or slot extensions"
+        "PDO index preview does not support the declared slot extensions"
     );
     let group_base = group_base(modular)?;
     let detected;
@@ -315,6 +320,12 @@ fn preview_device(
             }
         }
     }
+    let padding_pdos: BTreeSet<_> = modular
+        .pdo_groups
+        .iter()
+        .flat_map(|group| [group.rx_pdo, group.tx_pdo])
+        .flatten()
+        .collect();
     let mut seen = BTreeSet::new();
     let mut slots = Vec::with_capacity(by_slot.len());
     for (position, ident) in by_slot {
@@ -370,6 +381,7 @@ fn preview_device(
             slot_index_increment: index_increment,
             slot_instance: record_instances.then_some(instance),
             group,
+            module_pdo_group: None,
             pdos: Vec::new(),
         };
         if ident == 0 {
@@ -395,10 +407,7 @@ fn preview_device(
                 .any(|choice| choice.matches(ident, class, source.identity.vendor)),
             "module {ident:#010x} is not allowed in slot {position}"
         );
-        ensure!(
-            ty.attribute("ModulePdoGroup").is_none(),
-            "module {ident:#010x} uses PDO grouping"
-        );
+        preview.module_pdo_group = modular::module_pdo_group(ty)?;
         preview.module_name = label(node, "Name")
             .or_else(|| ty.text())
             .unwrap_or("Unnamed module")
@@ -408,6 +417,11 @@ fn preview_device(
                 resolve_pdo(pdo, pdo_offsets, entry_offsets, source).with_context(|| {
                     format!("resolve PDO indexes for slot {position}, module {ident:#010x}")
                 })?;
+            ensure!(
+                !padding_pdos.contains(&resolved.mapping.resolved),
+                "resolved module PDO {:#06x} collides with a ModulePdoGroup padding PDO",
+                resolved.mapping.resolved
+            );
             ensure!(
                 seen.insert(resolved.mapping.resolved),
                 "resolved PDO index {:#06x} is used more than once among the chosen modules",
@@ -425,6 +439,7 @@ fn preview_device(
         identity: source.identity.clone(),
         module_inventory: inventory.map(|inventory| inventory.compare(&slots, placement_source)),
         slots,
+        module_pdo_groups: modular.pdo_groups.clone(),
         slot_counts,
         esi: source.clone(),
         saved_readback: None,

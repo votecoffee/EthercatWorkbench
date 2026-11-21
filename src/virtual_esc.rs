@@ -83,6 +83,7 @@ pub enum ModuleInventoryCase {
     RepeatedFixedSlots,
     VariableSlotCounts,
     MixedSlotGroupIndexes,
+    PdoGroupAlignment,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -431,6 +432,7 @@ impl VirtualWire {
             ModuleInventoryCase::RepeatedFixedSlots => (14, 14_788),
             ModuleInventoryCase::VariableSlotCounts => (15, 14_789),
             ModuleInventoryCase::MixedSlotGroupIndexes => (16, 14_790),
+            ModuleInventoryCase::PdoGroupAlignment => (17, 14_791),
             _ => (11, 14_785),
         };
         esc.eeprom[0x14..0x18].copy_from_slice(&product.to_le_bytes());
@@ -1584,6 +1586,7 @@ impl VirtualEsc {
                 ) => Some((0x400, 4)),
                 (_, 0, _) => Some((2, 1)),
                 (DETECTED, 2, DetectedDiffers) => Some((0x401, 4)),
+                (_, 2, PdoGroupAlignment) => Some((0x402, 4)),
                 (_, 1 | 2, _) => Some((0x400, 4)),
                 _ => None,
             };
@@ -1680,6 +1683,7 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
     } else {
         0x6841_0010
     };
+    let alignment = case == ModuleInventoryCase::PdoGroupAlignment;
     let mixed = case == ModuleInventoryCase::MixedSlotGroupIndexes;
     let vacant = mixed || case == ModuleInventoryCase::VacantMiddleSlot;
     let grouped = case == ModuleInventoryCase::GroupedFixedSlots;
@@ -1688,6 +1692,9 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
         ModuleInventoryCase::RepeatedFixedSlots | ModuleInventoryCase::VariableSlotCounts
     );
     let (width, entries): (u8, &[u32]) = match index {
+        0x1c12 if alignment => (2, &[0x1610, 0x1600]),
+        0x1c13 if alignment => (2, &[0x1a10, 0x1b10, 0x1a00, 0x1b11, 0x1a40]),
+        0x1b10 | 0x1b11 if alignment => (4, &[8]),
         0x1c12 if three_axes => (2, &[0x1600, 0x1610, 0x1620]),
         0x1c13 if three_axes => (2, &[0x1a00, 0x1a10, 0x1a20, 0x1a40]),
         0x1c12 if grouped => (2, &[0x1600, 0x1630]),

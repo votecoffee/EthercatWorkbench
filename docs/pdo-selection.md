@@ -76,7 +76,7 @@ Declare a `SlotGroup` on every fixed slot. The preview supports consecutive grou
 .\ethercat-workbench-cli.exe export-modular-profile samples/grouped-fixed-slot-pdos.esi.xml --device 0 --module-inventory .local/grouped-modules.json --run-report .local/grouped-pdos.json --out .local/grouped-decoder.json
 ```
 
-The sample's two groups occupy three slot positions. The second position is vacant. The third position uses group position 1 and its per-slot overrides, resolving TxPDO `0x1A00` to `0x1A30` and entry object `0x6041` to `0x6841`. The exported profile uses bit offsets from the saved PDO readback. Module PDO grouping and automatic alignment remain outside this preview.
+The sample's two groups occupy three slot positions. The second position is vacant. The third position uses group position 1 and its per-slot overrides, resolving TxPDO `0x1A00` to `0x1A30` and entry object `0x6041` to `0x6841`. The exported profile uses bit offsets from the saved PDO readback. The group offset calculation uses `SlotGroup`. The separate `ModulePdoGroup` declarations describe ordering and padding in the PDO image.
 
 ## Mix slot and group indexes in a PDO template
 
@@ -88,6 +88,17 @@ Workbench resolves each mapping index, exclusion and PDO entry independently. `D
 ```
 
 In the fixture, the final module is at slot position 2 and group position 1. Its TxPDO resolves to `0x1A20`, its group-dependent exclusion resolves to `0x1A35`, and its group- and slot-dependent entry objects resolve to `0x6841` and `0x2300`. The saved offsets come from the simulated PDO readback.
+
+## Review module PDO groups and padding
+
+The ESI importer retains module PDO group numbers and the group's declared alignment and padding PDO indexes. The review checks the group order among known assigned module PDOs in each direction. For each declared padding PDO it reports whether the PDO is assigned, its bit position and its width. Observed padding PDOs must contain padding entries and end on the declared direction-relative boundary. An absent padding PDO appears as unassigned. The review preserves existing saved offsets and leaves padding placement and size selection to device-specific configuration. [ETG.2000, module PDO groups](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf) · [Beckhoff alignment example](https://infosys.beckhoff.com/content/1033/bk11x0_bk1250/2199024779.html)
+
+```powershell
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario pdo-group-alignment --out .local/pdo-group-modules.json --pdo-report .local/pdo-group-readback.json
+.\ethercat-workbench-cli.exe export-modular-profile samples/module-pdo-group-alignment.esi.xml --device 0 --module-inventory .local/pdo-group-modules.json --run-report .local/pdo-group-readback.json --out .local/pdo-group-decoder.json
+```
+
+The sample assigns the second slot's PDOs first because they belong to group 0. Two Tx padding PDOs end at bits 32 and 64. The exported profile keeps the readback's original bit positions and group audit. A reported group order or padding conflict blocks export.
 
 ## Compare module candidates with saved PDO readback
 

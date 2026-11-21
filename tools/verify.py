@@ -1459,6 +1459,96 @@ def verify_virtual_modular_pdos(cli, destination, sample=None, report=None):
     assert "pdo_report" not in cli_call(cli, "read-virtual-module-inventory")
 
 
+def verify_module_pdo_group_alignment(cli, destination, sample=None):
+    """Review observed group order, reserved padding and resulting offline offsets."""
+    sample = ROOT / "samples/module-pdo-group-alignment.esi.xml" if sample is None else sample
+    identity = {"vendor": 0x00FF1000, "product": 17, "revision": 1}
+    selector = ("--identity", "0x00ff1000/17/1")
+    inventory = destination / "inventory.json"
+    pdos = destination / "pdos.json"
+    captured = cli_call(cli, "read-virtual-module-inventory", "--scenario", "pdo-group-alignment",
+                        "--out", inventory, "--pdo-report", pdos)
+    assert captured["inventory"] == json.loads(inventory.read_bytes())
+    assert captured["inventory"]["identity"] == identity and captured["inventory"]["serial"] == 14791
+    assert all([entry["data_hex"] for entry in obj["uploads"]] ==
+               ["02", "00040000", "02040000"] for obj in captured["inventory"]["objects"])
+    assert captured["pdo_report"] == json.loads(pdos.read_bytes())
+    assert captured["pdo_report"]["devices"] == [{"identity": identity, "serial": 14791}]
+    assert captured["preop_al"] == [2, 0] and captured["stopped_al"] == [1, 0]
+    audit = captured["audit"]
+    assert audit["coe_uploads"] == 60 and audit["mailbox_counter_errors"] == 0
+    assert audit["state_requests"] == [1, 2, 1]
+    assert not any(audit[key] for key in ("coe_downloads", "op_requests", "logical_reads",
+                                         "logical_writes", "physical_output_writes"))
+    base = (sample, *selector, "--module-inventory", inventory)
+    evidence = (*base, "--run-report", pdos)
+    reviewed = cli_call(cli, "preview-modular-pdos", *evidence)
+    assert [slot["module_pdo_group"] for slot in reviewed["slots"]] == [1, 0]
+    assert reviewed["module_pdo_groups"] == [
+        {"alignment_bytes": 2, "rx_pdo": 0x1710, "tx_pdo": 0x1B10},
+        {"alignment_bytes": 4, "rx_pdo": 0x1711, "tx_pdo": 0x1B11},
+    ]
+    tx = reviewed["saved_readback"]["tx"]["module_pdo_groups"]
+    rx = reviewed["saved_readback"]["rx"]["module_pdo_groups"]
+    assert tx == {"group_order": [0, 1], "errors": [], "padding": [
+        {"group": 0, "pdo_index": 0x1B10, "alignment_bytes": 2, "assigned": True, "bit": 24, "width_bits": 8},
+        {"group": 1, "pdo_index": 0x1B11, "alignment_bytes": 4, "assigned": True, "bit": 56, "width_bits": 8},
+    ]}
+    assert rx == {"group_order": [0, 1], "errors": [], "padding": [
+        {"group": 0, "pdo_index": 0x1710, "alignment_bytes": 2, "assigned": False, "bit": None, "width_bits": None},
+        {"group": 1, "pdo_index": 0x1711, "alignment_bytes": 4, "assigned": False, "bit": None, "width_bits": None},
+    ]}
+    draft = cli_call(cli, "preview-modular-pdos", *base)
+    assert draft["module_pdo_groups"] == reviewed["module_pdo_groups"] and "saved_readback" not in draft
+
+    target = destination / "group-decoder.json"
+    profile = cli_call(cli, "export-modular-profile", *evidence, "--out", target)
+    assert cli_call(cli, "validate", target) == profile
+    assert (profile["tx_bytes"], profile["rx_bytes"]) == (9, 4)
+    assert profile["modular_decoder"]["tx"]["module_pdo_groups"] == tx
+    assert profile["modular_decoder"]["rx"]["module_pdo_groups"] == rx
+    assert [field["bit"] for field in profile["tx"]] == [0, 16, 32, 48]
+    assert [field["value"] for field in cli_call(cli, "decode", target, "CD AB FE A5 34 12 01 B6 CC")] == [
+        "43981", "false", "4660", "true",
+    ]
+    assert [field["value"] for field in cli_call(cli, "decode", target, "02 80 EF BE", "--rx")] == [
+        "32770", "48879",
+    ]
+
+    def fault(name, mutate, expected):
+        report = json.loads(pdos.read_bytes())
+        mapped = report["pdo_verification"]["readback"]["tx"]["sync_managers"][0]["pdos"]
+        mutate(mapped)
+        path = destination / (name + ".json")
+        path.write_text(json.dumps(report), encoding="utf-8")
+        reviewed_fault = cli_call(cli, "preview-modular-pdos", *base, "--run-report", path)
+        errors = reviewed_fault["saved_readback"]["tx"]["module_pdo_groups"]["errors"]
+        assert any(expected in error for error in errors), errors
+        rejected = destination / (name + "-profile.json")
+        message = cli_call(cli, "export-modular-profile", *base, "--run-report", path,
+                           "--out", rejected, success=False)
+        assert "saved Tx module PDO groups differ" in message and not rejected.exists(), message
+
+    fault("wrong-group-order", lambda rows: rows.__setitem__(slice(0, 4), rows[2:4] + rows[:2]),
+          "group 1 precedes group 0")
+    fault("mapped-padding", lambda rows: rows[1].update(entries=[0x20000108]), "contains a mapped object")
+    fault("short-padding", lambda rows: rows[1].update(entries=[7]), "ends at bit 31, outside 2-byte alignment")
+    fault("padding-before-group", lambda rows: rows.__setitem__(slice(0, 2), rows[1::-1]),
+          "outside the end of group 0")
+    original = sample.read_bytes()
+    faults = [
+        ("duplicate-padding", b'TxPdo="#x1B11"', b'TxPdo="#x1B10"', "duplicate ModulePdoGroup padding PDO"),
+        ("pdo-index-collision", b'TxPdo="#x1B10"', b'TxPdo="#x1A00"', "collides with a ModulePdoGroup padding PDO"),
+    ]
+    for name, old, new, expected in faults:
+        assert original.count(old) == 1
+        bad = destination / (name + ".esi.xml")
+        bad.write_bytes(original.replace(old, new))
+        error = cli_call(cli, "preview-modular-pdos", bad, *selector, "--module-inventory", inventory, success=False)
+        assert expected in error, error
+    assert sample.read_bytes() == original
+
+
 def verify_mixed_slot_group_indexes(cli, destination, sample=None):
     """Use the position selected by each mapping, exclusion and entry index."""
     sample = ROOT / "samples/mixed-slot-group-pdos.esi.xml" if sample is None else sample
@@ -1818,8 +1908,8 @@ def verify_grouped_fixed_slots(cli, destination, sample=None):
          "resolved slot index exceeds 16 bits"),
         ("collision", original.replace(b'SlotGroupPdoIncrement="#x30"', b'SlotGroupPdoIncrement="0"'),
          "used more than once"),
-        ("pdo-group-alignment", original.replace(b"</Slots>", b"<ModulePdoGroup>1</ModulePdoGroup></Slots>"),
-         "does not support module PDO grouping"),
+        ("invalid-group-alignment", original.replace(b"</Slots>", b'<ModulePdoGroup Alignment="-2"/></Slots>'),
+         "invalid ModulePdoGroup Alignment"),
     ]
     for name, changed, reason in invalid:
         out = destination / (name + "-result.json")
@@ -6554,6 +6644,9 @@ def main():
     mixed_index_destination = destination / "mixed-slot-group-indexes"
     mixed_index_destination.mkdir()
     verify_mixed_slot_group_indexes(cli, mixed_index_destination)
+    pdo_groups_destination = destination / "pdo-group-alignment"
+    pdo_groups_destination.mkdir()
+    verify_module_pdo_group_alignment(cli, pdo_groups_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

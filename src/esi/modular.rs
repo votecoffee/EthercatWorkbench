@@ -15,8 +15,18 @@ pub struct Description {
     pub slot_attributes: BTreeMap<String, String>,
     pub slots: Vec<Slot>,
     pub modules: Vec<Module>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pdo_groups: Vec<ModulePdoGroup>,
     /// Structure present in the document that requires a separate interpretation.
     pub additional_elements: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModulePdoGroup {
+    pub alignment_bytes: Option<u32>,
+    pub rx_pdo: Option<u16>,
+    pub tx_pdo: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +59,8 @@ pub struct Module {
     pub ident: u32,
     pub name: String,
     pub class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pdo_group: Option<u32>,
     pub pdo_templates: Vec<PdoTemplate>,
 }
 
@@ -81,10 +93,25 @@ impl Description {
         ensure!(
             self.slots.len() <= MAX_DECLARATIONS
                 && self.modules.len() <= MAX_DECLARATIONS
+                && self.pdo_groups.len() <= MAX_DECLARATIONS
                 && self.additional_elements.len() <= MAX_DECLARATIONS,
             "ESI modular description exceeds the retained declaration limit"
         );
         validate_attributes(&self.slot_attributes)?;
+        let mut padding_pdos = BTreeSet::new();
+        for group in &self.pdo_groups {
+            for (index, range) in [
+                (group.rx_pdo, 0x1600..=0x17ff),
+                (group.tx_pdo, 0x1a00..=0x1bff),
+            ] {
+                if let Some(index) = index {
+                    ensure!(
+                        range.contains(&index) && padding_pdos.insert(index),
+                        "invalid or duplicate ModulePdoGroup padding PDO {index:#06x}"
+                    );
+                }
+            }
+        }
         for slot in &self.slots {
             ensure!(
                 slot.min_instances
@@ -161,6 +188,7 @@ pub(super) fn parse(
         slot_attributes: attributes(slots, &[]),
         slots: Vec::new(),
         modules: Vec::new(),
+        pdo_groups: Vec::new(),
         additional_elements: Vec::new(),
     };
     let mut additional = BTreeSet::new();
@@ -171,6 +199,26 @@ pub(super) fn parse(
                 "ESI modular description exceeds 512 slot declarations"
             );
             result.slots.push(parse_slot(node, &mut additional)?);
+        } else if named(node, "ModulePdoGroup") {
+            ensure!(
+                result.pdo_groups.len() < MAX_DECLARATIONS,
+                "ESI modular description exceeds 512 PDO groups"
+            );
+            let read_word = |name| -> Result<Option<u16>> {
+                node.attribute(name)
+                    .map(|value| -> Result<u16> { Ok(u16::try_from(number(value)?)?) })
+                    .transpose()
+                    .with_context(|| format!("invalid ModulePdoGroup {name}"))
+            };
+            result.pdo_groups.push(ModulePdoGroup {
+                alignment_bytes: node
+                    .attribute("Alignment")
+                    .map(number)
+                    .transpose()
+                    .context("invalid ModulePdoGroup Alignment")?,
+                rx_pdo: read_word("RxPdo")?,
+                tx_pdo: read_word("TxPdo")?,
+            });
         } else {
             additional.insert(node.tag_name().name().to_owned());
         }
@@ -274,6 +322,13 @@ pub(super) fn pdo_nodes<'a, 'input>(
         .filter(|node| named(*node, "TxPdo") || named(*node, "RxPdo"))
 }
 
+pub(super) fn module_pdo_group(ty: Node<'_, '_>) -> Result<Option<u32>> {
+    ty.attribute("ModulePdoGroup")
+        .map(number)
+        .transpose()
+        .context("invalid module ModulePdoGroup")
+}
+
 fn parse_module(
     node: Node<'_, '_>,
     ty: Node<'_, '_>,
@@ -326,6 +381,7 @@ fn parse_module(
     }
     Ok(Module {
         ident,
+        pdo_group: module_pdo_group(ty)?,
         name: label(node, "Name")
             .or_else(|| ty.text())
             .unwrap_or("Unnamed module")

@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.92.0** resolves slot-dependent and group-dependent indexes within the same ESI PDO template. The simulated readback checks both types of entry objects, the final mapping index and the absolute payload position. If a resolved descriptor differs, the offline profile withholds the affected PDO. The simulator confirms INIT on exit. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Saved module identities](pdo-selection.md#review-saved-module-identities) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.93.0** retains ESI module PDO groups and compares their order and assigned padding with saved readback. The simulated fixture verifies ordering by PDO group independently of physical slot order. Profile export preserves observed offsets and rejects group or padding conflicts. The simulator confirms INIT on exit. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Module PDO group audit](pdo-selection.md#review-module-pdo-groups-and-padding) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

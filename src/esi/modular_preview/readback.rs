@@ -1,7 +1,11 @@
 //! Compare resolved module PDO candidates with a single device's saved setup readback.
-use super::{PdoPreview, SlotPreview};
+use super::{
+    PdoPreview, SlotPreview,
+    profile::{PdoGroupAudit, PdoGroupPadding},
+};
 use crate::{
     benchmark::read_report_bytes_with_stop,
+    esi::modular::ModulePdoGroup,
     model::Identity,
     pdo::{Layout, MappingSource, Pdo, SyncManager},
     pdo_catalog::Direction,
@@ -90,6 +94,23 @@ impl Comparison {
         self.direction(direction).mapping_source
     }
 
+    pub(super) fn module_pdo_groups(&self, direction: Direction) -> Option<&PdoGroupAudit> {
+        self.direction(direction).module_pdo_groups.as_ref()
+    }
+
+    pub(super) fn require_group_agreement(&self) -> Result<()> {
+        for direction in [Direction::Tx, Direction::Rx] {
+            if let Some(groups) = self.module_pdo_groups(direction) {
+                ensure!(
+                    groups.errors.is_empty(),
+                    "saved {direction:?} module PDO groups differ: {}",
+                    groups.errors.join("; ")
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn image_bytes(&self, direction: Direction) -> Result<usize> {
         let layout = self.direction(direction);
         layout.image_bytes.with_context(|| {
@@ -108,6 +129,8 @@ struct ObservedDirection {
     image_bytes: Option<usize>,
     unavailable: Option<String>,
     other_assignments: Vec<OtherAssignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module_pdo_groups: Option<PdoGroupAudit>,
 }
 
 #[derive(Debug, Serialize)]
@@ -199,6 +222,7 @@ impl<'a> CheckedDirection<'a> {
                             .into(),
                     ),
                     other_assignments: Vec::new(),
+                    module_pdo_groups: None,
                 },
                 assigned: BTreeMap::new(),
             });
@@ -252,9 +276,106 @@ impl<'a> CheckedDirection<'a> {
                 image_bytes: Some(image_bytes),
                 unavailable: None,
                 other_assignments: Vec::new(),
+                module_pdo_groups: None,
             },
             assigned,
         })
+    }
+
+    fn audit_groups(
+        &mut self,
+        direction: Direction,
+        slots: &[SlotPreview],
+        groups: &[ModulePdoGroup],
+    ) {
+        if self.report.unavailable.is_some()
+            || (groups.is_empty() && slots.iter().all(|slot| slot.module_pdo_group.is_none()))
+        {
+            return;
+        }
+
+        let mut members = Vec::new();
+        for slot in slots {
+            if let Some(group) = slot.module_pdo_group {
+                members.extend(
+                    slot.pdos
+                        .iter()
+                        .filter(|pdo| pdo.direction == direction)
+                        .filter_map(|pdo| {
+                            self.assigned
+                                .get(&pdo.mapping.resolved)?
+                                .bit
+                                .map(|bit| (bit, group))
+                        }),
+                );
+            }
+        }
+        members.sort_unstable_by_key(|&(bit, _)| bit);
+        let mut group_order: Vec<_> = members.iter().map(|&(_, group)| group).collect();
+        group_order.dedup();
+        let mut errors = Vec::new();
+        if let Some(pair) = group_order.windows(2).find(|pair| pair[0] > pair[1]) {
+            errors.push(format!(
+                "module PDO group {} precedes group {}",
+                pair[0], pair[1]
+            ));
+        }
+
+        let mut padding = Vec::new();
+        for (group, declaration) in groups.iter().enumerate() {
+            let index = match direction {
+                Direction::Tx => declaration.tx_pdo,
+                Direction::Rx => declaration.rx_pdo,
+            };
+            let Some(index) = index else {
+                continue;
+            };
+            let assignment = self.assigned.get(&index);
+            let bit = assignment.and_then(|pdo| pdo.bit);
+            let width_bits = assignment.map(|pdo| {
+                pdo.pdo
+                    .entries
+                    .iter()
+                    .map(|entry| (entry & 0xff) as usize)
+                    .sum::<usize>()
+            });
+            if let Some(pdo) = assignment
+                && pdo.pdo.entries.iter().any(|entry| entry >> 8 != 0)
+            {
+                errors.push(format!("padding PDO {index:#06x} contains a mapped object"));
+            }
+            if let Some((bit, width_bits)) = bit.zip(width_bits) {
+                if members.iter().any(|&(member_bit, member_group)| {
+                    (member_group as usize <= group && member_bit >= bit)
+                        || (member_group as usize > group && member_bit < bit)
+                }) {
+                    errors.push(format!(
+                        "padding PDO {index:#06x} is outside the end of group {group}"
+                    ));
+                }
+                if let Some(bytes) = declaration.alignment_bytes.filter(|&bytes| bytes > 0)
+                    && !((bit + width_bits) as u64).is_multiple_of(u64::from(bytes) * 8)
+                {
+                    errors.push(format!(
+                        "padding PDO {index:#06x} ends at bit {}, outside {bytes}-byte alignment",
+                        bit + width_bits
+                    ));
+                }
+            }
+            padding.push(PdoGroupPadding {
+                group,
+                pdo_index: index,
+                alignment_bytes: declaration.alignment_bytes,
+                assigned: assignment.is_some(),
+                bit,
+                width_bits,
+            });
+        }
+        self.report.module_pdo_groups = Some(PdoGroupAudit {
+            group_order,
+            padding,
+            errors,
+        });
     }
 
     fn finish(mut self) -> ObservedDirection {
@@ -339,6 +460,7 @@ pub(super) fn compare(
     identity: &Identity,
     inventory_serial: Option<u32>,
     slots: &mut [SlotPreview],
+    groups: &[ModulePdoGroup],
 ) -> Result<Comparison> {
     let bytes = read_report_bytes_with_stop(path, None)?;
     let report: SavedReport =
@@ -382,6 +504,8 @@ pub(super) fn compare(
             "saved Tx and Rx PDO layouts share a SyncManager"
         );
     }
+    checked_tx.audit_groups(Direction::Tx, slots, groups);
+    checked_rx.audit_groups(Direction::Rx, slots, groups);
     let observed = checked_tx
         .assigned
         .keys()
