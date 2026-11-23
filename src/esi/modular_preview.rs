@@ -65,6 +65,8 @@ pub struct Preview {
     esi_sha256: String,
     identity: Identity,
     slots: Vec<SlotPreview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_pdo_group: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     module_pdo_groups: Vec<modular::ModulePdoGroup>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -107,13 +109,7 @@ impl Preview {
             .module_inventory
             .as_ref()
             .and_then(|report| report.reported_serial);
-        self.saved_readback = Some(readback::compare(
-            path,
-            &self.identity,
-            serial,
-            &mut self.slots,
-            &self.module_pdo_groups,
-        )?);
+        self.saved_readback = Some(readback::compare(path, &self.esi, serial, &mut self.slots)?);
         self.decoded_tx = None;
         self.decoded_rx = None;
         Ok(())
@@ -439,6 +435,7 @@ fn preview_device(
         identity: source.identity.clone(),
         module_inventory: inventory.map(|inventory| inventory.compare(&slots, placement_source)),
         slots,
+        device_pdo_group: source.device_pdo_group,
         module_pdo_groups: modular.pdo_groups.clone(),
         slot_counts,
         esi: source.clone(),

@@ -59,8 +59,18 @@ pub struct ImageSource {
 #[serde(deny_unknown_fields)]
 pub struct PdoGroupAudit {
     pub group_order: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_pdos: Vec<DevicePdoMember>,
     pub padding: Vec<PdoGroupPadding>,
     pub errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevicePdoMember {
+    pub pdo_index: u16,
+    pub sync_manager: u8,
+    pub bit: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

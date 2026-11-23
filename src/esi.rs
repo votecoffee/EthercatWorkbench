@@ -148,6 +148,11 @@ fn with_description<T>(
                     .context("ESI ProductCode missing")?,
             )?;
             let revision = number(ty.attribute("RevisionNo").unwrap_or("0"))?;
+            let device_pdo_group = ty
+                .attribute("ModulePdoGroup")
+                .map(number)
+                .transpose()
+                .context("invalid device ModulePdoGroup")?;
             let label = label(device, "Name")
                 .or_else(|| ty.text())
                 .unwrap_or("Unnamed device")
@@ -190,6 +195,7 @@ fn with_description<T>(
                     default_rx_bytes: default_known.then_some(rx_bytes),
                     dc_modes,
                     pdo_catalog,
+                    device_pdo_group,
                     modular,
                     notes: notes.clone(),
                     identity: Identity {

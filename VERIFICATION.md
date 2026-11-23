@@ -881,3 +881,13 @@ The authored ESI places group 1 in the first physical slot and group 0 in the se
 The focused regression rejected reversed groups, a mapped object in a padding PDO, padding outside its group and an incorrect padding length. Each conflict blocked profile export. The CLI also rejected duplicate padding declarations and an index collision with a module PDO. The earlier grouped, variable-count and mixed-offset slot fixtures passed. The fixture passed XML well-formedness, validation against the cached ESI 1.14 schema and Workbench import.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Physical validation and the GUI/logger timing benchmark remain pending.
+
+## Version 0.94.0 device PDO membership in group reviews (2026-11-23)
+
+Workbench retains the device type's PDO group in ESI listings and saved profiles, including devices without slot declarations. The modular readback review combines explicitly grouped device and module PDO indexes within each SyncManager's assignment list. It reports the assigned device PDO's index, SyncManager and observed bit position. The installed Beckhoff EL3403 ESI for revision `0x00110000` also declares a device PDO group without slots. The vendor ESI was inspected in place. [ETG.2000, Table 23](https://www.jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf) · [Beckhoff ESI distribution](https://download.beckhoff.com/download/configuration-files/io/ethercat/xml-device-description)
+
+The updated authored fixture placed device TxPDO `0x1A40` in group 2 with SM3 bit 64. The virtual PREOP session recorded 60 CoE uploads, no mailbox counter errors, no cyclic traffic, no SDO downloads and no OP requests. It confirmed INIT on exit. The reusable profile retained the group audit and decoded the original module field offsets from the 9-byte Tx and 4-byte Rx images.
+
+Changing the device to group 0 exposed a descending group order in SM3. Group 1 placed the device PDO after its group's padding. Both conflicts blocked export. A same-index device and module group conflict also blocked export. Moving the group-0 device PDO to SM4 allowed the group sequence to restart there and preserved bit 64. Removing the device group restored the earlier module-only audit. The edited sample passed XML well-formedness, the cached ESI 1.14 schema and Workbench import.
+
+Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. Native GUI and physical device qualification remain pending. Device-level decoding in the exported modular profile and automatic padding calculation remain open.

@@ -3,10 +3,16 @@ use ethercat_workbench::{esi::modular::Choice, model::EsiSource, pdo_catalog::Di
 
 pub(super) fn show(ui: &mut egui::Ui, source: &EsiSource) {
     let Some(modular) = &source.modular else {
+        if let Some(group) = source.device_pdo_group {
+            ui.small(format!("ESI device PDO group {group}"));
+        }
         return;
     };
     ui.collapsing("ESI modules and slots", |ui| {
         ui.small("ESI declarations only. Module positions and the resulting PDO layout require separate verification.");
+        if let Some(group) = source.device_pdo_group {
+            ui.label(format!("Device PDO group {group}"));
+        }
         if !modular.slot_attributes.is_empty() {
             ui.collapsing("Slot settings", |ui| {
                 for (name, value) in &modular.slot_attributes {
@@ -57,6 +63,9 @@ pub(super) fn show(ui: &mut egui::Ui, source: &EsiSource) {
                     ui.collapsing(format!("{:#010x} · {}", module.ident, module.name), |ui| {
                         if let Some(class) = &module.class {
                             ui.label(format!("Module class {class}"));
+                        }
+                        if let Some(group) = module.pdo_group {
+                            ui.label(format!("Module PDO group {group}"));
                         }
                         if module.pdo_templates.is_empty() {
                             ui.label("No declared TxPDO or RxPDO templates");

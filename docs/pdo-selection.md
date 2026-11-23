@@ -91,14 +91,16 @@ In the fixture, the final module is at slot position 2 and group position 1. Its
 
 ## Review module PDO groups and padding
 
-The ESI importer retains module PDO group numbers and the group's declared alignment and padding PDO indexes. The review checks the group order among known assigned module PDOs in each direction. For each declared padding PDO it reports whether the PDO is assigned, its bit position and its width. Observed padding PDOs must contain padding entries and end on the declared direction-relative boundary. An absent padding PDO appears as unassigned. The review preserves existing saved offsets and leaves padding placement and size selection to device-specific configuration. [ETG.2000, module PDO groups](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf) · [Beckhoff alignment example](https://infosys.beckhoff.com/content/1033/bk11x0_bk1250/2199024779.html)
+The ESI importer retains group numbers from the device and module `Type` declarations, alongside each group's alignment and padding PDO indexes. The review checks group order within each saved SyncManager assignment. `group_order` summarizes known groups in direction-relative bit order, including sequences that restart at a separate SyncManager. `device_pdos` lists assigned device-level PDO indexes, SyncManagers and bit positions counted in the declared device group. It uses concrete ESI definitions with observed bit positions. An assigned index with competing device and module group membership produces a conflict. [ETG.2000, Tables 23, 57 and 72](https://www.jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+For each declared padding PDO, the review reports assignment, bit position and width. Assigned padding must contain padding entries. Its position must agree with the group order within its SyncManager and its end must meet the declared direction-relative boundary. An absent padding PDO appears as unassigned. Padding calculation remains device-specific. [Beckhoff alignment example](https://infosys.beckhoff.com/content/1033/bk11x0_bk1250/2199024779.html)
 
 ```powershell
 .\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario pdo-group-alignment --out .local/pdo-group-modules.json --pdo-report .local/pdo-group-readback.json
 .\ethercat-workbench-cli.exe export-modular-profile samples/module-pdo-group-alignment.esi.xml --device 0 --module-inventory .local/pdo-group-modules.json --run-report .local/pdo-group-readback.json --out .local/pdo-group-decoder.json
 ```
 
-The sample assigns the second slot's PDOs first because they belong to group 0. Two Tx padding PDOs end at bits 32 and 64. The exported profile keeps the readback's original bit positions and group audit. A reported group order or padding conflict blocks export.
+The sample assigns the second slot's PDOs first because they belong to group 0. Two Tx padding PDOs end at bits 32 and 64. The device-level TxPDO `0x1A40` belongs to group 2 and begins at bit 64. The exported profile keeps the readback's original bit positions and group audit. Its decoded fields come from the matched modules. A reported membership, order or padding conflict blocks export.
 
 ## Compare module candidates with saved PDO readback
 

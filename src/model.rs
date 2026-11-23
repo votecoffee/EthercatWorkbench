@@ -38,6 +38,8 @@ pub struct EsiSource {
     #[serde(default)]
     pub pdo_catalog: Vec<crate::pdo_catalog::Definition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_pdo_group: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modular: Option<crate::esi::modular::Description>,
     #[serde(default)]
     pub notes: Vec<String>,

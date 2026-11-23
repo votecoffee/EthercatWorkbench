@@ -5,7 +5,7 @@
     <Groups><Group><Type>Fixture</Type><Name>Authored sample group</Name></Group></Groups>
     <Devices>
       <Device Physics="YY">
-        <Type ProductCode="#x00000011" RevisionNo="1">VirtualPdoGroupAlignment</Type>
+        <Type ProductCode="#x00000011" RevisionNo="1" ModulePdoGroup="2">VirtualPdoGroupAlignment</Type>
         <Name>Authored module PDO group device</Name>
         <GroupType>Fixture</GroupType>
         <TxPdo Sm="3">
@@ -24,6 +24,7 @@
           </Slot>
           <ModulePdoGroup Alignment="2" RxPdo="#x1710" TxPdo="#x1B10"/>
           <ModulePdoGroup Alignment="4" RxPdo="#x1711" TxPdo="#x1B11"/>
+          <ModulePdoGroup Alignment="1" RxPdo="#x1712" TxPdo="#x1B12"/>
         </Slots>
       </Device>
     </Devices>

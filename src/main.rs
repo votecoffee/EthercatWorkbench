@@ -366,6 +366,7 @@ impl App {
                 device.source.sha256 == source.sha256
                     && device.source.identity == source.identity
                     && device.source.modular == source.modular
+                    && device.source.device_pdo_group == source.device_pdo_group
             });
             if !same_source {
                 ui.push_id("saved_esi_modules", |ui| gui_esi_modules::show(ui, source));

@@ -1460,7 +1460,7 @@ def verify_virtual_modular_pdos(cli, destination, sample=None, report=None):
 
 
 def verify_module_pdo_group_alignment(cli, destination, sample=None):
-    """Review observed group order, reserved padding and resulting offline offsets."""
+    """Review device and module PDO group order, padding and offline offsets."""
     sample = ROOT / "samples/module-pdo-group-alignment.esi.xml" if sample is None else sample
     identity = {"vendor": 0x00FF1000, "product": 17, "revision": 1}
     selector = ("--identity", "0x00ff1000/17/1")
@@ -1484,27 +1484,48 @@ def verify_module_pdo_group_alignment(cli, destination, sample=None):
     evidence = (*base, "--run-report", pdos)
     reviewed = cli_call(cli, "preview-modular-pdos", *evidence)
     assert [slot["module_pdo_group"] for slot in reviewed["slots"]] == [1, 0]
+    assert reviewed["device_pdo_group"] == 2
     assert reviewed["module_pdo_groups"] == [
         {"alignment_bytes": 2, "rx_pdo": 0x1710, "tx_pdo": 0x1B10},
         {"alignment_bytes": 4, "rx_pdo": 0x1711, "tx_pdo": 0x1B11},
+        {"alignment_bytes": 1, "rx_pdo": 0x1712, "tx_pdo": 0x1B12},
     ]
     tx = reviewed["saved_readback"]["tx"]["module_pdo_groups"]
     rx = reviewed["saved_readback"]["rx"]["module_pdo_groups"]
-    assert tx == {"group_order": [0, 1], "errors": [], "padding": [
+    assert tx == {"group_order": [0, 1, 2], "errors": [],
+                  "device_pdos": [{"pdo_index": 0x1A40, "sync_manager": 3, "bit": 64}], "padding": [
         {"group": 0, "pdo_index": 0x1B10, "alignment_bytes": 2, "assigned": True, "bit": 24, "width_bits": 8},
         {"group": 1, "pdo_index": 0x1B11, "alignment_bytes": 4, "assigned": True, "bit": 56, "width_bits": 8},
+        {"group": 2, "pdo_index": 0x1B12, "alignment_bytes": 1, "assigned": False, "bit": None, "width_bits": None},
     ]}
     assert rx == {"group_order": [0, 1], "errors": [], "padding": [
         {"group": 0, "pdo_index": 0x1710, "alignment_bytes": 2, "assigned": False, "bit": None, "width_bits": None},
         {"group": 1, "pdo_index": 0x1711, "alignment_bytes": 4, "assigned": False, "bit": None, "width_bits": None},
+        {"group": 2, "pdo_index": 0x1712, "alignment_bytes": 1, "assigned": False, "bit": None, "width_bits": None},
     ]}
     draft = cli_call(cli, "preview-modular-pdos", *base)
     assert draft["module_pdo_groups"] == reviewed["module_pdo_groups"] and "saved_readback" not in draft
+
+    listed, = cli_call(cli, "esi-list", sample)
+    assert listed["source"]["device_pdo_group"] == 2
+    baseline = destination / "device-baseline.json"
+    cli_call(cli, "esi-import", sample, *selector, "--out", baseline)
+    baseline_profile = cli_call(cli, "validate", baseline)
+    assert baseline_profile["esi"]["device_pdo_group"] == 2
+    assert baseline_profile["tx_bytes"] == 1 and baseline_profile["rx_bytes"] == 0
+    original = sample.read_bytes()
+    slots_start = original.index(b"<Slots ")
+    slots_end = original.index(b"</Slots>", slots_start) + len(b"</Slots>")
+    flat = destination / "device-group-without-slots.esi.xml"
+    flat.write_bytes(original[:slots_start] + original[slots_end:])
+    flat_device, = cli_call(cli, "esi-list", flat)
+    assert flat_device["source"]["device_pdo_group"] == 2 and "modular" not in flat_device["source"]
 
     target = destination / "group-decoder.json"
     profile = cli_call(cli, "export-modular-profile", *evidence, "--out", target)
     assert cli_call(cli, "validate", target) == profile
     assert (profile["tx_bytes"], profile["rx_bytes"]) == (9, 4)
+    assert profile["esi"]["device_pdo_group"] == 2
     assert profile["modular_decoder"]["tx"]["module_pdo_groups"] == tx
     assert profile["modular_decoder"]["rx"]["module_pdo_groups"] == rx
     assert [field["bit"] for field in profile["tx"]] == [0, 16, 32, 48]
@@ -1535,8 +1556,55 @@ def verify_module_pdo_group_alignment(cli, destination, sample=None):
     fault("short-padding", lambda rows: rows[1].update(entries=[7]), "ends at bit 31, outside 2-byte alignment")
     fault("padding-before-group", lambda rows: rows.__setitem__(slice(0, 2), rows[1::-1]),
           "outside the end of group 0")
-    original = sample.read_bytes()
+    device_group = b' ModulePdoGroup="2"'
+    assert original.count(device_group) == 1
+    for group, expected in ((0, "group 1 precedes group 0 in SM3"),
+                            (1, "padding PDO 0x1b11 is outside the end of group 1")):
+        changed = destination / f"device-group-{group}.esi.xml"
+        changed.write_bytes(original.replace(device_group, f' ModulePdoGroup="{group}"'.encode()))
+        reviewed_group = cli_call(cli, "preview-modular-pdos", changed, *evidence[1:])
+        tx_group = reviewed_group["saved_readback"]["tx"]["module_pdo_groups"]
+        assert any(expected in error for error in tx_group["errors"]), tx_group
+        rejected = destination / f"rejected-device-group-{group}.json"
+        error = cli_call(cli, "export-modular-profile", changed, *evidence[1:], "--out", rejected, success=False)
+        assert expected in error and not rejected.exists(), error
+
+    group_zero = destination / "device-group-0.esi.xml"
+    split = json.loads(pdos.read_bytes())
+    managers = split["pdo_verification"]["readback"]["tx"]["sync_managers"]
+    base_pdo = managers[0]["pdos"].pop()
+    managers[0]["configured_bytes"] = 8
+    managers.append({"index": 4, "configured_bytes": 1, "pdos": [base_pdo]})
+    split_path = destination / "device-pdo-on-another-sm.json"
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+    separated = cli_call(cli, "export-modular-profile", group_zero, *base[1:],
+                         "--run-report", split_path, "--out", destination / "split-sm-profile.json")
+    separate_tx = separated["modular_decoder"]["tx"]["module_pdo_groups"]
+    assert separated["esi"]["device_pdo_group"] == 0 and separate_tx["group_order"] == [0, 1, 0]
+    assert not separate_tx["errors"]
+    assert separate_tx["device_pdos"] == [{"pdo_index": 0x1A40, "sync_manager": 4, "bit": 64}]
+
+    shared = destination / "device-module-shared-index.esi.xml"
+    shared.write_bytes(original.replace(b"<Index>#x1A40</Index>", b"<Index>#x1A00</Index>"))
+    shared_preview = cli_call(cli, "preview-modular-pdos", shared, *evidence[1:])
+    shared_tx = shared_preview["saved_readback"]["tx"]["module_pdo_groups"]
+    expected = "assigned PDO 0x1a00 has ambiguous device and module group membership"
+    assert expected in shared_tx["errors"], shared_tx
+    rejected = destination / "rejected-shared-index.json"
+    error = cli_call(cli, "export-modular-profile", shared, *evidence[1:], "--out", rejected, success=False)
+    assert expected in error and not rejected.exists(), error
+
+    legacy = destination / "without-device-group.esi.xml"
+    legacy.write_bytes(original.replace(device_group, b""))
+    legacy_profile = cli_call(cli, "export-modular-profile", legacy, *evidence[1:],
+                              "--out", destination / "module-only-groups.json")
+    legacy_tx = legacy_profile["modular_decoder"]["tx"]["module_pdo_groups"]
+    assert "device_pdo_group" not in legacy_profile["esi"] and legacy_tx["group_order"] == [0, 1]
+    assert "device_pdos" not in legacy_tx and not legacy_tx["errors"]
+    assert legacy_profile["tx"] == profile["tx"] and legacy_profile["rx"] == profile["rx"]
+
     faults = [
+        ("invalid-device-group", device_group, b' ModulePdoGroup="-1"', "invalid device ModulePdoGroup"),
         ("duplicate-padding", b'TxPdo="#x1B11"', b'TxPdo="#x1B10"', "duplicate ModulePdoGroup padding PDO"),
         ("pdo-index-collision", b'TxPdo="#x1B10"', b'TxPdo="#x1A00"', "collides with a ModulePdoGroup padding PDO"),
     ]

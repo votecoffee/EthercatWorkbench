@@ -109,7 +109,7 @@ Use `--slot-count DECLARATION=COUNT` to review variable-count ESI declarations w
 
 Use `--scenario mixed-slot-group-indexes` to rehearse PDO mapping and entry indexes that use different positions within the same PDO template. [Slot and group indexes](docs/pdo-selection.md#mix-slot-and-group-indexes-in-a-pdo-template)
 
-Use `--scenario pdo-group-alignment` to check the order of module PDO groups and their assigned padding. [PDO group order and padding](docs/pdo-selection.md#review-module-pdo-groups-and-padding)
+Use `--scenario pdo-group-alignment` to check the order of device and module PDOs by group and review assigned padding. [PDO group order and padding](docs/pdo-selection.md#review-module-pdo-groups-and-padding)
 
 Repeat `--tx-pdo` or `--rx-pdo` with `INDEX@SM` in desired order. Supplying a direction replaces that direction's choices; omitting it preserves the current/default choices. A sole `none` clears a direction if constraints permit. The same options work with `esi-import`. The bundled default choice profile matches the CoE virtual model. Its alternative has the same input byte count but different mapping and is rejected against that model before SAFEOP. Attached selections compare full SyncManager/PDO order and descriptors, including padding, when readback is available. An unavailable readback stays explicitly unverified. Selecting PDOs sends no bus assignment writes. [PDO selection details](docs/pdo-selection.md) describe limits and unsupported annotations.
 
