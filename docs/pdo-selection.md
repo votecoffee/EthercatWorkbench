@@ -100,7 +100,7 @@ For each declared padding PDO, the review reports assignment, bit position and w
 .\ethercat-workbench-cli.exe export-modular-profile samples/module-pdo-group-alignment.esi.xml --device 0 --module-inventory .local/pdo-group-modules.json --run-report .local/pdo-group-readback.json --out .local/pdo-group-decoder.json
 ```
 
-The sample assigns the second slot's PDOs first because they belong to group 0. Two Tx padding PDOs end at bits 32 and 64. The device-level TxPDO `0x1A40` belongs to group 2 and begins at bit 64. The exported profile keeps the readback's original bit positions and group audit. Its decoded fields come from the matched modules. A reported membership, order or padding conflict blocks export.
+The sample assigns the second slot's PDOs first because they belong to group 0. Two Tx padding PDOs end at bits 32 and 64. The device-level TxPDO `0x1A40` begins at bit 64, and the device-level RxPDO `0x1640` begins at bit 32. Both belong to group 2. The exported profile keeps both device fields alongside the matched module fields, with the original bit positions and group audit. A reported membership, order or padding conflict blocks export.
 
 ## Compare module candidates with saved PDO readback
 
@@ -110,7 +110,7 @@ Add `--run-report` to the fixed-slot preview. It checks the saved report for exa
 .\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --slot '0=0x400' --slot '1=0x400' --run-report samples/fixed-slot-pdo-readback.json --out .local/module-readback-review.json
 ```
 
-A candidate marked `matched` has the same ordered entry descriptors, including padding. `descriptor_mismatch` lists zero-based entry positions with expected and observed object index, subindex, and width. `unassigned` means the index was absent from an available layout. `unavailable` means the saved report supplied no layout for that direction. The recorded SyncManager and direction-relative bit position come from the saved layout. `sm_hint_matches` separately compares the reported SyncManager with the ESI hint. Read `assigned_exclusions` for conflicting indexes and `other_assignments` for reported PDOs outside the chosen module candidates.
+A candidate marked `matched` has the same ordered entry descriptors, including padding. `descriptor_mismatch` lists zero-based entry positions with expected and observed object index, subindex, and width. `unassigned` means the index was absent from an available layout. `unavailable` means the saved report supplied no layout for that direction. The recorded SyncManager and direction-relative bit position come from the saved layout. `sm_hint_matches` separately compares the reported SyncManager with the ESI hint. Read `assigned_exclusions` for conflicting indexes and `other_assignments` for reported PDOs outside the chosen module candidates. The directional `device_pdos` list compares assigned indexes against the device-level ESI catalog. An index shared with a chosen module is reviewed under that module's `device_level_index_match`. Declared group padding stays in the padding audit. Device-level PDOs marked virtual or requiring module/vendor interpretation appear as `unsupported`. [ETG PDO mapping and configuration](https://prelive.ethercat.org/technology/knowledge-base/pdo-mapping-and-configuration/)
 
 A valid comparison returns JSON even when the results differ. A wrong device identity, ambiguous assignments, or invalid layout stops before JSON creation. CoE and SII sources remain visible, including SII layout evidence from EEPROM. An older layout with no source declaration keeps that provenance unavailable. Matching descriptors alone leave module occupancy and the complete expected process image unresolved.
 
@@ -122,20 +122,20 @@ Use `--tx-hex` or `--rx-hex` with the fixed-slot preview and `--run-report`. Sup
 .\ethercat-workbench-cli.exe preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --slot '0=0x400' --slot '1=0x400' --run-report samples/fixed-slot-pdo-readback.json --tx-hex '34 12 01 CD AB FE A5' --rx-hex 'EF BE 02 80' --out .local/module-payload-review.json
 ```
 
-The decoder reports only fields from candidates with matching ordered descriptors. `decoded_tx` and `decoded_rx` show the supplied bytes, fields in saved bit order, and withheld PDO indexes. The saved layout supplies each field's SyncManager and direction-relative bit position, even if the ESI hint differed. The ESI supplies names and datatype hints. Numeric values use the existing little-endian PDO decoder. Other byte-aligned values wider than 64 bits are shown as raw hex, and unsupported widths or alignments have an unavailable reason.
+The decoder reports fields from device and module candidates with matching ordered descriptors. An assigned exclusion withholds the affected device PDO. `decoded_tx` and `decoded_rx` show the supplied bytes, fields in saved bit order, and indexes under `withheld_pdos` for module candidates or `withheld_device_pdos` for device candidates. Module rows identify a slot and module identity, and device rows use the device-level ESI labels. The saved layout supplies each field's SyncManager and direction-relative bit position, even if the ESI hint differed. The ESI supplies names and datatype hints. Numeric values use the existing little-endian PDO decoder. Other byte-aligned values wider than 64 bits are shown as raw hex, and unsupported widths or alignments have an unavailable reason.
 
-The example decodes the two Tx status words as 4660 and 43981. Their Boolean fields are true and false. Padding and PDOs outside the chosen module candidates remain visible in the raw image. An unavailable layout, malformed hex, or incorrect length rejects the requested decode before creating its JSON receipt. The report records an interpretation of user-supplied bytes from the saved layout. Profiles and physical commissioning follow their existing workflows.
+The example decodes the two Tx status words as 4660 and 43981. Their Boolean fields are true and false. Padding and unrecognized PDO bytes remain visible in the raw image. An unavailable layout, malformed hex, or incorrect length rejects the requested decode before creating its JSON receipt. The report records an interpretation of user-supplied bytes from the saved layout. Profiles and physical commissioning follow their existing workflows.
 
 ## Export a reusable modular decoder profile
 
-Use `export-modular-profile` with the same fixed-slot ESI choices and saved run report. The operation creates a standard profile with the saved directional image lengths and the fields whose module PDO descriptors match.
+Use `export-modular-profile` with the same fixed-slot ESI choices and saved run report. The operation creates a standard profile with the saved directional image lengths and matched device and module fields.
 
 ```powershell
 .\ethercat-workbench-cli.exe export-modular-profile samples/fixed-slot-pdos.esi.xml --device 0 --slot '0=0x400' --slot '1=0x400' --run-report samples/fixed-slot-pdo-readback.json --out .local/module-decoder.json
 .\ethercat-workbench-cli.exe decode .local/module-decoder.json '34 12 01 CD AB FE A5'
 ```
 
-In the desktop, load the file through **Profiles…** and open **Inputs → Offline decoder…**. **Device → Saved modular layout** shows the report hash and the saved image lengths alongside the ESI baseline. The profile also retains the slot choices, reported mapping sources, withheld PDOs and fields with unsupported widths or alignments. Supported Rx fields are available for offline output staging. Offline and synthetic capture workflows use the same profile.
+In the desktop, load the file through **Profiles…** and open **Inputs → Offline decoder…**. **Device → Saved modular layout** shows the report hash and the saved image lengths alongside the ESI baseline. The profile retains slot choices, reported mapping sources, matched device PDO positions, withheld PDOs and fields with unsupported widths or alignments. Exported names start with `Device` or the corresponding `Slot`. Supported Rx fields are available for offline output staging. Offline and synthetic capture workflows use the same profile.
 
 Export requires a saved length for both directions, including an explicitly observed zero-length image. It preserves complete image lengths when some fields are withheld and creates a new file. The exported decoder is scoped to offline use. A hardware session uses a separately configured commissioning profile and the normal approvals.
 

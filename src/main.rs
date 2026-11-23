@@ -414,6 +414,19 @@ impl App {
                         "Saved image lengths · Tx {} / Rx {} bytes",
                         decoder.tx.image_bytes, decoder.rx.image_bytes
                     ));
+                    if !decoder.tx.device_pdos.is_empty()
+                        || !decoder.rx.device_pdos.is_empty()
+                        || !decoder.tx.withheld_device_pdos.is_empty()
+                        || !decoder.rx.withheld_device_pdos.is_empty()
+                    {
+                        ui.label(format!(
+                            "Device PDOs matched · Tx {} / Rx {} · Withheld Tx {} / Rx {}",
+                            decoder.tx.device_pdos.len(),
+                            decoder.rx.device_pdos.len(),
+                            decoder.tx.withheld_device_pdos.len(),
+                            decoder.rx.withheld_device_pdos.len()
+                        ));
+                    }
                 });
             }
             if let (Some(tx), Some(rx)) = (source.default_tx_bytes, source.default_rx_bytes) {

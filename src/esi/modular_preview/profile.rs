@@ -51,6 +51,10 @@ pub struct ImageSource {
     pub mapping_source: Option<MappingSource>,
     pub withheld_pdos: Vec<u16>,
     pub unavailable_fields: Vec<UnavailableField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_pdos: Vec<DevicePdoMember>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withheld_device_pdos: Vec<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_pdo_groups: Option<PdoGroupAudit>,
 }
@@ -99,11 +103,11 @@ pub(super) fn build(
     module_inventory: Option<super::inventory::Comparison>,
 ) -> Result<Profile> {
     readback.require_group_agreement()?;
-    let (tx_source, tx) = image(Direction::Tx, readback, slots)?;
-    let (rx_source, rx) = image(Direction::Rx, readback, slots)?;
+    let (tx_source, tx) = image(Direction::Tx, readback, slots, &esi)?;
+    let (rx_source, rx) = image(Direction::Rx, readback, slots, &esi)?;
     ensure!(
         !tx.is_empty() || !rx.is_empty(),
-        "saved PDO layouts have no decodable module fields"
+        "saved PDO layouts have no decodable device or module fields"
     );
     esi.default_tx_bytes = None;
     esi.default_rx_bytes = None;
@@ -139,13 +143,14 @@ fn image(
     direction: Direction,
     readback: &Comparison,
     slots: &[SlotPreview],
+    esi: &EsiSource,
 ) -> Result<(ImageSource, Vec<Field>)> {
     let image_bytes = readback.image_bytes(direction)?;
-    let (positions, withheld_pdos) = field_positions(direction, slots);
+    let (positions, withheld_pdos) = field_positions(direction, slots, esi, readback);
     let mut fields = Vec::new();
     let mut unavailable_fields = Vec::new();
     for position in positions {
-        let field = position.definition();
+        let field = position.definition(direction);
         match field.validate() {
             Ok(()) => fields.push(field),
             Err(error) => unavailable_fields.push(UnavailableField {
@@ -160,6 +165,19 @@ fn image(
             mapping_source: readback.mapping_source(direction),
             withheld_pdos,
             unavailable_fields,
+            device_pdos: readback
+                .device_pdos(direction)
+                .iter()
+                .filter_map(|pdo| {
+                    let (bit, sync_manager) = pdo.matched_location()?;
+                    Some(DevicePdoMember {
+                        pdo_index: pdo.pdo_index,
+                        sync_manager,
+                        bit,
+                    })
+                })
+                .collect(),
+            withheld_device_pdos: readback.withheld_device_pdos(direction),
             module_pdo_groups: readback.module_pdo_groups(direction).cloned(),
         },
         fields,

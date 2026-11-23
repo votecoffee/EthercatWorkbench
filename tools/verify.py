@@ -1476,7 +1476,7 @@ def verify_module_pdo_group_alignment(cli, destination, sample=None):
     assert captured["pdo_report"]["devices"] == [{"identity": identity, "serial": 14791}]
     assert captured["preop_al"] == [2, 0] and captured["stopped_al"] == [1, 0]
     audit = captured["audit"]
-    assert audit["coe_uploads"] == 60 and audit["mailbox_counter_errors"] == 0
+    assert audit["coe_uploads"] == 66 and audit["mailbox_counter_errors"] == 0
     assert audit["state_requests"] == [1, 2, 1]
     assert not any(audit[key] for key in ("coe_downloads", "op_requests", "logical_reads",
                                          "logical_writes", "physical_output_writes"))
@@ -1498,7 +1498,8 @@ def verify_module_pdo_group_alignment(cli, destination, sample=None):
         {"group": 1, "pdo_index": 0x1B11, "alignment_bytes": 4, "assigned": True, "bit": 56, "width_bits": 8},
         {"group": 2, "pdo_index": 0x1B12, "alignment_bytes": 1, "assigned": False, "bit": None, "width_bits": None},
     ]}
-    assert rx == {"group_order": [0, 1], "errors": [], "padding": [
+    assert rx == {"group_order": [0, 1, 2], "errors": [],
+                  "device_pdos": [{"pdo_index": 0x1640, "sync_manager": 2, "bit": 32}], "padding": [
         {"group": 0, "pdo_index": 0x1710, "alignment_bytes": 2, "assigned": False, "bit": None, "width_bits": None},
         {"group": 1, "pdo_index": 0x1711, "alignment_bytes": 4, "assigned": False, "bit": None, "width_bits": None},
         {"group": 2, "pdo_index": 0x1712, "alignment_bytes": 1, "assigned": False, "bit": None, "width_bits": None},
@@ -1512,7 +1513,7 @@ def verify_module_pdo_group_alignment(cli, destination, sample=None):
     cli_call(cli, "esi-import", sample, *selector, "--out", baseline)
     baseline_profile = cli_call(cli, "validate", baseline)
     assert baseline_profile["esi"]["device_pdo_group"] == 2
-    assert baseline_profile["tx_bytes"] == 1 and baseline_profile["rx_bytes"] == 0
+    assert baseline_profile["tx_bytes"] == 1 and baseline_profile["rx_bytes"] == 2
     original = sample.read_bytes()
     slots_start = original.index(b"<Slots ")
     slots_end = original.index(b"</Slots>", slots_start) + len(b"</Slots>")
@@ -1524,17 +1525,74 @@ def verify_module_pdo_group_alignment(cli, destination, sample=None):
     target = destination / "group-decoder.json"
     profile = cli_call(cli, "export-modular-profile", *evidence, "--out", target)
     assert cli_call(cli, "validate", target) == profile
-    assert (profile["tx_bytes"], profile["rx_bytes"]) == (9, 4)
+    assert (profile["tx_bytes"], profile["rx_bytes"]) == (9, 6)
     assert profile["esi"]["device_pdo_group"] == 2
-    assert profile["modular_decoder"]["tx"]["module_pdo_groups"] == tx
-    assert profile["modular_decoder"]["rx"]["module_pdo_groups"] == rx
-    assert [field["bit"] for field in profile["tx"]] == [0, 16, 32, 48]
-    assert [field["value"] for field in cli_call(cli, "decode", target, "CD AB FE A5 34 12 01 B6 CC")] == [
-        "43981", "false", "4660", "true",
-    ]
-    assert [field["value"] for field in cli_call(cli, "decode", target, "02 80 EF BE", "--rx")] == [
-        "32770", "48879",
-    ]
+    tx_hex, rx_hex = "CD AB FE A5 34 12 01 B6 CC", "02 80 EF BE 34 12"
+    tx_values, rx_values = ["43981", "false", "4660", "true", "204"], ["32770", "48879", "4660"]
+    decoded = cli_call(cli, "preview-modular-pdos", *evidence, "--tx-hex", tx_hex, "--rx-hex", rx_hex)
+    for direction, groups, payload, values, sm, index, bit, label, width in (
+        ("tx", tx, tx_hex, tx_values, 3, 0x1A40, 64, "Base status", 8),
+        ("rx", rx, rx_hex, rx_values, 2, 0x1640, 32, "Base command", 16),
+    ):
+        source = profile["modular_decoder"][direction]
+        assert source["module_pdo_groups"] == groups
+        assert source["device_pdos"] == groups["device_pdos"]
+        expected = {"pdo_index": index, "sync_manager": sm, "bit": bit}
+        assignment, = decoded["saved_readback"][direction]["device_pdos"]
+        assert all(assignment[key] == val for key, val in expected.items())
+        assert assignment["state"] == "matched" and assignment["sm_hint_matches"]
+        fields = decoded["decoded_" + direction]["fields"]
+        assert [field["value"] for field in fields] == values
+        assert all("slot" in field and "module_ident" in field for field in fields[:-1])
+        device_field = fields[-1]
+        assert "slot" not in device_field and "module_ident" not in device_field
+        assert (device_field["name"], device_field["kind"], device_field["width"]) == (label, "unsigned", width)
+        assert all(device_field[key] == val for key, val in expected.items())
+        args = () if direction == "tx" else ("--rx",)
+        reloaded = cli_call(cli, "decode", target, payload, *args)
+        assert [field["value"] for field in reloaded] == values
+        assert reloaded[-1]["field"].startswith("Device " + label)
+    assert [field["bit"] for field in profile["tx"]] == [0, 16, 32, 48, 64]
+    rx_stage = destination / "staged-device-command.json"
+    cli_call(cli, "stage-rx", target, "--zero", "--set", "2=513", "--out", rx_stage)
+    assert cli_call(cli, "validate", rx_stage)["staged_rx_hex"] == "000000000102"
+
+    different = json.loads(pdos.read_bytes())
+    different["pdo_verification"]["readback"]["tx"]["sync_managers"][0]["pdos"][-1]["entries"] = [0x22010108]
+    different_path = destination / "same-width-device-descriptor.json"
+    different_path.write_text(json.dumps(different), encoding="utf-8")
+    mismatch = cli_call(cli, "preview-modular-pdos", *base, "--run-report", different_path, "--tx-hex", tx_hex)
+    check, = mismatch["saved_readback"]["tx"]["device_pdos"]
+    assert check["state"] == "descriptor_mismatch" and check["bit"] == 64
+    assert check["differences"] == [{
+        "entry": 0, "expected": {"object_index": 0x2200, "subindex": 1, "width": 8},
+        "observed": {"object_index": 0x2201, "subindex": 1, "width": 8},
+    }]
+    assert mismatch["decoded_tx"]["withheld_device_pdos"] == [0x1A40]
+    assert [field["value"] for field in mismatch["decoded_tx"]["fields"]] == tx_values[:-1]
+    partial = cli_call(cli, "export-modular-profile", *base, "--run-report", different_path,
+                       "--out", destination / "partial-device-decoder.json")
+    assert partial["tx_bytes"] == 9 and partial["tx"] == profile["tx"][:-1]
+    assert partial["rx"] == profile["rx"] and partial["modular_decoder"]["tx"]["withheld_device_pdos"] == [0x1A40]
+
+    for case, old, new, state, exclusions in (
+        ("virtual-device-pdo", b'<TxPdo Sm="3">', b'<TxPdo Sm="3" Virtual="1">', "unsupported", []),
+        ("assigned-device-exclusion", b'<Name>Base status</Name>\n',
+         b'<Name>Base status</Name>\n          <Exclude>#x1A00</Exclude>\n', "matched", [0x1A00]),
+    ):
+        if case == "virtual-device-pdo":
+            old += b'\n          <Index>#x1A40</Index>'
+            new += b'\n          <Index>#x1A40</Index>'
+        eol = b"\r\n" if b"\r\n" in original else b"\n"
+        old, new = old.replace(b"\n", eol), new.replace(b"\n", eol)
+        assert original.count(old) == 1
+        path = destination / (case + ".esi.xml")
+        path.write_bytes(original.replace(old, new))
+        held = cli_call(cli, "preview-modular-pdos", path, *evidence[1:], "--tx-hex", tx_hex)
+        candidate, = held["saved_readback"]["tx"]["device_pdos"]
+        assert candidate["state"] == state and candidate["assigned_exclusions"] == exclusions
+        assert held["decoded_tx"]["withheld_device_pdos"] == [0x1A40]
+        assert [field["value"] for field in held["decoded_tx"]["fields"]] == tx_values[:-1]
 
     def fault(name, mutate, expected):
         report = json.loads(pdos.read_bytes())
@@ -1575,6 +1633,10 @@ def verify_module_pdo_group_alignment(cli, destination, sample=None):
     base_pdo = managers[0]["pdos"].pop()
     managers[0]["configured_bytes"] = 8
     managers.append({"index": 4, "configured_bytes": 1, "pdos": [base_pdo]})
+    managers = split["pdo_verification"]["readback"]["rx"]["sync_managers"]
+    base_pdo = managers[0]["pdos"].pop()
+    managers[0]["configured_bytes"] = 4
+    managers.append({"index": 5, "configured_bytes": 2, "pdos": [base_pdo]})
     split_path = destination / "device-pdo-on-another-sm.json"
     split_path.write_text(json.dumps(split), encoding="utf-8")
     separated = cli_call(cli, "export-modular-profile", group_zero, *base[1:],
@@ -1583,6 +1645,9 @@ def verify_module_pdo_group_alignment(cli, destination, sample=None):
     assert separated["esi"]["device_pdo_group"] == 0 and separate_tx["group_order"] == [0, 1, 0]
     assert not separate_tx["errors"]
     assert separate_tx["device_pdos"] == [{"pdo_index": 0x1A40, "sync_manager": 4, "bit": 64}]
+    assert separated["modular_decoder"]["tx"]["device_pdos"] == separate_tx["device_pdos"]
+    assert separated["modular_decoder"]["rx"]["device_pdos"] == [{"pdo_index": 0x1640, "sync_manager": 5, "bit": 32}]
+    assert separated["tx"] == profile["tx"] and separated["rx"] == profile["rx"]
 
     shared = destination / "device-module-shared-index.esi.xml"
     shared.write_bytes(original.replace(b"<Index>#x1A40</Index>", b"<Index>#x1A00</Index>"))
@@ -1662,9 +1727,9 @@ def verify_mixed_slot_group_indexes(cli, destination, sample=None):
     profile = cli_call(cli, "export-modular-profile", sample, *selector, *evidence, "--out", target)
     assert cli_call(cli, "validate", target) == profile
     assert (profile["tx_bytes"], profile["rx_bytes"]) == (7, 4)
-    assert [field["object_index"] for field in profile["tx"]] == [0x6041, 0x2100, 0x6841, 0x2300]
+    assert [field["object_index"] for field in profile["tx"]] == [0x6041, 0x2100, 0x6841, 0x2300, 0x2200]
     assert [field["value"] for field in cli_call(cli, "decode", target, "34 12 01 CD AB FE A5")] == [
-        "4660", "true", "43981", "false",
+        "4660", "true", "43981", "false", "165",
     ]
     assert [field["value"] for field in cli_call(cli, "decode", target, "EF BE 02 80", "--rx")] == [
         "48879", "32770",
@@ -1680,7 +1745,7 @@ def verify_mixed_slot_group_indexes(cli, destination, sample=None):
     limited = cli_call(cli, "export-modular-profile", incorrect, *selector, *evidence,
                        "--out", destination / "limited-decoder.json")
     assert limited["modular_decoder"]["tx"]["withheld_pdos"] == [0x1A20]
-    assert [field["object_index"] for field in limited["tx"]] == [0x6041, 0x2100]
+    assert [field["object_index"] for field in limited["tx"]] == [0x6041, 0x2100, 0x2200]
 
     cases = [
         ("both-dependencies", original.replace(b'<Index DependOnSlot="1">#x1600',
@@ -1754,7 +1819,7 @@ def verify_variable_slot_counts(cli, destination, sample=None):
     assert profile["modular_decoder"]["slots"] == [0x400] * 3
     assert (profile["tx_bytes"], profile["rx_bytes"]) == (10, 6)
     assert [field["value"] for field in cli_call(cli, "decode", target, "34 12 01 CD AB FE 21 43 01 A5")] == [
-        "4660", "true", "43981", "false", "17185", "true",
+        "4660", "true", "43981", "false", "17185", "true", "165",
     ]
     assert [field["value"] for field in cli_call(cli, "decode", target, "EF BE 02 80 34 12", "--rx")] == [
         "48879", "32770", "4660",
@@ -1842,7 +1907,7 @@ def verify_repeated_fixed_slots(cli, destination, sample=None):
     assert (profile["tx_bytes"], profile["rx_bytes"]) == (10, 6)
     assert [field["object_index"] for field in profile["rx"]] == [0x6040, 0x6840, 0x7040]
     assert [field["value"] for field in cli_call(cli, "decode", target, "34 12 01 CD AB FE 21 43 01 A5")] == [
-        "4660", "true", "43981", "false", "17185", "true",
+        "4660", "true", "43981", "false", "17185", "true", "165",
     ]
     assert [field["value"] for field in cli_call(cli, "decode", target, "EF BE 02 80 34 12", "--rx")] == [
         "48879", "32770", "4660",
@@ -1937,9 +2002,9 @@ def verify_grouped_fixed_slots(cli, destination, sample=None):
     assert cli_call(cli, "validate", target) == profile
     assert (profile["tx_bytes"], profile["rx_bytes"]) == (7, 4)
     assert profile["modular_decoder"]["slots"] == [0x400, 0, 0x400]
-    assert [field["object_index"] for field in profile["tx"]] == [0x6041, 0x2100, 0x6841, 0x2100]
+    assert [field["object_index"] for field in profile["tx"]] == [0x6041, 0x2100, 0x6841, 0x2100, 0x2200]
     assert [field["value"] for field in cli_call(cli, "decode", target, "34 12 01 CD AB FE A5")] == [
-        "4660", "true", "43981", "false",
+        "4660", "true", "43981", "false", "165",
     ]
     assert [field["value"] for field in cli_call(cli, "decode", target, "EF BE 02 80", "--rx")] == [
         "48879", "32770",
@@ -2029,8 +2094,8 @@ def verify_vacant_fixed_slot(cli, destination, sample=None):
     assert (tx["mapping"]["resolved"], tx["entries"][0]["object"]["resolved"]) == (0x1A20, 0x7041)
     assert (rx["saved_readback"]["bit"], tx["saved_readback"]["bit"]) == (16, 24)
     assert rx["saved_readback"]["state"] == tx["saved_readback"]["state"] == "matched"
-    assert [field["slot"] for field in reviewed["decoded_tx"]["fields"]] == [0, 0, 2, 2]
-    assert [field["value"] for field in reviewed["decoded_tx"]["fields"]] == ["4660", "true", "43981", "false"]
+    assert [field.get("slot") for field in reviewed["decoded_tx"]["fields"]] == [0, 0, 2, 2, None]
+    assert [field["value"] for field in reviewed["decoded_tx"]["fields"]] == ["4660", "true", "43981", "false", "165"]
     assert [field["value"] for field in reviewed["decoded_rx"]["fields"]] == ["48879", "32770"]
     observed = reviewed["module_inventory"]
     assert observed["placement_source"] == "saved_detected"

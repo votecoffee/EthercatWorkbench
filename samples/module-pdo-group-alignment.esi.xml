@@ -8,6 +8,11 @@
         <Type ProductCode="#x00000011" RevisionNo="1" ModulePdoGroup="2">VirtualPdoGroupAlignment</Type>
         <Name>Authored module PDO group device</Name>
         <GroupType>Fixture</GroupType>
+        <RxPdo Sm="2">
+          <Index>#x1640</Index>
+          <Name>Base command</Name>
+          <Entry><Index>#x2300</Index><SubIndex>1</SubIndex><BitLen>16</BitLen><Name>Base command</Name><DataType>UINT</DataType></Entry>
+        </RxPdo>
         <TxPdo Sm="3">
           <Index>#x1A40</Index>
           <Name>Base status</Name>

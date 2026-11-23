@@ -47,9 +47,9 @@ Use `preview-modular-pdos` for explicit module choices in fixed, ungrouped slots
 
 Add `--run-report` to compare those candidates with the matching device's saved PDO descriptors and SyncManager placement. [Readback comparison](pdo-selection.md#compare-module-candidates-with-saved-pdo-readback)
 
-With the same saved report, pass `--tx-hex` or `--rx-hex` to decode a complete supplied payload at the matched candidates' saved bit positions. [Modular payload decode](pdo-selection.md#decode-a-modular-payload-from-saved-placement)
+With the same saved report, pass `--tx-hex` or `--rx-hex` to decode a complete supplied payload at the saved bit positions of matched device and module PDOs. [Modular payload decode](pdo-selection.md#decode-a-modular-payload-from-saved-placement)
 
-Use `export-modular-profile` to save the matched fields and complete image lengths as an offline profile. Load it in **Profiles…** for the existing decoder, or reuse it through the CLI. [Profile export](pdo-selection.md#export-a-reusable-modular-decoder-profile)
+Use `export-modular-profile` to save the matched device and module fields and complete image lengths as an offline profile. Load it in **Profiles…** for the existing decoder, or reuse it through the CLI. [Profile export](pdo-selection.md#export-a-reusable-modular-decoder-profile)
 
 Use `--module-inventory` to review configured and detected module IDs from saved CoE values. A complete detected list can supply the fixed-slot choices. [Module inventory review](pdo-selection.md#review-saved-module-identities)
 

@@ -120,7 +120,7 @@ impl Preview {
             .saved_readback
             .as_ref()
             .context("payload decoding requires saved PDO readback")?;
-        let decoded = decode::payload(direction, bytes, readback, &self.slots)?;
+        let decoded = decode::payload(direction, bytes, readback, &self.slots, &self.esi)?;
         match direction {
             Direction::Tx => self.decoded_tx = Some(decoded),
             Direction::Rx => self.decoded_rx = Some(decoded),

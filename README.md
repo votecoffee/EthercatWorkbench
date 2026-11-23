@@ -93,7 +93,7 @@ Add `--run-report samples/fixed-slot-pdo-readback.json` to compare the preview w
 
 Use `--tx-hex` and `--rx-hex` with the saved report to decode a full payload at the matched candidates' reported bit positions. [Modular payload decode](docs/pdo-selection.md#decode-a-modular-payload-from-saved-placement)
 
-Use `export-modular-profile` to reuse the matched fields and saved image lengths in the standard offline decoder and profile workflows. [Modular profile export](docs/pdo-selection.md#export-a-reusable-modular-decoder-profile)
+Use `export-modular-profile` to reuse verified device and module fields and complete saved image lengths in the standard offline decoder and profile workflows. [Modular profile export](docs/pdo-selection.md#export-a-reusable-modular-decoder-profile)
 
 Use `--module-inventory samples/fixed-slot-module-inventory.json` with the fixed-slot preview or export to review saved CoE module identities or select slots from the detected list. [Saved module identities](docs/pdo-selection.md#review-saved-module-identities)
 

@@ -1692,7 +1692,7 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
         ModuleInventoryCase::RepeatedFixedSlots | ModuleInventoryCase::VariableSlotCounts
     );
     let (width, entries): (u8, &[u32]) = match index {
-        0x1c12 if alignment => (2, &[0x1610, 0x1600]),
+        0x1c12 if alignment => (2, &[0x1610, 0x1600, 0x1640]),
         0x1c13 if alignment => (2, &[0x1a10, 0x1b10, 0x1a00, 0x1b11, 0x1a40]),
         0x1b10 | 0x1b11 if alignment => (4, &[8]),
         0x1c12 if three_axes => (2, &[0x1600, 0x1610, 0x1620]),
@@ -1708,6 +1708,7 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
         0x1620 if mixed => (4, &[0x6840_0010]),
         0x1620 if vacant || three_axes => (4, &[0x7040_0010]),
         0x1630 if grouped => (4, &[0x6840_0010]),
+        0x1640 if alignment => (4, &[0x2300_0110]),
         0x1a00 => (4, &[0x6041_0010, 0x2100_0201, 7]),
         0x1a10 if !vacant && !grouped => (4, &[second_status_word, 0x2100_0201, 7]),
         0x1a20 if mixed => (4, &[0x6841_0010, 0x2300_0201, 7]),

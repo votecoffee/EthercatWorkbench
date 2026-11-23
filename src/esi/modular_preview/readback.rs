@@ -93,6 +93,18 @@ impl Comparison {
         self.direction(direction).mapping_source
     }
 
+    pub(super) fn device_pdos(&self, direction: Direction) -> &[DevicePdo] {
+        &self.direction(direction).device_pdos
+    }
+
+    pub(super) fn withheld_device_pdos(&self, direction: Direction) -> Vec<u16> {
+        self.device_pdos(direction)
+            .iter()
+            .filter(|pdo| pdo.matched_location().is_none())
+            .map(|pdo| pdo.pdo_index)
+            .collect()
+    }
+
     pub(super) fn module_pdo_groups(&self, direction: Direction) -> Option<&PdoGroupAudit> {
         self.direction(direction).module_pdo_groups.as_ref()
     }
@@ -128,8 +140,27 @@ struct ObservedDirection {
     image_bytes: Option<usize>,
     unavailable: Option<String>,
     other_assignments: Vec<OtherAssignment>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    device_pdos: Vec<DevicePdo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     module_pdo_groups: Option<PdoGroupAudit>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct DevicePdo {
+    pub(super) pdo_index: u16,
+    #[serde(flatten)]
+    comparison: Candidate,
+}
+
+impl DevicePdo {
+    pub(super) fn matched_location(&self) -> Option<(usize, u8)> {
+        if self.comparison.assigned_exclusions.is_empty() {
+            self.comparison.matched_location()
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -145,6 +176,7 @@ struct OtherAssignment {
 enum State {
     Matched,
     DescriptorMismatch,
+    Unsupported,
     Unassigned,
     Unavailable,
 }
@@ -176,11 +208,11 @@ struct EntryDifference {
     observed: Option<Descriptor>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 struct Descriptor {
     object_index: u16,
     subindex: u8,
-    width: u8,
+    width: usize,
 }
 
 impl From<u32> for Descriptor {
@@ -188,7 +220,7 @@ impl From<u32> for Descriptor {
         Self {
             object_index: (value >> 16) as u16,
             subindex: (value >> 8) as u8,
-            width: value as u8,
+            width: (value & 0xff) as usize,
         }
     }
 }
@@ -197,6 +229,44 @@ struct Assignment<'a> {
     sync_manager: u8,
     bit: Option<usize>,
     pdo: &'a Pdo,
+}
+
+impl Assignment<'_> {
+    fn compare(
+        &self,
+        declared_sm: Option<u8>,
+        expected: Option<Vec<Descriptor>>,
+        excludes: impl Iterator<Item = u16>,
+        observed: &BTreeSet<u16>,
+    ) -> Candidate {
+        let actual = &self.pdo.entries;
+        let differences = expected.as_ref().map_or_else(Vec::new, |expected| {
+            (0..expected.len().max(actual.len()))
+                .filter_map(|entry| {
+                    let expected = expected.get(entry).copied();
+                    let observed = actual.get(entry).copied().map(Descriptor::from);
+                    (expected != observed).then_some(EntryDifference {
+                        entry,
+                        expected,
+                        observed,
+                    })
+                })
+                .collect()
+        });
+        Candidate {
+            state: match expected {
+                None => State::Unsupported,
+                Some(_) if differences.is_empty() => State::Matched,
+                Some(_) => State::DescriptorMismatch,
+            },
+            sync_manager: Some(self.sync_manager),
+            sm_hint_matches: declared_sm.map(|hint| hint == self.sync_manager),
+            bit: self.bit,
+            observed_entry_count: Some(actual.len()),
+            differences,
+            assigned_exclusions: excludes.filter(|index| observed.contains(index)).collect(),
+        }
+    }
 }
 
 struct CheckedDirection<'a> {
@@ -221,6 +291,7 @@ impl<'a> CheckedDirection<'a> {
                             .into(),
                     ),
                     other_assignments: Vec::new(),
+                    device_pdos: Vec::new(),
                     module_pdo_groups: None,
                 },
                 assigned: BTreeMap::new(),
@@ -275,6 +346,7 @@ impl<'a> CheckedDirection<'a> {
                 image_bytes: Some(image_bytes),
                 unavailable: None,
                 other_assignments: Vec::new(),
+                device_pdos: Vec::new(),
                 module_pdo_groups: None,
             },
             assigned,
@@ -433,6 +505,54 @@ impl<'a> CheckedDirection<'a> {
         });
     }
 
+    fn compare_device_pdos(
+        &mut self,
+        direction: Direction,
+        esi: &EsiSource,
+        observed: &BTreeSet<u16>,
+    ) {
+        let padding: BTreeSet<_> = esi
+            .modular
+            .iter()
+            .flat_map(|modular| &modular.pdo_groups)
+            .filter_map(|group| match direction {
+                Direction::Tx => group.tx_pdo,
+                Direction::Rx => group.rx_pdo,
+            })
+            .collect();
+        for pdo in esi
+            .pdo_catalog
+            .iter()
+            .filter(|pdo| pdo.direction == direction)
+        {
+            let Some(assignment) = self.assigned.get(&pdo.index) else {
+                continue;
+            };
+            if padding.contains(&pdo.index) {
+                continue;
+            }
+            let expected = (!pdo.virtual_pdo && !pdo.unsupported).then(|| {
+                pdo.entries
+                    .iter()
+                    .map(|entry| Descriptor {
+                        object_index: entry.index,
+                        subindex: entry.subindex,
+                        width: entry.width,
+                    })
+                    .collect()
+            });
+            self.report.device_pdos.push(DevicePdo {
+                pdo_index: pdo.index,
+                comparison: assignment.compare(
+                    pdo.default_sm,
+                    expected,
+                    pdo.excludes.iter().copied(),
+                    observed,
+                ),
+            });
+        }
+    }
+
     fn finish(mut self) -> ObservedDirection {
         self.report.other_assignments = self
             .assigned
@@ -463,50 +583,21 @@ impl<'a> CheckedDirection<'a> {
                 assigned_exclusions: Vec::new(),
             };
         };
-        let actual = &assignment.pdo.entries;
-        let expected: Vec<_> = candidate
+        let expected = candidate
             .entries
             .iter()
-            .map(|entry| {
-                (u32::from(entry.object.resolved) << 16)
-                    | (u32::from(entry.subindex) << 8)
-                    | u32::from(entry.width)
+            .map(|entry| Descriptor {
+                object_index: entry.object.resolved,
+                subindex: entry.subindex,
+                width: usize::from(entry.width),
             })
             .collect();
-        let differences: Vec<_> = (0..expected.len().max(actual.len()))
-            .filter_map(|entry| {
-                let expected = expected.get(entry).copied();
-                let observed = actual.get(entry).copied();
-                (expected != observed).then(|| EntryDifference {
-                    entry,
-                    expected: expected.map(Descriptor::from),
-                    observed: observed.map(Descriptor::from),
-                })
-            })
-            .collect();
-        Candidate {
-            state: if differences.is_empty() {
-                State::Matched
-            } else {
-                State::DescriptorMismatch
-            },
-            sync_manager: Some(assignment.sync_manager),
-            sm_hint_matches: candidate
-                .declared_sm
-                .map(|hint| hint == assignment.sync_manager),
-            bit: assignment.bit,
-            observed_entry_count: Some(actual.len()),
-            differences,
-            assigned_exclusions: candidate
-                .excludes
-                .iter()
-                .filter_map(|excluded| {
-                    observed
-                        .contains(&excluded.resolved)
-                        .then_some(excluded.resolved)
-                })
-                .collect(),
-        }
+        assignment.compare(
+            candidate.declared_sm,
+            Some(expected),
+            candidate.excludes.iter().map(|index| index.resolved),
+            observed,
+        )
     }
 }
 
@@ -572,6 +663,8 @@ pub(super) fn compare(
             Direction::Rx => checked_rx.compare(candidate, &observed),
         });
     }
+    checked_tx.compare_device_pdos(Direction::Tx, esi, &observed);
+    checked_rx.compare_device_pdos(Direction::Rx, esi, &observed);
     Ok(Comparison {
         file_name: path
             .file_name()

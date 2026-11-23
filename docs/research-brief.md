@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.94.0** includes assigned device-level PDOs in the ESI group audit. The saved layout can restart group numbering at each SyncManager. Profile export retains the selected device group and observed assignment positions, and rejects conflicts within an assignment list. The simulator confirms INIT on exit. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Module PDO group audit](pdo-selection.md#review-module-pdo-groups-and-padding) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.95.0** decodes matched device-level PDOs alongside module PDOs in saved Tx and Rx images. The export keeps the full image geometry and records withheld device indexes separately. The virtual fixture verifies both field sources and stages an Rx device command offline. The simulator confirms INIT on exit. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Modular payload decode](pdo-selection.md#decode-a-modular-payload-from-saved-placement) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 
