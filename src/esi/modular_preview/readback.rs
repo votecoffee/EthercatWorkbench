@@ -89,6 +89,18 @@ impl Comparison {
         }
     }
 
+    pub(super) fn observed_layout(
+        &self,
+        direction: Direction,
+    ) -> (Option<&Layout>, Option<usize>, Option<&str>) {
+        let observed = self.direction(direction);
+        (
+            observed.layout.as_ref(),
+            observed.image_bytes,
+            observed.unavailable.as_deref(),
+        )
+    }
+
     pub(super) fn mapping_source(&self, direction: Direction) -> Option<MappingSource> {
         self.direction(direction).mapping_source
     }
@@ -136,6 +148,8 @@ impl Comparison {
 
 #[derive(Debug, Serialize)]
 struct ObservedDirection {
+    #[serde(skip)]
+    layout: Option<Layout>,
     mapping_source: Option<MappingSource>,
     image_bytes: Option<usize>,
     unavailable: Option<String>,
@@ -283,6 +297,7 @@ impl<'a> CheckedDirection<'a> {
         let Some(ReportedLayout { source, layout }) = layout else {
             return Ok(Self {
                 report: ObservedDirection {
+                    layout: None,
                     mapping_source: None,
                     image_bytes: None,
                     unavailable: Some(
@@ -342,6 +357,7 @@ impl<'a> CheckedDirection<'a> {
         }
         Ok(Self {
             report: ObservedDirection {
+                layout: Some(layout.clone()),
                 mapping_source: *source,
                 image_bytes: Some(image_bytes),
                 unavailable: None,

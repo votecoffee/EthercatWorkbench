@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.95.0** decodes matched device-level PDOs alongside module PDOs in saved Tx and Rx images. The export keeps the full image geometry and records withheld device indexes separately. The virtual fixture verifies both field sources and stages an Rx device command offline. The simulator confirms INIT on exit. Physical module collection and composed expected images remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Modular payload decode](pdo-selection.md#decode-a-modular-payload-from-saved-placement) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.96.0** composes expected modular Tx and Rx images from explicit assignments. It derives ESI group padding for one SyncManager per grouped direction and compares the complete assignment and descriptors with saved readback. The virtual fixture matches both directions and exposes a same-size descriptor change. Physical module collection and device-specific grouped alignment remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Expected modular layout](pdo-selection.md#compose-an-expected-modular-pdo-image) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

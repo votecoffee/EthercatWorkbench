@@ -317,7 +317,10 @@ fn pdo_catalog(device: Node<'_, '_>) -> Result<Vec<crate::pdo_catalog::Definitio
             "ESI PDO catalog exceeds 512 candidates"
         );
         let mut notes = Vec::new();
-        let mut unsupported = bool_attr(node, "OverwrittenByModule")?;
+        let mut unsupported = bool_attr(node, "OverwrittenByModule")?
+            || node
+                .attributes()
+                .any(|attribute| attribute.name().starts_with("OS"));
         for attr in node
             .attributes()
             .filter(|a| !["Sm", "Fixed", "Mandatory", "Virtual"].contains(&a.name()))

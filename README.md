@@ -89,6 +89,8 @@ Use `esi-list samples/modular-device.esi.xml` or **Device → ESI modules and sl
 
 Use `preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --slot 0=0x400 --slot 1=0x400` to resolve PDO candidate indexes for two explicitly placed modules. [Fixed-slot preview](docs/pdo-selection.md#preview-pdo-indexes-for-fixed-module-slots)
 
+Use `preview-modular-pdos samples/module-pdo-group-alignment.esi.xml --device 0 --slot 0=0x400 --slot 1=0x402 --expect-layout samples/module-pdo-expected.json` to compose ordered assignments and calculate ESI group padding offline. [Expected layout](docs/pdo-selection.md#compose-an-expected-modular-pdo-image)
+
 Add `--run-report samples/fixed-slot-pdo-readback.json` to compare the preview with the sample's saved PDO descriptors, assignment and bit placement. [Readback comparison](docs/pdo-selection.md#compare-module-candidates-with-saved-pdo-readback)
 
 Use `--tx-hex` and `--rx-hex` with the saved report to decode a full payload at the matched candidates' reported bit positions. [Modular payload decode](docs/pdo-selection.md#decode-a-modular-payload-from-saved-placement)

@@ -1682,6 +1682,143 @@ def verify_module_pdo_group_alignment(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_expected_modular_layout(cli, destination, sample=None, manifest=None, plain_esi=None):
+    """Compose explicit assignments, derive padding and compare the complete image."""
+    sample = ROOT / "samples/module-pdo-group-alignment.esi.xml" if sample is None else sample
+    manifest = ROOT / "samples/module-pdo-expected.json" if manifest is None else manifest
+    raw_request = manifest.read_bytes()
+    request = json.loads(raw_request)
+    args = ("preview-modular-pdos", sample, "--identity", "0x00ff1000/17/1",
+            "--slot", "0=0x400", "--slot", "1=0x402")
+    target = destination / "expected.json"
+    preview = cli_call(cli, *args, "--expect-layout", manifest, "--out", target)
+    assert json.loads(target.read_bytes()) == preview
+    expected = preview["expected_layout"]
+    assert expected["file_name"] == manifest.name
+    assert expected["sha256"] == hashlib.sha256(raw_request).hexdigest()
+    assert "saved_comparison" not in expected and "saved_readback" not in preview
+    assert (expected["tx"]["image_bytes"], expected["rx"]["image_bytes"]) == (9, 6)
+    tx = expected["tx"]
+    tx_sm, = tx["layout"]["sync_managers"]
+    assert tx["layout"]["mapping_source"] == "esi"
+    assert tx_sm["index"] == 3 and tx_sm["configured_bytes"] is None
+    assert [pdo["index"] for pdo in tx_sm["pdos"]] == [0x1A10, 0x1B10, 0x1A00, 0x1B11, 0x1A40]
+    assert [pdo["entries"] for pdo in tx_sm["pdos"][1::2]] == [[8], [8]]
+    assert [pdo["group"] for pdo in tx["pdo_sources"]] == [0, 0, 1, 1, 2]
+    assert [pdo["origin"]["kind"] for pdo in tx["pdo_sources"]] == [
+        "module", "group_padding", "module", "group_padding", "device",
+    ]
+    assert [pdo["origin"]["slot"] for pdo in tx["pdo_sources"] if pdo["origin"]["kind"] == "module"] == [1, 0]
+    assert [(entry["bit"], entry["width"]) for entry in tx["entries"] if entry["pdo_index"] in (0x1B10, 0x1B11)] == [
+        (24, 8), (56, 8),
+    ]
+    assert tx["entries"][-1]["bit"] == 64 and expected["rx"]["entries"][-1]["bit"] == 32
+    assert [pdo["pdo_index"] for pdo in expected["rx"]["pdo_sources"]] == [0x1610, 0x1600, 0x1640]
+
+    report = destination / "virtual-readback.json"
+    inventory = destination / "virtual-inventory.json"
+    cli_call(cli, "read-virtual-module-inventory", "--scenario", "pdo-group-alignment",
+             "--pdo-report", report, "--out", inventory)
+    compare = cli_call(cli, "preview-modular-pdos", sample, "--device", 0, "--module-inventory", inventory,
+                       "--expect-layout", manifest, "--run-report", report, "--tx-hex", "CD AB FE A5 34 12 01 B6 CC")
+    observed = compare["expected_layout"].pop("saved_comparison")
+    assert compare["expected_layout"] == expected
+    assert observed == {
+        "tx": {"observed_bytes": 9, "assignments_match": True, "unavailable": None},
+        "rx": {"observed_bytes": 6, "assignments_match": True, "unavailable": None},
+    }
+    assert compare["decoded_tx"]["fields"][-1]["value"] == "204"
+
+    modified = json.loads(report.read_bytes())
+    layout = modified["pdo_verification"]["readback"]
+    layout["tx"]["sync_managers"][0]["pdos"][-1]["entries"] = [0x22010108]
+    layout.update(rx=None, rx_unavailable="fixture omitted Rx readback")
+    altered = destination / "different-readback.json"
+    altered.write_text(json.dumps(modified), encoding="utf-8")
+    mismatch = cli_call(cli, *args, "--expect-layout", manifest, "--run-report", altered)
+    assert mismatch["expected_layout"]["saved_comparison"] == {
+        "tx": {"observed_bytes": 9, "assignments_match": False, "unavailable": None},
+        "rx": {"observed_bytes": None, "assignments_match": None, "unavailable": "fixture omitted Rx readback"},
+    }
+
+    def changed_request(name, mutate):
+        data = json.loads(raw_request)
+        mutate(data)
+        path = destination / (name + ".json")
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def rejected(name, error, request_path=manifest, esi_path=sample):
+        path = destination / (name + "-review.json")
+        message = cli_call(cli, args[0], esi_path, *args[2:], "--expect-layout", request_path, "--out", path,
+                           success=False)
+        assert error in message and not path.exists(), message
+
+    empty = changed_request("empty", lambda data: data.update(tx=[], rx=[]))
+    vacant = cli_call(cli, *args, "--expect-layout", empty)["expected_layout"]
+    assert all(vacant[dirn]["image_bytes"] == 0 and vacant[dirn]["pdo_sources"] == [] for dirn in ("tx", "rx"))
+
+    malformed = [
+        ("missing-rx", lambda data: data.pop("rx"), "missing field"),
+        ("wrong-identity", lambda data: data["identity"].update(revision=2), "identity differs"),
+        ("bad-schema", lambda data: data.update(schema=2), "unsupported expected PDO layout request schema"),
+        ("duplicate-pdo", lambda data: data["tx"].insert(0, data["tx"][0]), "assigned more than once"),
+        ("reserved-pdo", lambda data: data["tx"].insert(0, {"index": 0x1B10, "sm": 3}), "padding PDO 0x1b10 is calculated"),
+        ("unknown-rx", lambda data: data["rx"].append({"index": 0x1641, "sm": 2}), "unknown in this direction"),
+        ("shared-sm", lambda data: data["rx"][0].update(sm=3), "share a SyncManager"),
+        ("split-group-sm", lambda data: data["tx"][-1].update(sm=4), "one SyncManager per direction"),
+        ("reverse-groups", lambda data: data["tx"].reverse(), "out of PDO group order"),
+    ]
+    for name, mutate, error in malformed:
+        rejected(name, error, changed_request(name, mutate))
+
+    original = sample.read_bytes()
+    def changed_esi(name, old, new):
+        if b"\r\n" in original:
+            old, new = old.replace(b"\n", b"\r\n"), new.replace(b"\n", b"\r\n")
+        assert original.count(old) == 1, old
+        path = destination / (name + ".esi.xml")
+        path.write_bytes(original.replace(old, new))
+        return path
+
+    missing = changed_esi("missing-padding", b' TxPdo="#x1B10"', b"")
+    rejected("missing-padding", "needs a declared padding PDO", esi_path=missing)
+    ungrouped = changed_esi("missing-group", b' ModulePdoGroup="2"', b"")
+    rejected("missing-group", "requires explicit group membership", esi_path=ungrouped)
+    bad_alignment = changed_esi("zero-alignment", b'Alignment="2"', b'Alignment="0"')
+    rejected("zero-alignment", "needs a nonzero alignment", esi_path=bad_alignment)
+    oversized = changed_esi("wide-padding", b'Alignment="2"', b'Alignment="64"')
+    wide = cli_call(cli, args[0], oversized, *args[2:], "--expect-layout", manifest)["expected_layout"]
+    assert (wide["tx"]["image_bytes"], wide["rx"]["image_bytes"]) == (69, 70)
+    assert next(pdo for pdo in wide["tx"]["layout"]["sync_managers"][0]["pdos"] if pdo["index"] == 0x1B10)["entries"] == [255, 233]
+
+    base_tag = b'\n        <TxPdo Sm="3">\n          <Index>#x1A40</Index>'
+    oversampling = changed_esi("oversampling", base_tag, base_tag.replace(b'Sm="3"', b'Sm="3" OSFac="2"'))
+    rejected("oversampling", "requires separate interpretation", esi_path=oversampling)
+    mandatory = changed_esi("mandatory", base_tag, base_tag.replace(b'Sm="3"', b'Sm="3" Mandatory="1"'))
+    rejected("mandatory", "mandatory PDO 0x1a40 is missing", empty, mandatory)
+    relocated = changed_request("mandatory-relocated", lambda data: data["tx"][-1].update(sm=4))
+    rejected("mandatory-relocated", "mandatory PDO 0x1a40 requires its declared SyncManager", relocated, mandatory)
+    excluded = changed_esi("excluded-padding", b'<Name>Base status</Name>\n',
+                           b'<Name>Base status</Name>\n          <Exclude>#x1B10</Exclude>\n')
+    rejected("excluded-padding", "PDO 0x1a40 excludes assigned PDO 0x1b10", esi_path=excluded)
+
+    plain_esi = ROOT / "samples/fixed-slot-pdos.esi.xml" if plain_esi is None else plain_esi
+    plain = changed_request("ungrouped-layout", lambda data: data.update(
+        identity={"vendor": 0xFF1000, "product": 11, "revision": 1},
+        tx=[{"index": 0x1A00, "sm": 3}, {"index": 0x1A10, "sm": 4}], rx=[],
+    ))
+    plain_result = cli_call(cli, "preview-modular-pdos", plain_esi, "--device", 0,
+                            "--slot", "0=0x400", "--slot", "1=0x400", "--expect-layout", plain)
+    plain_tx = plain_result["expected_layout"]["tx"]
+    assert plain_tx["image_bytes"] == 6
+    assert [pdo["origin"]["kind"] for pdo in plain_tx["pdo_sources"]] == ["module", "module"]
+    assert [sm["index"] for sm in plain_tx["layout"]["sync_managers"]] == [3, 4]
+    assert [entry["bit"] for entry in plain_tx["entries"]] == [0, 16, 17, 24, 40, 41]
+
+    assert sample.read_bytes() == original and manifest.read_bytes() == raw_request
+
+
 def verify_mixed_slot_group_indexes(cli, destination, sample=None):
     """Use the position selected by each mapping, exclusion and entry index."""
     sample = ROOT / "samples/mixed-slot-group-pdos.esi.xml" if sample is None else sample
@@ -6780,6 +6917,9 @@ def main():
     pdo_groups_destination = destination / "pdo-group-alignment"
     pdo_groups_destination.mkdir()
     verify_module_pdo_group_alignment(cli, pdo_groups_destination)
+    expected_destination = destination / "modular-expected-layout"
+    expected_destination.mkdir()
+    verify_expected_modular_layout(cli, expected_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

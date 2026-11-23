@@ -1,5 +1,6 @@
 //! Resolve PDO template indexes for ESI slot placements.
 mod decode;
+mod expected;
 pub mod inventory;
 pub mod profile;
 mod readback;
@@ -78,6 +79,8 @@ pub struct Preview {
     #[serde(skip_serializing_if = "Option::is_none")]
     saved_readback: Option<readback::Comparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    expected_layout: Option<expected::ExpectedLayout>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     decoded_tx: Option<decode::DecodedPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     decoded_rx: Option<decode::DecodedPayload>,
@@ -109,9 +112,23 @@ impl Preview {
             .module_inventory
             .as_ref()
             .and_then(|report| report.reported_serial);
-        self.saved_readback = Some(readback::compare(path, &self.esi, serial, &mut self.slots)?);
+        let readback = readback::compare(path, &self.esi, serial, &mut self.slots)?;
+        if let Some(expected) = &mut self.expected_layout {
+            expected.compare_saved(&readback);
+        }
+        self.saved_readback = Some(readback);
         self.decoded_tx = None;
         self.decoded_rx = None;
+        Ok(())
+    }
+
+    pub fn compose_expected_layout(&mut self, path: &Path) -> Result<()> {
+        let mut expected =
+            expected::compose(path, &self.esi, &self.slots, &self.module_pdo_groups)?;
+        if let Some(readback) = &self.saved_readback {
+            expected.compare_saved(readback);
+        }
+        self.expected_layout = Some(expected);
         Ok(())
     }
 
@@ -178,6 +195,8 @@ struct PdoPreview {
     direction: Direction,
     name: Option<String>,
     declared_sm: Option<u8>,
+    #[serde(skip)]
+    mandatory: bool,
     mapping: Index,
     entries: Vec<Entry>,
     excludes: Vec<Index>,
@@ -440,6 +459,7 @@ fn preview_device(
         slot_counts,
         esi: source.clone(),
         saved_readback: None,
+        expected_layout: None,
         decoded_tx: None,
         decoded_rx: None,
     })
@@ -605,6 +625,7 @@ fn resolve_pdo(
         direction,
         name: label(pdo, "Name").map(str::to_owned),
         declared_sm: default_sm(pdo)?,
+        mandatory: bool_attr(pdo, "Mandatory")?,
         device_level_index_match: source.pdo_catalog.iter().any(|definition| {
             definition.direction == direction && definition.index == mapping.resolved
         }),

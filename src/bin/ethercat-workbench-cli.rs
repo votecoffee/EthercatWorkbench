@@ -300,6 +300,9 @@ enum Command {
     PreviewModularPdos {
         #[command(flatten)]
         selection: ModularSelection,
+        /// Compose the expected offline image from an explicit JSON assignment list.
+        #[arg(long)]
+        expect_layout: Option<PathBuf>,
         /// Compare against PDO readback in a saved run report for the same identity.
         #[arg(long)]
         run_report: Option<PathBuf>,
@@ -1024,6 +1027,7 @@ fn main() -> Result<()> {
         }
         Command::PreviewModularPdos {
             selection,
+            expect_layout,
             run_report,
             tx_hex,
             rx_hex,
@@ -1031,6 +1035,9 @@ fn main() -> Result<()> {
         } => {
             use ethercat_workbench::pdo_catalog::Direction;
             let mut report = selection.preview()?;
+            if let Some(path) = &expect_layout {
+                report.compose_expected_layout(path)?;
+            }
             if let Some(path) = &run_report {
                 report.compare_saved_run(path)?;
             }

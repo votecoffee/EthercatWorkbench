@@ -93,7 +93,7 @@ In the fixture, the final module is at slot position 2 and group position 1. Its
 
 The ESI importer retains group numbers from the device and module `Type` declarations, alongside each group's alignment and padding PDO indexes. The review checks group order within each saved SyncManager assignment. `group_order` summarizes known groups in direction-relative bit order, including sequences that restart at a separate SyncManager. `device_pdos` lists assigned device-level PDO indexes, SyncManagers and bit positions counted in the declared device group. It uses concrete ESI definitions with observed bit positions. An assigned index with competing device and module group membership produces a conflict. [ETG.2000, Tables 23, 57 and 72](https://www.jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
 
-For each declared padding PDO, the review reports assignment, bit position and width. Assigned padding must contain padding entries. Its position must agree with the group order within its SyncManager and its end must meet the declared direction-relative boundary. An absent padding PDO appears as unassigned. Padding calculation remains device-specific. [Beckhoff alignment example](https://infosys.beckhoff.com/content/1033/bk11x0_bk1250/2199024779.html)
+For each declared padding PDO, the review reports assignment, bit position and width. Assigned padding must contain padding entries. Its position must agree with the group order within its SyncManager and its end must meet the declared direction-relative boundary. An absent padding PDO appears as unassigned. The expected-layout preview can calculate padding for explicitly grouped assignments on one SyncManager per direction. [Beckhoff alignment example](https://infosys.beckhoff.com/content/1033/bk11x0_bk1250/2199024779.html)
 
 ```powershell
 .\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario pdo-group-alignment --out .local/pdo-group-modules.json --pdo-report .local/pdo-group-readback.json
@@ -101,6 +101,18 @@ For each declared padding PDO, the review reports assignment, bit position and w
 ```
 
 The sample assigns the second slot's PDOs first because they belong to group 0. Two Tx padding PDOs end at bits 32 and 64. The device-level TxPDO `0x1A40` begins at bit 64, and the device-level RxPDO `0x1640` begins at bit 32. Both belong to group 2. The exported profile keeps both device fields alongside the matched module fields, with the original bit positions and group audit. A reported membership, order or padding conflict blocks export.
+
+## Compose an expected modular PDO image
+
+Add `--expect-layout FILE` to the modular preview. The schema-1 JSON request supplies an exact `identity` and explicit `tx` and `rx` arrays of `{ "index": NUMBER, "sm": NUMBER }` assignments. An empty array requests a zero-byte direction. Use the resolved module indexes from the slot preview and the device-level indexes from the ESI catalog. Order choices by SyncManager and then in assignment order within each SyncManager. Mandatory PDOs use their declared SyncManagers. The preview rejects unknown or repeated indexes, assigned exclusions and selected virtual or oversampled definitions. A chosen slot's definition takes precedence at a shared device/module index. [Bundled assignment request](../samples/module-pdo-expected.json)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-modular-pdos samples/module-pdo-group-alignment.esi.xml --device 0 --slot 0=0x400 --slot 1=0x402 --expect-layout samples/module-pdo-expected.json --out .local/expected-layout.json
+```
+
+Grouped composition requires an explicit group for each selected PDO and a single SyncManager per direction. Keep groups in ascending order. Workbench uses the declared alignment at the end of each represented group. It inserts that group's declared padding PDO only when needed, with zero-index entries up to 255 bits each. The request lists data PDOs. Workbench derives padding PDOs from the ESI. Ungrouped composition supports multiple SyncManagers and rounds each image segment to a whole byte. [ETG.2000, Tables 23 and 57](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf) · [Beckhoff group alignment example](https://infosys.beckhoff.com/content/1033/bk11x0_bk1250/2199024779.html)
+
+The result includes the request SHA-256, computed byte counts, CoE-style descriptors, bit offsets and device, module or padding provenance. The bundled request produces 9 Tx bytes and 6 Rx bytes. The computed Tx padding PDOs start at bits 24 and 56. Add `--run-report` to compare exact SyncManagers, PDO order and every descriptor with saved readback for the same device. `assignments_match` is `null` for a direction with unavailable readback. Payload decoding and offline profile export continue to use the observed layout.
 
 ## Compare module candidates with saved PDO readback
 

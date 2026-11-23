@@ -104,6 +104,15 @@ pub struct Verification {
 }
 
 impl Layout {
+    pub(crate) fn same_assignments(&self, other: &Self) -> bool {
+        self.sync_managers.len() == other.sync_managers.len()
+            && self
+                .sync_managers
+                .iter()
+                .zip(&other.sync_managers)
+                .all(|(left, right)| left.index == right.index && left.pdos == right.pdos)
+    }
+
     pub fn entries(&self) -> Result<(Vec<Entry>, usize)> {
         ensure!(self.sync_managers.len() <= 16, "too many SyncManagers");
         let mut previous = None;
@@ -222,23 +231,10 @@ impl Verification {
 }
 
 fn compare_selection(check: &mut DirectionCheck, actual: Option<&Layout>, expected: Layout) {
-    if let Some(actual) = actual {
-        let same = actual.sync_managers.len() == expected.sync_managers.len()
-            && actual
-                .sync_managers
-                .iter()
-                .zip(&expected.sync_managers)
-                .all(|(a, b)| {
-                    a.index == b.index
-                        && a.pdos.len() == b.pdos.len()
-                        && a.pdos
-                            .iter()
-                            .zip(&b.pdos)
-                            .all(|(a, b)| a.index == b.index && a.entries == b.entries)
-                });
-        if !same {
-            check.errors.push("device SyncManager/PDO assignment order or full descriptors differ from the offline ESI selection".into());
-        }
+    if let Some(actual) = actual
+        && !expected.same_assignments(actual)
+    {
+        check.errors.push("device SyncManager/PDO assignment order or full descriptors differ from the offline ESI selection".into());
     }
     check.expected_selection = Some(expected);
 }
