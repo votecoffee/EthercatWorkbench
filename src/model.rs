@@ -247,6 +247,8 @@ pub struct Profile {
     pub esi: Option<EsiSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modular_decoder: Option<crate::esi::modular_preview::profile::Provenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_decoder: Option<crate::pdo::inspect::profile::Provenance>,
     pub staged_esi_dc_mode: Option<usize>,
     pub esi_pdo_selection: Option<crate::pdo_catalog::Selection>,
     pub sync_unit_cycle_ns: Option<u32>,
@@ -278,6 +280,7 @@ impl Default for Profile {
             expected_identity: None,
             esi: None,
             modular_decoder: None,
+            observed_decoder: None,
             staged_esi_dc_mode: None,
             esi_pdo_selection: None,
             sync_unit_cycle_ns: None,
@@ -304,6 +307,10 @@ impl Profile {
         ensure!(
             self.modular_decoder.is_none(),
             "modular decoder profiles are for offline use"
+        );
+        ensure!(
+            self.observed_decoder.is_none(),
+            "observed PDO decoder profiles are for offline use"
         );
         Ok(())
     }
@@ -370,6 +377,9 @@ impl Profile {
                 self.esi_pdo_selection.is_none(),
                 "a modular decoder cannot carry a device-level PDO selection"
             );
+        }
+        if let Some(decoder) = &self.observed_decoder {
+            decoder.validate(self)?;
         }
         if let Some(selection) = &self.esi_pdo_selection {
             let esi = self

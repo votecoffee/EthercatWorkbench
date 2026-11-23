@@ -908,6 +908,65 @@ def verify_dynamic_pdo_readback(cli, destination, sample=None):
     assert manual["pdo_capabilities"] is None and manual["tx"]["expected_selection_matches"] is None
     assert all(row["esi_hint"] is None for row in manual["tx"]["entries"])
 
+    export = ("export-observed-pdo-profile", profile, report)
+    automatic_path = destination / "observed-esi-types.json"
+    automatic = cli_call(cli, *export, "--out", automatic_path)
+    assert (automatic["tx_bytes"], automatic["rx_bytes"]) == (4, 2)
+    assert [field["bit"] for field in automatic["tx"]] == [0, 24]
+    assert [field["kind"] for field in automatic["tx"]] == ["unsigned", "bool"]
+    assert automatic["observed_decoder"]["tx"]["withheld_bits_at_export"] == [8]
+    assert automatic["observed_decoder"]["tx"]["sync_managers"] == tx["sync_managers"]
+    assert automatic["observed_decoder"]["tx"]["mapping_source"] == "coe"
+    assert automatic["observed_decoder"]["report_sha256"] == hashlib.sha256(report.read_bytes()).hexdigest()
+
+    typed_path = destination / "observed-explicit-types.json"
+    typed_args = ("--tx-kind", "8=signed", "--rx-kind", "0=raw")
+    typed = cli_call(cli, *export, *typed_args, "--out", typed_path)
+    assert cli_call(cli, "validate", typed_path) == typed
+    assert [field["source"] for field in typed["tx"]] == ["esi", "manual", "esi"]
+    assert [field["bit"] for field in typed["tx"]] == [0, 8, 24]
+    assert typed["rx"][0]["source"] == "override"
+    assert typed["observed_decoder"]["tx"]["withheld_bits_at_export"] == []
+    assert typed["esi_pdo_selection"] is None and typed["nic"] == "" and typed["staged_rx_hex"] == ""
+    assert [field["value"] for field in cli_call(cli, "decode", typed_path, "A5 34 F2 01")] == ["165", "-3532", "true"]
+    assert [field["value"] for field in cli_call(cli, "decode", typed_path, "78 56", "--rx")] == ["7856"]
+
+    staged_path = destination / "offline-observed-rx.json"
+    cli_call(cli, "stage-rx", typed_path, "--zero", "--set", "0=EF BE", "--out", staged_path)
+    staged = cli_call(cli, "validate", staged_path)
+    assert bytes.fromhex(staged["staged_rx_hex"]) == b"\xef\xbe"
+    assert staged["observed_decoder"] == typed["observed_decoder"]
+
+    original_export = typed_path.read_bytes()
+    cli_call(cli, *export, *typed_args, "--out", typed_path, success=False)
+    assert typed_path.read_bytes() == original_export
+
+    for name, evidence, arguments, message in (
+        ("missing-rx-layout", absent, (), "saved Rx PDO layout is unavailable"),
+        ("duplicate-choice", report, ("--tx-kind", "8=signed", "--tx-kind", "8=unsigned"), "duplicate Tx kind choice"),
+        ("padding-choice", report, ("--tx-kind", "25=raw"), "does not identify an observed non-padding entry"),
+        ("wrong-kind-width", report, ("--tx-kind", "8=f32"), "invalid width or alignment"),
+        ("unaligned-raw", shifted, ("--tx-kind", "9=raw"), "invalid width or alignment"),
+    ):
+        denied = destination / (name + "-profile.json")
+        error = cli_call(cli, "export-observed-pdo-profile", profile, evidence, *arguments, "--out", denied, success=False)
+        assert message in error and not denied.exists(), error
+
+    empty_rx = variant("rx-empty", lambda data: layouts(data)["rx"].update(sync_managers=[]))
+    zero_rx = cli_call(cli, "export-observed-pdo-profile", profile, empty_rx,
+                      "--out", destination / "zero-rx-observed.json")
+    assert zero_rx["rx_bytes"] == 0 and zero_rx["rx"] == []
+
+    stale_geometry = destination / "edited-observed-bit.json"
+    edited = json.loads(typed_path.read_bytes())
+    edited["tx"][1]["bit"] = 9
+    stale_geometry.write_text(json.dumps(edited), encoding="utf-8")
+    assert "differs from saved Tx PDO geometry" in cli_call(cli, "validate", stale_geometry, success=False)
+
+    blocked = destination / "blocked-observed-safeop.csv"
+    error = cli_call(cli, "run", typed_path, "--backend", "safeop", "--csv", blocked, success=False)
+    assert "observed PDO decoder profiles are for offline use" in error and not blocked.exists(), error
+
 
 def verify_modular_readback(cli, destination, sample=None, report=None):
     """Compare descriptor content and placement separately against saved setup evidence."""

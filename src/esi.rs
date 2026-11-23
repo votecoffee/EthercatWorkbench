@@ -37,6 +37,7 @@ impl Device {
         candidate.expected_identity = Some(self.source.identity.clone());
         candidate.esi = Some(self.source.clone());
         candidate.modular_decoder = None;
+        candidate.observed_decoder = None;
         candidate.staged_esi_dc_mode = None;
         candidate.sync_unit_cycle_ns = None;
         crate::pdo_catalog::apply(&mut candidate, selection)?;

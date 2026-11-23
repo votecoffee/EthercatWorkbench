@@ -357,6 +357,28 @@ impl App {
                 ui.small(note);
             }
         }
+        if let Some(decoder) = &self.profile.observed_decoder {
+            ui.collapsing("Saved PDO readback · offline decoder", |ui| {
+                ui.label(format!(
+                    "{} · {}",
+                    decoder.report_file_name, decoder.reported_backend
+                ));
+                ui.small(format!("Saved run SHA-256 {}", decoder.report_sha256));
+                ui.label(format!(
+                    "Saved image lengths · Tx {} / Rx {} bytes",
+                    decoder.tx.image_bytes, decoder.rx.image_bytes
+                ));
+                if !decoder.tx.withheld_bits_at_export.is_empty()
+                    || !decoder.rx.withheld_bits_at_export.is_empty()
+                {
+                    ui.label(format!(
+                        "Withheld at export · Tx {} / Rx {} entries",
+                        decoder.tx.withheld_bits_at_export.len(),
+                        decoder.rx.withheld_bits_at_export.len()
+                    ));
+                }
+            });
+        }
         if let Some(source) = &self.profile.esi {
             ui.small(format!(
                 "ESI baseline · {} · {} · SHA-256 {}",

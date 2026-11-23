@@ -367,6 +367,19 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Save an offline decoder with bit positions from a matching saved PDO run.
+    ExportObservedPdoProfile {
+        profile: PathBuf,
+        run_report: PathBuf,
+        /// Override a Tx entry type with BIT=KIND.
+        #[arg(long, value_parser = ethercat_workbench::pdo::inspect::profile::choice)]
+        tx_kind: Vec<ethercat_workbench::pdo::inspect::profile::Choice>,
+        /// Override an Rx entry type with BIT=KIND.
+        #[arg(long, value_parser = ethercat_workbench::pdo::inspect::profile::choice)]
+        rx_kind: Vec<ethercat_workbench::pdo::inspect::profile::Choice>,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Compare saved timing trials with matching settings except for their scheduler. No bus operations.
     CompareRuns {
         #[arg(required_unless_present_any = ["trial_set", "bundle"], num_args = 2..=32)]
@@ -1172,6 +1185,23 @@ fn main() -> Result<()> {
                 rx.as_deref(),
             )?;
             inspection_export(&report, out.as_deref())
+        }
+        Command::ExportObservedPdoProfile {
+            profile,
+            run_report,
+            tx_kind,
+            rx_kind,
+            out,
+        } => {
+            let baseline = Profile::load(&profile)?;
+            let exported = ethercat_workbench::pdo::inspect::profile::build(
+                &baseline,
+                &run_report,
+                &tx_kind,
+                &rx_kind,
+            )?;
+            exported.save(&out)?;
+            output(&exported)
         }
         Command::StageRx {
             profile,

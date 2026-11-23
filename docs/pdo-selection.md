@@ -143,6 +143,19 @@ Use `--tx-hex` and `--rx-hex` to supply optional complete images at their observ
 
 The sample shows a 4-byte observed Tx image against the ESI's 3-byte Tx selection. Rx still matches. The first Tx value carries the diagnostic-byte hint even though its PDO index moved, and object `0x6042` appears with its raw value and no ESI hint. [Authored dynamic PDO ESI](../samples/dynamic-pdo.esi.xml)
 
+### Export an offline decoder from observed PDOs
+
+Use `export-observed-pdo-profile PROFILE RUN_REPORT --out NEW.json` to create a profile using the observed PDO descriptors, bit offsets and directional lengths. The export requires known lengths in both directions, including an explicitly empty layout. It uses matching ESI hints for supported scalar types. Padding and entries without a supported type are omitted from the typed fields. The profile retains the saved descriptors and offsets withheld at export.
+
+Use repeatable `--tx-kind BIT=KIND` and `--rx-kind BIT=KIND` options to supply explicit types at observed entry starts. Supported kinds are `bool`, `unsigned`, `signed`, `f32`, `f64` and `raw`. Use decimal direction-relative bit offsets from `inspect-pdo-readback`. The export checks each choice against the observed entry's width and alignment. Explicit choices that replace a recognized ESI type are recorded as overrides. Explicit choices for unknown entries are recorded as manual.
+
+```powershell
+.\ethercat-workbench-cli.exe export-observed-pdo-profile .local/dynamic-profile.json .local/dynamic-readback.json --tx-kind 8=signed --rx-kind 0=raw --out .local/dynamic-decoder.json
+.\ethercat-workbench-cli.exe decode .local/dynamic-decoder.json 'A5 34 F2 01'
+```
+
+The sample decodes the explicitly typed object at Tx bit 8 as −3532. The profile keeps the source report's SHA-256, mapping source and assignments separately from its ESI baseline. Reload validates identity, image lengths and field geometry against the retained descriptors. Load it in **Profiles…** to use **Inputs → Offline decoder…** or offline Rx staging. **Device → Saved PDO readback** shows its provenance. These decoder profiles have an offline scope.
+
 ## Compare module candidates with saved PDO readback
 
 Add `--run-report` to the fixed-slot preview. It checks the saved report for exactly one device with the selected ESI identity, then compares each resolved PDO with the reported assignment in the same direction. The report records the input file's SHA-256 and reported backend. The bundled readback example is authored for the fixed-slot sample.

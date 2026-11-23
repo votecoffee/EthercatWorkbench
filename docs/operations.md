@@ -73,7 +73,7 @@ For manual setup, edit/save a profile through **Device**, **Mappings** and **Pro
 
 Profiles use schema 1 with defaults for omitted settings and validation on load/save. Saves create new paths, use UTF-8 and flush. Preserve the source profile when preparing variants. Typed staging has its own preview/apply guard; [output staging](output-staging.md) explains ranges, overlaps, zero initialization and provenance.
 
-Use `inspect-pdo-readback PROFILE RUN_REPORT` to review the saved PDO layout for the profile's expected device. Add `--tx-hex` or `--rx-hex` to inspect raw values using observed entry positions. [Saved dynamic PDO readback](pdo-selection.md#inspect-saved-dynamic-pdo-readback)
+Use `inspect-pdo-readback PROFILE RUN_REPORT` to review the saved PDO layout for the profile's expected device. Add `--tx-hex` or `--rx-hex` to inspect raw values using observed entry positions. Use `export-observed-pdo-profile` to save a new offline decoder with supported ESI types or explicit `--tx-kind` and `--rx-kind` choices. [Saved dynamic PDO readback](pdo-selection.md#inspect-saved-dynamic-pdo-readback)
 
 ## Decode and stage offline
 

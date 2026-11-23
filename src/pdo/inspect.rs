@@ -8,6 +8,8 @@ use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{collections::BTreeMap, path::Path};
 
+pub mod profile;
+
 #[derive(Debug, Serialize)]
 pub struct Inspection<'a> {
     schema: u32,

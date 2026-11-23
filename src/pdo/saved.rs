@@ -156,15 +156,20 @@ impl Run {
         if let Some(readback) = &self.readback
             && let Some((tx, rx)) = readback.tx.as_ref().zip(readback.rx.as_ref())
         {
-            ensure!(
-                !tx.layout.sync_managers.iter().any(|tx_sm| rx
-                    .layout
-                    .sync_managers
-                    .iter()
-                    .any(|rx_sm| tx_sm.index == rx_sm.index)),
-                "saved Tx and Rx PDO layouts share a SyncManager"
-            );
+            validate_sync_manager_separation(&tx.layout.sync_managers, &rx.layout.sync_managers)?;
         }
         Ok(())
     }
+}
+
+pub(crate) fn validate_sync_manager_separation(
+    tx: &[SyncManager],
+    rx: &[SyncManager],
+) -> Result<()> {
+    ensure!(
+        !tx.iter()
+            .any(|tx_sm| rx.iter().any(|rx_sm| tx_sm.index == rx_sm.index)),
+        "saved Tx and Rx PDO layouts share a SyncManager"
+    );
+    Ok(())
 }
