@@ -1766,7 +1766,6 @@ def verify_expected_modular_layout(cli, destination, sample=None, manifest=None,
         ("reserved-pdo", lambda data: data["tx"].insert(0, {"index": 0x1B10, "sm": 3}), "padding PDO 0x1b10 is calculated"),
         ("unknown-rx", lambda data: data["rx"].append({"index": 0x1641, "sm": 2}), "unknown in this direction"),
         ("shared-sm", lambda data: data["rx"][0].update(sm=3), "share a SyncManager"),
-        ("split-group-sm", lambda data: data["tx"][-1].update(sm=4), "one SyncManager per direction"),
         ("reverse-groups", lambda data: data["tx"].reverse(), "out of PDO group order"),
     ]
     for name, mutate, error in malformed:
@@ -1799,6 +1798,8 @@ def verify_expected_modular_layout(cli, destination, sample=None, manifest=None,
     rejected("mandatory", "mandatory PDO 0x1a40 is missing", empty, mandatory)
     relocated = changed_request("mandatory-relocated", lambda data: data["tx"][-1].update(sm=4))
     rejected("mandatory-relocated", "mandatory PDO 0x1a40 requires its declared SyncManager", relocated, mandatory)
+    group_split = changed_esi("shared-group", b' ModulePdoGroup="2"', b' ModulePdoGroup="1"')
+    rejected("shared-group", "PDO group 1 spans SM3 and SM4", relocated, group_split)
     excluded = changed_esi("excluded-padding", b'<Name>Base status</Name>\n',
                            b'<Name>Base status</Name>\n          <Exclude>#x1B10</Exclude>\n')
     rejected("excluded-padding", "PDO 0x1a40 excludes assigned PDO 0x1b10", esi_path=excluded)
@@ -1817,6 +1818,86 @@ def verify_expected_modular_layout(cli, destination, sample=None, manifest=None,
     assert [entry["bit"] for entry in plain_tx["entries"]] == [0, 16, 17, 24, 40, 41]
 
     assert sample.read_bytes() == original and manifest.read_bytes() == raw_request
+
+
+def verify_module_group_multiple_sync_managers(cli, destination, sample=None, manifest=None):
+    """Compare grouped assignments and padding across two SyncManagers in each direction."""
+    sample = ROOT / "samples/module-pdo-group-alignment.esi.xml" if sample is None else sample
+    manifest = ROOT / "samples/module-pdo-expected-multi-sm.json" if manifest is None else manifest
+    report = destination / "pdo-report.json"
+    inventory = destination / "inventory.json"
+    captured = cli_call(cli, "read-virtual-module-inventory", "--scenario", "pdo-group-multiple-sync-managers",
+                        "--pdo-report", report, "--out", inventory)
+    assert captured["preop_al"] == [2, 0] and captured["stopped_al"] == [1, 0]
+    assert captured["audit"]["state_requests"] == [1, 2, 1]
+    assert captured["audit"]["coe_uploads"] == 70 and captured["audit"]["mailbox_counter_errors"] == 0
+    assert not any(captured["audit"][key] for key in (
+        "coe_downloads", "op_requests", "logical_reads", "logical_writes", "physical_output_writes",
+    ))
+    assert captured["inventory"]["serial"] == 14792
+    assert captured["inventory"]["identity"] == {"vendor": 0xFF1000, "product": 17, "revision": 1}
+    assert captured["pdo_report"] == json.loads(report.read_bytes())
+    observed = captured["pdo_report"]["pdo_verification"]["readback"]
+
+    selection = (sample, "--device", 0, "--module-inventory", inventory)
+    evidence = (*selection, "--run-report", report)
+    tx_payload, rx_payload = "CC CD AB FE 34 12 01 A5", "34 12 02 80 EF BE 00 00"
+    reviewed = cli_call(cli, "preview-modular-pdos", *evidence, "--expect-layout", manifest,
+                        "--tx-hex", tx_payload, "--rx-hex", rx_payload)
+    expected = reviewed["expected_layout"]
+    assert expected["sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    for direction, indexes, lengths, assignments, pad_index, pad_bit, pad_width, values, offsets in (
+        ("tx", [3, 4], [1, 7], [[0x1A40], [0x1A10, 0x1A00, 0x1B11]], 0x1B11, 56, 8,
+         ["204", "43981", "false", "4660", "true"], [0, 8, 24, 32, 48]),
+        ("rx", [2, 5], [2, 6], [[0x1640], [0x1610, 0x1600, 0x1711]], 0x1711, 48, 16,
+         ["4660", "32770", "48879"], [0, 16, 32]),
+    ):
+        observed_managers = observed[direction]["sync_managers"]
+        assert [sm["index"] for sm in observed_managers] == indexes
+        assert [sm["configured_bytes"] for sm in observed_managers] == lengths
+        assert [[pdo["index"] for pdo in sm["pdos"]] for sm in observed_managers] == assignments
+        assert expected[direction]["image_bytes"] == 8
+        assert expected["saved_comparison"][direction] == {
+            "observed_bytes": 8, "assignments_match": True, "unavailable": None,
+        }
+        assert [pdo for pdo in expected[direction]["pdo_sources"] if pdo["origin"]["kind"] == "group_padding"] == [{
+            "pdo_index": pad_index, "sync_manager": indexes[1], "declared_sm": None, "group": 1,
+            "origin": {"kind": "group_padding", "alignment_bytes": 4},
+        }]
+        padding, = [entry for entry in expected[direction]["entries"] if entry["pdo_index"] == pad_index]
+        assert (padding["sync_manager"], padding["bit"], padding["width"]) == (indexes[1], pad_bit, pad_width)
+        groups = reviewed["saved_readback"][direction]["module_pdo_groups"]
+        assert groups["group_order"] == [2, 0, 1] and groups["errors"] == []
+        assert [pad["pdo_index"] for pad in groups["padding"] if pad["assigned"]] == [pad_index]
+        fields = reviewed["decoded_" + direction]["fields"]
+        assert [field["bit"] for field in fields] == offsets
+        assert [field["value"] for field in fields] == values
+
+    target = destination / "modular-decoder.json"
+    profile = cli_call(cli, "export-modular-profile", *evidence, "--out", target)
+    assert cli_call(cli, "validate", target) == profile
+    assert (profile["tx_bytes"], profile["rx_bytes"]) == (8, 8)
+
+    altered = json.loads(report.read_bytes())
+    altered["backend"] = "authored_saved_variant"
+    tx_managers = altered["pdo_verification"]["readback"]["tx"]["sync_managers"]
+    pad = tx_managers[1]["pdos"].pop()
+    tx_managers[1]["configured_bytes"] -= 1
+    tx_managers.append({"index": 6, "configured_bytes": 1, "pdos": [pad]})
+    moved = destination / "padding-on-empty-manager.json"
+    moved.write_text(json.dumps(altered), encoding="utf-8")
+    comparison = cli_call(cli, "preview-modular-pdos", *selection, "--expect-layout", manifest, "--run-report", moved)
+    moved_tx = comparison["saved_readback"]["tx"]["module_pdo_groups"]
+    moved_pad = next(pad for pad in moved_tx["padding"] if pad["assigned"])
+    assert (moved_pad["bit"], moved_pad["width_bits"]) == (56, 8)
+    issue = "padding PDO 0x1b11 is in SM6 without any known member of group 1"
+    assert moved_tx["errors"] == [issue]
+    assert comparison["expected_layout"]["saved_comparison"]["tx"] == {
+        "observed_bytes": 8, "assignments_match": False, "unavailable": None,
+    }
+    rejected = destination / "rejected-padding-shift.json"
+    message = cli_call(cli, "export-modular-profile", *selection, "--run-report", moved, "--out", rejected, success=False)
+    assert issue in message and not rejected.exists(), message
 
 
 def verify_mixed_slot_group_indexes(cli, destination, sample=None):
@@ -6920,6 +7001,9 @@ def main():
     expected_destination = destination / "modular-expected-layout"
     expected_destination.mkdir()
     verify_expected_modular_layout(cli, expected_destination)
+    multi_sm_destination = destination / "modular-expected-multi-sm"
+    multi_sm_destination.mkdir()
+    verify_module_group_multiple_sync_managers(cli, multi_sm_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

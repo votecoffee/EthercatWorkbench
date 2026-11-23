@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.96.0** composes expected modular Tx and Rx images from explicit assignments. It derives ESI group padding for one SyncManager per grouped direction and compares the complete assignment and descriptors with saved readback. The virtual fixture matches both directions and exposes a same-size descriptor change. Physical module collection and device-specific grouped alignment remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Expected modular layout](pdo-selection.md#compose-an-expected-modular-pdo-image) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.97.0** composes expected modular layouts across multiple SyncManagers when each PDO group stays on one SyncManager per direction. The virtual PREOP fixture matches two SyncManagers in each direction. A same-size padding move to a channel without the group's PDOs fails the saved group audit. Physical module collection and support for groups split across channels remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Expected modular layout](pdo-selection.md#compose-an-expected-modular-pdo-image) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

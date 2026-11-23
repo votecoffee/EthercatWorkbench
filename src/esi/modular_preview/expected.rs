@@ -294,19 +294,24 @@ fn compose_direction(
         || chosen
             .iter()
             .any(|(_, candidate)| candidate.group.is_some());
-    if grouped && let Some((first, _)) = chosen.first() {
-        ensure!(
-            chosen
-                .iter()
-                .all(|(assignment, candidate)| assignment.sm == first.sm
-                    && candidate.group.is_some()),
-            "grouped image composition requires explicit group membership and one SyncManager per direction"
-        );
+    if grouped {
+        let mut group_managers = BTreeMap::new();
+        for (assignment, candidate) in &chosen {
+            let group = candidate
+                .group
+                .context("grouped image composition requires explicit group membership")?;
+            let manager = *group_managers.entry(group).or_insert(assignment.sm);
+            ensure!(
+                manager == assignment.sm,
+                "PDO group {group} spans SM{manager} and SM{} in this direction",
+                assignment.sm
+            );
+        }
         ensure!(
             chosen
                 .windows(2)
-                .all(|pair| pair[0].1.group <= pair[1].1.group),
-            "expected assignments are out of PDO group order"
+                .all(|pair| pair[0].0.sm != pair[1].0.sm || pair[0].1.group <= pair[1].1.group),
+            "expected assignments are out of PDO group order within a SyncManager"
         );
     }
 
@@ -317,7 +322,7 @@ fn compose_direction(
     let mut pdo_sources = Vec::new();
     let mut exclusions = Vec::new();
     let mut chosen = chosen.into_iter().peekable();
-    let mut used_bits = 0usize;
+    let mut direction_bits = 0usize;
     while let Some((assignment, candidate)) = chosen.next() {
         let index = assignment.index;
         let sm = assignment.sm;
@@ -326,7 +331,8 @@ fn compose_direction(
             .last()
             .is_none_or(|manager| manager.index != sm)
         {
-            used_bits = 0;
+            // The PDO layout rounds up at each SyncManager boundary.
+            direction_bits = direction_bits.div_ceil(8) * 8;
             layout.sync_managers.push(SyncManager {
                 index: sm,
                 configured_bytes: None,
@@ -344,12 +350,12 @@ fn compose_direction(
             !entries.is_empty(),
             "expected PDO {index:#06x} has no entries"
         );
-        used_bits += entries
+        direction_bits += entries
             .iter()
             .map(|entry| (entry & 0xff) as usize)
             .sum::<usize>();
         ensure!(
-            used_bits <= MAX_PAYLOAD * 8,
+            direction_bits <= MAX_PAYLOAD * 8,
             "expected PDO image exceeds the payload limit"
         );
         manager.pdos.push(Pdo { index, entries });
@@ -382,7 +388,7 @@ fn compose_direction(
                     format!("PDO group {number} needs a nonzero alignment within the payload limit")
                 })?;
             let alignment_bits = alignment_bytes as usize * 8;
-            let padding = (alignment_bits - used_bits % alignment_bits) % alignment_bits;
+            let padding = (alignment_bits - direction_bits % alignment_bits) % alignment_bits;
             if padding == 0 {
                 continue;
             }
@@ -392,7 +398,7 @@ fn compose_direction(
             if !padding.is_multiple_of(255) {
                 entries.push((padding % 255) as u32);
             }
-            used_bits += padding;
+            direction_bits += padding;
             manager.pdos.push(Pdo { index, entries });
             pdo_sources.push(PdoSource {
                 pdo_index: index,

@@ -84,6 +84,7 @@ pub enum ModuleInventoryCase {
     VariableSlotCounts,
     MixedSlotGroupIndexes,
     PdoGroupAlignment,
+    PdoGroupMultipleSyncManagers,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -433,8 +434,13 @@ impl VirtualWire {
             ModuleInventoryCase::VariableSlotCounts => (15, 14_789),
             ModuleInventoryCase::MixedSlotGroupIndexes => (16, 14_790),
             ModuleInventoryCase::PdoGroupAlignment => (17, 14_791),
+            ModuleInventoryCase::PdoGroupMultipleSyncManagers => (17, 14_792),
             _ => (11, 14_785),
         };
+        if case == ModuleInventoryCase::PdoGroupMultipleSyncManagers {
+            esc.eeprom = eeprom(VirtualModel::Coe, VirtualFault::None, true);
+            esc.registers[5] = 6;
+        }
         esc.eeprom[0x14..0x18].copy_from_slice(&product.to_le_bytes());
         esc.eeprom[0x1c..0x20].copy_from_slice(&serial.to_le_bytes());
         esc.module_inventory = Some(case);
@@ -620,7 +626,7 @@ impl VirtualWire {
             GroupMappingScenario::PositionWkc => esc.scan_case = ScanCase::CoreWkc,
             GroupMappingScenario::CoePdoOrder => self.devices[0].fault = VirtualFault::PdoOrder,
             GroupMappingScenario::SiiPdoOrder => {
-                esc.eeprom = eeprom(esc.model, VirtualFault::PdoOrder);
+                esc.eeprom = eeprom(esc.model, VirtualFault::PdoOrder, false);
             }
         }
     }
@@ -728,7 +734,7 @@ impl VirtualEsc {
             pdo_readback: false,
             module_inventory: None,
             registers,
-            eeprom: eeprom(model, fault),
+            eeprom: eeprom(model, fault, false),
             mailbox: None,
             stats: VirtualStats {
                 model,
@@ -1586,13 +1592,13 @@ impl VirtualEsc {
                 ) => Some((0x400, 4)),
                 (_, 0, _) => Some((2, 1)),
                 (DETECTED, 2, DetectedDiffers) => Some((0x401, 4)),
-                (_, 2, PdoGroupAlignment) => Some((0x402, 4)),
+                (_, 2, PdoGroupAlignment | PdoGroupMultipleSyncManagers) => Some((0x402, 4)),
                 (_, 1 | 2, _) => Some((0x400, 4)),
                 _ => None,
             };
         }
         if let Some(case) = self.module_inventory
-            && matches!(index, 0x1c12 | 0x1c13 | 0x1600..=0x17ff | 0x1a00..=0x1bff)
+            && matches!(index, 0x1c12..=0x1c15 | 0x1600..=0x17ff | 0x1a00..=0x1bff)
         {
             return modular_pdo_object(index, sub, case);
         }
@@ -1683,7 +1689,8 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
     } else {
         0x6841_0010
     };
-    let alignment = case == ModuleInventoryCase::PdoGroupAlignment;
+    let multiple_sms = case == ModuleInventoryCase::PdoGroupMultipleSyncManagers;
+    let alignment = multiple_sms || case == ModuleInventoryCase::PdoGroupAlignment;
     let mixed = case == ModuleInventoryCase::MixedSlotGroupIndexes;
     let vacant = mixed || case == ModuleInventoryCase::VacantMiddleSlot;
     let grouped = case == ModuleInventoryCase::GroupedFixedSlots;
@@ -1692,6 +1699,11 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
         ModuleInventoryCase::RepeatedFixedSlots | ModuleInventoryCase::VariableSlotCounts
     );
     let (width, entries): (u8, &[u32]) = match index {
+        0x1c12 if multiple_sms => (2, &[0x1640]),
+        0x1c13 if multiple_sms => (2, &[0x1a40]),
+        0x1c14 if multiple_sms => (2, &[0x1a10, 0x1a00, 0x1b11]),
+        0x1c15 if multiple_sms => (2, &[0x1610, 0x1600, 0x1711]),
+        0x1711 if multiple_sms => (4, &[16]),
         0x1c12 if alignment => (2, &[0x1610, 0x1600, 0x1640]),
         0x1c13 if alignment => (2, &[0x1a10, 0x1b10, 0x1a00, 0x1b11, 0x1a40]),
         0x1b10 | 0x1b11 if alignment => (4, &[8]),
@@ -1723,7 +1735,7 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
     Some((*entries.get(usize::from(sub - 1))?, width))
 }
 
-fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
+fn eeprom(model: VirtualModel, fault: VirtualFault, modular_multiple_sms: bool) -> Vec<u8> {
     let mut bytes = vec![0u8; 512];
     let identity = model.identity();
     for (offset, value) in [
@@ -1748,7 +1760,7 @@ fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
     }
     let mut categories = Vec::new();
     categories.extend_from_slice(&[40, 0, 1, 0, 2, 1]);
-    let channels = match model {
+    let mut channels = match model {
         VirtualModel::Coe
         | VirtualModel::CoeDc
         | VirtualModel::CoeNormal
@@ -1760,6 +1772,13 @@ fn eeprom(model: VirtualModel, fault: VirtualFault) -> Vec<u8> {
         ],
         VirtualModel::Sii => vec![(OUTPUTS as u16, 2, 0x04, 3), (INPUTS as u16, 8, 0x00, 4)],
     };
+    if modular_multiple_sms {
+        channels[3].1 = 1;
+        channels.extend([
+            (INPUTS as u16 + 1, 7, 0x00, 4),
+            (OUTPUTS as u16 + 2, 6, 0x04, 3),
+        ]);
+    }
     categories.extend_from_slice(&41u16.to_le_bytes());
     categories.extend_from_slice(&((channels.len() * 4) as u16).to_le_bytes());
     for (address, length, control, usage) in channels {

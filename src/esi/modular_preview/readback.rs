@@ -481,6 +481,19 @@ impl<'a> CheckedDirection<'a> {
                 errors.push(format!("padding PDO {index:#06x} contains a mapped object"));
             }
             if let Some(pdo) = assignment
+                && members
+                    .iter()
+                    .any(|&(_, _, member_group)| member_group as usize == group)
+                && !members.iter().any(|&(_, sm, member_group)| {
+                    sm == pdo.sync_manager && member_group as usize == group
+                })
+            {
+                errors.push(format!(
+                    "padding PDO {index:#06x} is in SM{} without any known member of group {group}",
+                    pdo.sync_manager
+                ));
+            }
+            if let Some(pdo) = assignment
                 && let Some((bit, width_bits)) = bit.zip(width_bits)
             {
                 if members

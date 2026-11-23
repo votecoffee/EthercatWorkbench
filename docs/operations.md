@@ -67,7 +67,7 @@ Use `--scenario mixed-slot-group-indexes` with `samples/mixed-slot-group-pdos.es
 
 Use `--scenario pdo-group-alignment` with `samples/module-pdo-group-alignment.esi.xml` to review device and module PDO groups and observed padding boundaries. Profile export rejects a group order, membership or padding conflict. [PDO group order and padding](pdo-selection.md#review-module-pdo-groups-and-padding)
 
-Use `preview-modular-pdos --expect-layout FILE` with an explicit ordered assignment request to calculate an expected process image. With `--run-report` it compares the complete expected assignment and descriptors against saved readback. [Expected modular layout](pdo-selection.md#compose-an-expected-modular-pdo-image)
+Use `preview-modular-pdos --expect-layout FILE` with an explicit ordered assignment request to calculate an expected process image. With `--run-report` it compares the complete expected assignment and descriptors against saved readback. The `pdo-group-multiple-sync-managers` scenario uses the same modular ESI and `samples/module-pdo-expected-multi-sm.json` to rehearse separate group assignments on two SyncManagers per direction. [Expected modular layout](pdo-selection.md#compose-an-expected-modular-pdo-image)
 
 For manual setup, edit/save a profile through **Device**, **Mappings** and **Profiles…**, or use a new JSON profile based on an appropriate sample. Configure exact expected identity, Tx/Rx lengths, bit offsets/widths, numeric/raw types and transformations. `Field.source` identifies the definition as manual, ESI or override. Live PDO verification is separate discovered evidence. Staged output values are manual offline entries even when their field definitions came from ESI.
 
