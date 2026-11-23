@@ -110,7 +110,7 @@ Add `--expect-layout FILE` to the modular preview. The schema-1 JSON request sup
 .\ethercat-workbench-cli.exe preview-modular-pdos samples/module-pdo-group-alignment.esi.xml --device 0 --slot 0=0x400 --slot 1=0x402 --expect-layout samples/module-pdo-expected.json --out .local/expected-layout.json
 ```
 
-Grouped composition requires an explicit group for each selected PDO. In each direction, assign all PDOs of a group to one SyncManager. Keep groups in ascending order within each SyncManager. At the end of a group, Workbench applies the ESI alignment to the offset from the start of the direction image and inserts the declared padding PDO on that group's SyncManager when needed. Padding uses zero-index entries up to 255 bits each. Each SyncManager segment rounds to a whole byte before the next starts. [ETG.2000, Tables 23 and 57](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf) · [Beckhoff group alignment example](https://infosys.beckhoff.com/content/1033/bk11x0_bk1250/2199024779.html)
+Grouped composition requires an explicit group for each selected PDO. Keep groups in ascending order within each SyncManager. When a whole group uses one SyncManager, Workbench applies the ESI alignment to the direction-relative offset at the end of the group and inserts its declared padding PDO when needed. Padding uses zero-index entries up to 255 bits each. Each SyncManager segment rounds to a whole byte before the next starts. [ETG.2000, Tables 23 and 57](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf) · [Beckhoff group alignment example](https://infosys.beckhoff.com/content/1033/bk11x0_bk1250/2199024779.html)
 
 The result includes the request SHA-256, computed byte counts, CoE-style descriptors, bit offsets and device, module or padding provenance. The bundled request produces 9 Tx bytes and 6 Rx bytes. The computed Tx padding PDOs start at bits 24 and 56. Add `--run-report` to compare exact SyncManagers, PDO order and every descriptor with saved readback for the same device. `assignments_match` is `null` for a direction with unavailable readback. Payload decoding and offline profile export continue to use the observed layout.
 
@@ -120,6 +120,12 @@ The alternate virtual scenario places the device's group 2 first on its own Sync
 .\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario pdo-group-multiple-sync-managers --out .local/grouped-multi-sm-inventory.json --pdo-report .local/grouped-multi-sm-readback.json
 .\ethercat-workbench-cli.exe preview-modular-pdos samples/module-pdo-group-alignment.esi.xml --device 0 --module-inventory .local/grouped-multi-sm-inventory.json --expect-layout samples/module-pdo-expected-multi-sm.json --run-report .local/grouped-multi-sm-readback.json --out .local/grouped-multi-sm-review.json
 ```
+
+### Specify padding for a split group
+
+When a group uses multiple SyncManagers in one direction, supply one choice for the group in `tx_split_groups` or `rx_split_groups`. Use `{ "group": 1, "kind": "assigned", "sm": 4, "widths": [8] }` for one 8-bit padding entry on SM4. Use `{ "group": 1, "kind": "unassigned" }` for explicit absence. The assigned SyncManager must contain a PDO from the group. Workbench uses the padding index declared in the ESI and appends the specified entries after that group's last PDO on the selected SyncManager. Their end must meet the group's alignment in the direction image. The `split_groups` receipt records these choices alongside the expected descriptors.
+
+Use `samples/module-pdo-split-group.esi.xml` and `samples/module-pdo-expected-split.json` with the same preview workflow. Supply slots `0=0x400` and `1=0x402`, or use the saved inventory from the `pdo-group-split-across-sync-managers` virtual scenario. Its PDO report supplies `--run-report` evidence. The sample places the Tx padding on SM4 and the Rx padding on SM5. [Split-group request](../samples/module-pdo-expected-split.json) · [ETG.2000, Table 57](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
 
 ## Compare module candidates with saved PDO readback
 

@@ -1799,7 +1799,7 @@ def verify_expected_modular_layout(cli, destination, sample=None, manifest=None,
     relocated = changed_request("mandatory-relocated", lambda data: data["tx"][-1].update(sm=4))
     rejected("mandatory-relocated", "mandatory PDO 0x1a40 requires its declared SyncManager", relocated, mandatory)
     group_split = changed_esi("shared-group", b' ModulePdoGroup="2"', b' ModulePdoGroup="1"')
-    rejected("shared-group", "PDO group 1 spans SM3 and SM4", relocated, group_split)
+    rejected("shared-group", "requires an explicit split-group padding choice", relocated, group_split)
     excluded = changed_esi("excluded-padding", b'<Name>Base status</Name>\n',
                            b'<Name>Base status</Name>\n          <Exclude>#x1B10</Exclude>\n')
     rejected("excluded-padding", "PDO 0x1a40 excludes assigned PDO 0x1b10", esi_path=excluded)
@@ -1898,6 +1898,108 @@ def verify_module_group_multiple_sync_managers(cli, destination, sample=None, ma
     rejected = destination / "rejected-padding-shift.json"
     message = cli_call(cli, "export-modular-profile", *selection, "--run-report", moved, "--out", rejected, success=False)
     assert issue in message and not rejected.exists(), message
+
+
+def verify_split_module_group_padding(cli, destination, sample=None, manifest=None):
+    """Bind split group padding to explicit channels and compare exact saved descriptors."""
+    sample = ROOT / "samples/module-pdo-split-group.esi.xml" if sample is None else sample
+    manifest = ROOT / "samples/module-pdo-expected-split.json" if manifest is None else manifest
+    original = manifest.read_bytes()
+    request = json.loads(original)
+    report = destination / "pdo-report.json"
+    inventory = destination / "inventory.json"
+    captured = cli_call(cli, "read-virtual-module-inventory", "--scenario", "pdo-group-split-across-sync-managers",
+                        "--pdo-report", report, "--out", inventory)
+    assert captured["inventory"]["identity"] == request["identity"]
+    assert captured["inventory"]["serial"] == 14793
+    assert captured["audit"]["coe_uploads"] == 70 and captured["audit"]["mailbox_counter_errors"] == 0
+    assert captured["audit"]["state_requests"] == [1, 2, 1]
+    assert not any(captured["audit"][key] for key in (
+        "coe_downloads", "op_requests", "logical_reads", "logical_writes", "physical_output_writes",
+    ))
+
+    selection = ("preview-modular-pdos", sample, "--device", 0, "--module-inventory", inventory)
+    reviewed = cli_call(cli, *selection, "--expect-layout", manifest, "--run-report", report,
+                        "--tx-hex", "CC CD AB FE 34 12 01 A5", "--rx-hex", "34 12 02 80 EF BE 00 00")
+    expected = reviewed["expected_layout"]
+    assert expected["sha256"] == hashlib.sha256(original).hexdigest()
+    for direction, pad_index, sm, bit, width, values in (
+        ("tx", 0x1B11, 4, 56, 8, ["204", "43981", "false", "4660", "true"]),
+        ("rx", 0x1711, 5, 48, 16, ["4660", "32770", "48879"]),
+    ):
+        image = expected[direction]
+        assert image["split_groups"] == request[direction + "_split_groups"] and image["image_bytes"] == 8
+        assert expected["saved_comparison"][direction] == {
+            "observed_bytes": 8, "assignments_match": True, "unavailable": None,
+        }
+        assert reviewed["saved_readback"][direction]["module_pdo_groups"]["group_order"] == [1, 0, 1]
+        padding, = [source for source in image["pdo_sources"] if source["origin"]["kind"] == "group_padding"]
+        assert (padding["pdo_index"], padding["sync_manager"], padding["group"]) == (pad_index, sm, 1)
+        entry, = [entry for entry in image["entries"] if entry["pdo_index"] == pad_index]
+        assert (entry["bit"], entry["width"]) == (bit, width)
+        assert [field["value"] for field in reviewed["decoded_" + direction]["fields"]] == values
+
+    def changed(name, mutate):
+        data = json.loads(original)
+        mutate(data)
+        path = destination / (name + ".json")
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def rejected(name, mutate, message):
+        path = changed(name, mutate)
+        output = destination / (name + "-review.json")
+        error = cli_call(cli, *selection, "--expect-layout", path, "--out", output, success=False)
+        assert message in error and not output.exists(), error
+
+    for name, mutate, message in (
+        ("missing-tx-choice", lambda data: data.pop("tx_split_groups"), "requires an explicit split-group padding choice"),
+        ("missing-rx-choice", lambda data: data.pop("rx_split_groups"), "requires an explicit split-group padding choice"),
+        ("duplicate-choice", lambda data: data["tx_split_groups"].extend(data["tx_split_groups"]), "duplicate split-group padding choice"),
+        ("unsplit-choice", lambda data: data["tx_split_groups"][0].update(group=0), "PDO group 0 is not split"),
+        ("wrong-channel", lambda data: data["tx_split_groups"][0].update(sm=6), "requires a SyncManager containing one of its PDOs"),
+        ("empty-widths", lambda data: data["rx_split_groups"][0].update(widths=[]), "requires 1 to 255 nonzero entry widths"),
+        ("zero-width", lambda data: data["tx_split_groups"][0].update(widths=[0, 8]), "requires 1 to 255 nonzero entry widths"),
+        ("misaligned", lambda data: data["tx_split_groups"][0].update(widths=[7]), "ends outside its 4-byte boundary"),
+    ):
+        rejected(name, mutate, message)
+
+    split_width = changed("two-padding-descriptors", lambda data: data["tx_split_groups"][0].update(widths=[4, 4]))
+    alternate = cli_call(cli, *selection, "--expect-layout", split_width, "--run-report", report)["expected_layout"]
+    assert alternate["tx"]["image_bytes"] == 8 and alternate["saved_comparison"]["tx"]["assignments_match"] is False
+    assert [entry["width"] for entry in alternate["tx"]["entries"] if entry["pdo_index"] == 0x1B11] == [4, 4]
+
+    def place_earlier(data):
+        data["tx_split_groups"][0].update(sm=3, widths=[24])
+        data["tx"].pop(1)
+
+    early_owner = changed("earlier-channel", place_earlier)
+    earlier = cli_call(cli, *selection, "--expect-layout", early_owner, "--run-report", report)["expected_layout"]
+    placed, = [source for source in earlier["tx"]["pdo_sources"] if source["pdo_index"] == 0x1B11]
+    assert placed["sync_manager"] == 3 and earlier["saved_comparison"]["tx"]["assignments_match"] is False
+    assert earlier["tx"]["image_bytes"] == 7 and [source["group"] for source in earlier["tx"]["pdo_sources"]] == [1, 1, 1]
+    assert next(entry for entry in earlier["tx"]["entries"] if entry["sync_manager"] == 4)["bit"] == 32
+
+    no_padding = [{"group": 1, "kind": "unassigned"}]
+    unassigned = changed("explicit-absence", lambda data: data.update(
+        tx_split_groups=no_padding, rx_split_groups=no_padding,
+    ))
+    comparison = cli_call(cli, *selection, "--expect-layout", unassigned, "--run-report", report)["expected_layout"]
+    assert (comparison["tx"]["image_bytes"], comparison["rx"]["image_bytes"]) == (7, 6)
+    assert comparison["tx"]["split_groups"] == no_padding and comparison["rx"]["split_groups"] == no_padding
+    assert all(comparison["saved_comparison"][d]["assignments_match"] is False for d in ("tx", "rx"))
+
+    report_with_absence = json.loads(report.read_bytes())
+    report_with_absence["backend"] = "authored_saved_variant"
+    for direction, index, bytes_removed in (("tx", 0x1B11, 1), ("rx", 0x1711, 2)):
+        channel = report_with_absence["pdo_verification"]["readback"][direction]["sync_managers"][-1]
+        assert channel["pdos"].pop()["index"] == index
+        channel["configured_bytes"] -= bytes_removed
+    saved_absence = destination / "unpadded-readback.json"
+    saved_absence.write_text(json.dumps(report_with_absence), encoding="utf-8")
+    comparison = cli_call(cli, *selection, "--expect-layout", unassigned, "--run-report", saved_absence)["expected_layout"]
+    assert all(comparison["saved_comparison"][d]["assignments_match"] for d in ("tx", "rx"))
+    assert manifest.read_bytes() == original
 
 
 def verify_mixed_slot_group_indexes(cli, destination, sample=None):
@@ -7004,6 +7106,9 @@ def main():
     multi_sm_destination = destination / "modular-expected-multi-sm"
     multi_sm_destination.mkdir()
     verify_module_group_multiple_sync_managers(cli, multi_sm_destination)
+    split_group_destination = destination / "modular-expected-split-group"
+    split_group_destination.mkdir()
+    verify_split_module_group_padding(cli, split_group_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

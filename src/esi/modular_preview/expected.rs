@@ -25,6 +25,25 @@ struct Request {
     identity: Identity,
     tx: Vec<Assignment>,
     rx: Vec<Assignment>,
+    #[serde(default)]
+    tx_split_groups: Vec<SplitGroupPadding>,
+    #[serde(default)]
+    rx_split_groups: Vec<SplitGroupPadding>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum SplitGroupPadding {
+    Assigned { group: u32, sm: u8, widths: Vec<u8> },
+    Unassigned { group: u32 },
+}
+
+impl SplitGroupPadding {
+    fn group(&self) -> u32 {
+        match self {
+            Self::Assigned { group, .. } | Self::Unassigned { group } => *group,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -43,6 +62,8 @@ struct Image {
     image_bytes: usize,
     entries: Vec<Entry>,
     pdo_sources: Vec<PdoSource>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    split_groups: Vec<SplitGroupPadding>,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,10 +161,24 @@ pub(super) fn compose(
         "expected Tx and Rx assignments share a SyncManager"
     );
 
-    let (tx, tx_exclusions) = compose_direction(Direction::Tx, &request.tx, esi, slots, groups)
-        .context("compose expected Tx PDO image")?;
-    let (rx, rx_exclusions) = compose_direction(Direction::Rx, &request.rx, esi, slots, groups)
-        .context("compose expected Rx PDO image")?;
+    let (tx, tx_exclusions) = compose_direction(
+        Direction::Tx,
+        &request.tx,
+        esi,
+        slots,
+        groups,
+        request.tx_split_groups,
+    )
+    .context("compose expected Tx PDO image")?;
+    let (rx, rx_exclusions) = compose_direction(
+        Direction::Rx,
+        &request.rx,
+        esi,
+        slots,
+        groups,
+        request.rx_split_groups,
+    )
+    .context("compose expected Rx PDO image")?;
     let assigned: BTreeSet<_> = tx
         .pdo_sources
         .iter()
@@ -243,12 +278,66 @@ fn padding_index(group: &ModulePdoGroup, direction: Direction) -> Option<u16> {
     }
 }
 
+fn split_group_rules<'a>(
+    chosen: &[(&Assignment, Candidate)],
+    rules: &'a [SplitGroupPadding],
+) -> Result<BTreeMap<u32, &'a SplitGroupPadding>> {
+    let mut managers_by_group = BTreeMap::<_, BTreeSet<_>>::new();
+    for (assignment, candidate) in chosen {
+        let group = candidate
+            .group
+            .context("grouped image composition requires explicit group membership")?;
+        managers_by_group
+            .entry(group)
+            .or_default()
+            .insert(assignment.sm);
+    }
+    ensure!(
+        chosen
+            .windows(2)
+            .all(|pair| pair[0].0.sm != pair[1].0.sm || pair[0].1.group <= pair[1].1.group),
+        "expected assignments are out of PDO group order within a SyncManager"
+    );
+    let mut by_group = BTreeMap::new();
+    for rule in rules {
+        let group = rule.group();
+        let managers = managers_by_group
+            .get(&group)
+            .filter(|managers| managers.len() > 1)
+            .with_context(|| {
+                format!("PDO group {group} is not split across SyncManagers in this direction")
+            })?;
+        ensure!(
+            by_group.insert(group, rule).is_none(),
+            "duplicate split-group padding choice for PDO group {group}"
+        );
+        if let SplitGroupPadding::Assigned { sm, widths, .. } = rule {
+            ensure!(
+                managers.contains(sm),
+                "split-group padding for PDO group {group} requires a SyncManager containing one of its PDOs"
+            );
+            ensure!(
+                !widths.is_empty() && widths.len() <= 255 && !widths.contains(&0),
+                "split-group padding for PDO group {group} requires 1 to 255 nonzero entry widths"
+            );
+        }
+    }
+    for (group, managers) in managers_by_group {
+        ensure!(
+            managers.len() == 1 || by_group.contains_key(&group),
+            "PDO group {group} spans SyncManagers and requires an explicit split-group padding choice"
+        );
+    }
+    Ok(by_group)
+}
+
 fn compose_direction(
     direction: Direction,
     assignments: &[Assignment],
     esi: &EsiSource,
     slots: &[SlotPreview],
     groups: &[ModulePdoGroup],
+    split_groups: Vec<SplitGroupPadding>,
 ) -> Result<(Image, Vec<(u16, u16)>)> {
     let mut candidates = candidate_descriptors(direction, esi, slots);
     let padding_indexes: BTreeSet<_> = groups
@@ -290,30 +379,16 @@ fn compose_direction(
             "mandatory PDO {index:#06x} is missing from the expected assignments"
         );
     }
-    let grouped = !groups.is_empty()
+    let group_rules = if !groups.is_empty()
+        || !split_groups.is_empty()
         || chosen
             .iter()
-            .any(|(_, candidate)| candidate.group.is_some());
-    if grouped {
-        let mut group_managers = BTreeMap::new();
-        for (assignment, candidate) in &chosen {
-            let group = candidate
-                .group
-                .context("grouped image composition requires explicit group membership")?;
-            let manager = *group_managers.entry(group).or_insert(assignment.sm);
-            ensure!(
-                manager == assignment.sm,
-                "PDO group {group} spans SM{manager} and SM{} in this direction",
-                assignment.sm
-            );
-        }
-        ensure!(
-            chosen
-                .windows(2)
-                .all(|pair| pair[0].0.sm != pair[1].0.sm || pair[0].1.group <= pair[1].1.group),
-            "expected assignments are out of PDO group order within a SyncManager"
-        );
-    }
+            .any(|(_, candidate)| candidate.group.is_some())
+    {
+        split_group_rules(&chosen, &split_groups)?
+    } else {
+        BTreeMap::new()
+    };
 
     let mut layout = Layout {
         mapping_source: MappingSource::Esi,
@@ -376,7 +451,7 @@ fn compose_direction(
         if let Some(number) = candidate.group
             && chosen
                 .peek()
-                .is_none_or(|(_, next)| next.group != Some(number))
+                .is_none_or(|(assignment, next)| assignment.sm != sm || next.group != Some(number))
         {
             let group = groups.get(number as usize).with_context(|| {
                 format!("ESI has no alignment declaration for PDO group {number}")
@@ -388,17 +463,34 @@ fn compose_direction(
                     format!("PDO group {number} needs a nonzero alignment within the payload limit")
                 })?;
             let alignment_bits = alignment_bytes as usize * 8;
-            let padding = (alignment_bits - direction_bits % alignment_bits) % alignment_bits;
-            if padding == 0 {
+            let entries: Vec<u32> = match group_rules.get(&number) {
+                Some(SplitGroupPadding::Assigned {
+                    sm: owner, widths, ..
+                }) if *owner == sm => {
+                    let padding: usize = widths.iter().map(|&width| usize::from(width)).sum();
+                    ensure!(
+                        (direction_bits + padding).is_multiple_of(alignment_bits),
+                        "split-group padding for PDO group {number} ends outside its {alignment_bytes}-byte boundary"
+                    );
+                    widths.iter().copied().map(u32::from).collect()
+                }
+                Some(_) => continue,
+                None => {
+                    let padding =
+                        (alignment_bits - direction_bits % alignment_bits) % alignment_bits;
+                    let mut entries = vec![255; padding / 255];
+                    if !padding.is_multiple_of(255) {
+                        entries.push((padding % 255) as u32);
+                    }
+                    entries
+                }
+            };
+            if entries.is_empty() {
                 continue;
             }
             let index = padding_index(group, direction)
                 .with_context(|| format!("PDO group {number} needs a declared padding PDO"))?;
-            let mut entries = vec![255; padding / 255];
-            if !padding.is_multiple_of(255) {
-                entries.push((padding % 255) as u32);
-            }
-            direction_bits += padding;
+            direction_bits += entries.iter().map(|&width| width as usize).sum::<usize>();
             manager.pdos.push(Pdo { index, entries });
             pdo_sources.push(PdoSource {
                 pdo_index: index,
@@ -416,6 +508,7 @@ fn compose_direction(
             image_bytes,
             entries,
             pdo_sources,
+            split_groups,
         },
         exclusions,
     ))

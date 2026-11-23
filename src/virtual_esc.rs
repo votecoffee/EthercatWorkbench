@@ -85,6 +85,7 @@ pub enum ModuleInventoryCase {
     MixedSlotGroupIndexes,
     PdoGroupAlignment,
     PdoGroupMultipleSyncManagers,
+    PdoGroupSplitAcrossSyncManagers,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -435,9 +436,14 @@ impl VirtualWire {
             ModuleInventoryCase::MixedSlotGroupIndexes => (16, 14_790),
             ModuleInventoryCase::PdoGroupAlignment => (17, 14_791),
             ModuleInventoryCase::PdoGroupMultipleSyncManagers => (17, 14_792),
+            ModuleInventoryCase::PdoGroupSplitAcrossSyncManagers => (18, 14_793),
             _ => (11, 14_785),
         };
-        if case == ModuleInventoryCase::PdoGroupMultipleSyncManagers {
+        if matches!(
+            case,
+            ModuleInventoryCase::PdoGroupMultipleSyncManagers
+                | ModuleInventoryCase::PdoGroupSplitAcrossSyncManagers
+        ) {
             esc.eeprom = eeprom(VirtualModel::Coe, VirtualFault::None, true);
             esc.registers[5] = 6;
         }
@@ -1592,7 +1598,13 @@ impl VirtualEsc {
                 ) => Some((0x400, 4)),
                 (_, 0, _) => Some((2, 1)),
                 (DETECTED, 2, DetectedDiffers) => Some((0x401, 4)),
-                (_, 2, PdoGroupAlignment | PdoGroupMultipleSyncManagers) => Some((0x402, 4)),
+                (
+                    _,
+                    2,
+                    PdoGroupAlignment
+                    | PdoGroupMultipleSyncManagers
+                    | PdoGroupSplitAcrossSyncManagers,
+                ) => Some((0x402, 4)),
                 (_, 1 | 2, _) => Some((0x400, 4)),
                 _ => None,
             };
@@ -1689,7 +1701,11 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
     } else {
         0x6841_0010
     };
-    let multiple_sms = case == ModuleInventoryCase::PdoGroupMultipleSyncManagers;
+    let multiple_sms = matches!(
+        case,
+        ModuleInventoryCase::PdoGroupMultipleSyncManagers
+            | ModuleInventoryCase::PdoGroupSplitAcrossSyncManagers
+    );
     let alignment = multiple_sms || case == ModuleInventoryCase::PdoGroupAlignment;
     let mixed = case == ModuleInventoryCase::MixedSlotGroupIndexes;
     let vacant = mixed || case == ModuleInventoryCase::VacantMiddleSlot;
