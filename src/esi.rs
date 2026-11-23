@@ -167,6 +167,7 @@ fn with_description<T>(
                 notes.push("RevisionNo is absent. Verify revision manually.".into());
             }
             let pdo_catalog = pdo_catalog(device)?;
+            let pdo_capabilities = pdo_capabilities(device)?;
             for pdo in pdo_catalog.iter().filter(|p| p.default_sm.is_none()) {
                 notes.push(format!("{:?}Pdo without a default SyncManager was omitted from the default image and retained in the catalog", pdo.direction));
             }
@@ -195,6 +196,7 @@ fn with_description<T>(
                     default_rx_bytes: default_known.then_some(rx_bytes),
                     dc_modes,
                     pdo_catalog,
+                    pdo_capabilities,
                     device_pdo_group,
                     modular,
                     notes: notes.clone(),
@@ -303,6 +305,32 @@ fn default_sm(node: Node<'_, '_>) -> Result<Option<u8>> {
             Ok(Some(sm))
         }
     }
+}
+
+fn pdo_capabilities(device: Node<'_, '_>) -> Result<Option<crate::model::PdoCapabilities>> {
+    let Some(mailbox) = unique_child(device, "Mailbox")? else {
+        return Ok(None);
+    };
+    let Some(coe) = unique_child(mailbox, "CoE")? else {
+        return Ok(None);
+    };
+    let optional = |name| {
+        coe.attribute(name)
+            .map(|_| bool_attr(coe, name))
+            .transpose()
+    };
+    let upload = optional("PdoUpload")?;
+    let assign = optional("PdoAssign")?;
+    let configure = optional("PdoConfig")?;
+    Ok(
+        (upload.is_some() || assign.is_some() || configure.is_some()).then_some(
+            crate::model::PdoCapabilities {
+                upload,
+                assign,
+                configure,
+            },
+        ),
+    )
 }
 
 fn pdo_catalog(device: Node<'_, '_>) -> Result<Vec<crate::pdo_catalog::Definition>> {

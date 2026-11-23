@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.14">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored dynamic PDO fixture</Name></Vendor>
+  <Descriptions>
+    <Groups><Group><Type>Fixture</Type><Name>Authored sample group</Name></Group></Groups>
+    <Devices>
+      <Device Physics="YY">
+        <Type ProductCode="#x00000013" RevisionNo="1">VirtualDynamicPdo</Type>
+        <Name>Authored dynamic PDO device</Name>
+        <GroupType>Fixture</GroupType>
+        <RxPdo Sm="2" Fixed="1">
+          <Index>#x1600</Index><Name>Command</Name>
+          <Entry><Index>#x6040</Index><BitLen>16</BitLen><Name>Command word</Name><DataType>UINT</DataType></Entry>
+        </RxPdo>
+        <TxPdo Sm="3">
+          <Index>#x1A00</Index><Name>Default status</Name>
+          <Entry><Index>#x6041</Index><BitLen>16</BitLen><Name>Default status word</Name><DataType>UINT</DataType></Entry>
+          <Entry><Index>#x2100</Index><SubIndex>2</SubIndex><BitLen>1</BitLen><Name>Status flag</Name><DataType>BOOL</DataType></Entry>
+          <Entry><Index>0</Index><BitLen>7</BitLen></Entry>
+        </TxPdo>
+        <TxPdo>
+          <Index>#x1A05</Index><Name>Optional diagnostics</Name>
+          <Entry><Index>#x2200</Index><SubIndex>1</SubIndex><BitLen>8</BitLen><Name>Diagnostic byte</Name><DataType>USINT</DataType></Entry>
+        </TxPdo>
+        <Mailbox><CoE PdoUpload="1" PdoAssign="0" PdoConfig="true"/></Mailbox>
+      </Device>
+    </Devices>
+  </Descriptions>
+</EtherCATInfo>

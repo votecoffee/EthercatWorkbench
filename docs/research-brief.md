@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.98.0** accepts explicit padding for a PDO group split across SyncManagers. The request records the channel and exact widths or declares the padding PDO unassigned. The virtual PREOP fixture matches both directions and detects same-size descriptor differences. Physical module collection and device-specific dynamic PDO behavior remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Expected modular layout](pdo-selection.md#compose-an-expected-modular-pdo-image) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.99.0** retains ESI CoE PDO capabilities and inspects dynamic layouts in a saved one-device run. The virtual PREOP fixture uploads a different Tx assignment, and raw decoding preserves an entry absent from the ESI. The receipt keeps observed geometry, ESI hints and static selection comparison separate. Physical qualification and dynamic typed profile construction remain open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Saved dynamic PDO readback](pdo-selection.md#inspect-saved-dynamic-pdo-readback) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

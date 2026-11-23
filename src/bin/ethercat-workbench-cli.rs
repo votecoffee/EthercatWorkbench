@@ -356,6 +356,17 @@ enum Command {
     Validate { profile: PathBuf },
     /// Compare saved CoE PDO readback with an ESI or manual profile.
     VerifyPdo { profile: PathBuf, readback: PathBuf },
+    /// Inspect the observed assignments and optional payloads from a saved one-device PDO run.
+    InspectPdoReadback {
+        profile: PathBuf,
+        run_report: PathBuf,
+        #[arg(long)]
+        tx_hex: Option<String>,
+        #[arg(long)]
+        rx_hex: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Compare saved timing trials with matching settings except for their scheduler. No bus operations.
     CompareRuns {
         #[arg(required_unless_present_any = ["trial_set", "bundle"], num_args = 2..=32)]
@@ -1143,6 +1154,24 @@ fn main() -> Result<()> {
                 "saved PDO layout differs from profile"
             );
             Ok(())
+        }
+        Command::InspectPdoReadback {
+            profile,
+            run_report,
+            tx_hex,
+            rx_hex,
+            out,
+        } => {
+            let profile = Profile::load(&profile)?;
+            let tx = tx_hex.as_deref().map(payload_hex).transpose()?;
+            let rx = rx_hex.as_deref().map(payload_hex).transpose()?;
+            let report = ethercat_workbench::pdo::inspect::inspect(
+                &profile,
+                &run_report,
+                tx.as_deref(),
+                rx.as_deref(),
+            )?;
+            inspection_export(&report, out.as_deref())
         }
         Command::StageRx {
             profile,

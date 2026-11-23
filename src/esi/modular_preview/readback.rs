@@ -4,72 +4,19 @@ use super::{
     profile::{DevicePdoMember, PdoGroupAudit, PdoGroupPadding},
 };
 use crate::{
-    benchmark::read_report_bytes_with_stop,
-    model::{EsiSource, Identity},
-    pdo::{Layout, MappingSource, Pdo, SyncManager},
+    model::EsiSource,
+    pdo::{
+        Layout, MappingSource, Pdo,
+        saved::{ReportedLayout, Run},
+    },
     pdo_catalog::Direction,
 };
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
-
-#[derive(Deserialize)]
-struct SavedReport {
-    backend: String,
-    devices: Vec<SavedDevice>,
-    pdo_verification: Option<SavedVerification>,
-}
-
-#[derive(Deserialize)]
-struct SavedDevice {
-    identity: Option<Identity>,
-    serial: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct SavedVerification {
-    readback: SavedReadback,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SavedReadback {
-    tx: Option<ReportedLayout>,
-    rx: Option<ReportedLayout>,
-    tx_unavailable: Option<String>,
-    rx_unavailable: Option<String>,
-}
-
-// Keep the presence of the source declaration. Older readbacks may omit it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SavedLayout {
-    mapping_source: Option<MappingSource>,
-    sync_managers: Vec<SyncManager>,
-}
-
-#[derive(Deserialize)]
-#[serde(from = "SavedLayout")]
-struct ReportedLayout {
-    source: Option<MappingSource>,
-    layout: Layout,
-}
-
-impl From<SavedLayout> for ReportedLayout {
-    fn from(saved: SavedLayout) -> Self {
-        Self {
-            source: saved.mapping_source,
-            layout: Layout {
-                mapping_source: saved.mapping_source.unwrap_or_default(),
-                sync_managers: saved.sync_managers,
-            },
-        }
-    }
-}
 
 #[derive(Debug, Serialize)]
 pub(super) struct Comparison {
@@ -294,7 +241,7 @@ impl<'a> CheckedDirection<'a> {
         reason: Option<&str>,
         direction: Direction,
     ) -> Result<Self> {
-        let Some(ReportedLayout { source, layout }) = layout else {
+        let Some(reported) = layout else {
             return Ok(Self {
                 report: ObservedDirection {
                     layout: None,
@@ -312,53 +259,29 @@ impl<'a> CheckedDirection<'a> {
                 assigned: BTreeMap::new(),
             });
         };
-        ensure!(
-            reason.is_none(),
-            "saved {:?} layout also declares unavailable readback",
-            direction
-        );
-        ensure!(
-            *source != Some(MappingSource::Esi),
-            "saved {:?} layout is an ESI expectation",
-            direction
-        );
-        let (entries, image_bytes) = layout
-            .entries()
-            .with_context(|| format!("check saved {:?} PDO layout", direction))?;
+        let (entries, image_bytes) = reported.checked_entries(direction, reason)?;
+        let layout = &reported.layout;
         let mut starts = BTreeMap::new();
         for entry in &entries {
             starts.entry(entry.pdo_index).or_insert(entry.bit);
         }
-        let range = match direction {
-            Direction::Tx => 0x1a00..=0x1bff,
-            Direction::Rx => 0x1600..=0x17ff,
-        };
         let mut assigned = BTreeMap::new();
         for sm in &layout.sync_managers {
             for pdo in &sm.pdos {
-                ensure!(
-                    range.contains(&pdo.index),
-                    "saved PDO {:#06x} is outside the {:?} mapping range",
+                assigned.insert(
                     pdo.index,
-                    direction
-                );
-                let assignment = Assignment {
-                    sync_manager: sm.index,
-                    bit: starts.get(&pdo.index).copied(),
-                    pdo,
-                };
-                ensure!(
-                    assigned.insert(pdo.index, assignment).is_none(),
-                    "saved {:?} PDO {:#06x} is assigned to more than one SyncManager",
-                    direction,
-                    pdo.index
+                    Assignment {
+                        sync_manager: sm.index,
+                        bit: starts.get(&pdo.index).copied(),
+                        pdo,
+                    },
                 );
             }
         }
         Ok(Self {
             report: ObservedDirection {
                 layout: Some(layout.clone()),
-                mapping_source: *source,
+                mapping_source: reported.source,
                 image_bytes: Some(image_bytes),
                 unavailable: None,
                 other_assignments: Vec::new(),
@@ -636,48 +559,18 @@ pub(super) fn compare(
     inventory_serial: Option<u32>,
     slots: &mut [SlotPreview],
 ) -> Result<Comparison> {
-    let bytes = read_report_bytes_with_stop(path, None)?;
-    let report: SavedReport =
-        serde_json::from_slice(&bytes).context("parse saved run report for PDO comparison")?;
-    let [device] = report.devices.as_slice() else {
-        anyhow::bail!("saved run report must identify exactly one device");
-    };
-    ensure!(
-        device.identity.as_ref() == Some(&esi.identity),
-        "saved run device identity differs from the ESI selection"
-    );
+    let saved = Run::load(path, &esi.identity)?;
     ensure!(
         inventory_serial
-            .zip(device.serial)
+            .zip(saved.evidence.reported_serial)
             .is_none_or(|(inventory, run)| inventory == run),
         "saved module inventory serial differs from the saved PDO run"
     );
-    let readback = report
-        .pdo_verification
-        .as_ref()
-        .map(|value| &value.readback);
-    let tx = readback.and_then(|value| value.tx.as_ref());
-    let rx = readback.and_then(|value| value.rx.as_ref());
-    let mut checked_tx = CheckedDirection::check(
-        tx,
-        readback.and_then(|value| value.tx_unavailable.as_deref()),
-        Direction::Tx,
-    )?;
-    let mut checked_rx = CheckedDirection::check(
-        rx,
-        readback.and_then(|value| value.rx_unavailable.as_deref()),
-        Direction::Rx,
-    )?;
-    if let Some((tx, rx)) = tx.zip(rx) {
-        ensure!(
-            !tx.layout.sync_managers.iter().any(|tx_sm| rx
-                .layout
-                .sync_managers
-                .iter()
-                .any(|rx_sm| tx_sm.index == rx_sm.index)),
-            "saved Tx and Rx PDO layouts share a SyncManager"
-        );
-    }
+    let (tx, tx_unavailable) = saved.direction(Direction::Tx);
+    let (rx, rx_unavailable) = saved.direction(Direction::Rx);
+    let mut checked_tx = CheckedDirection::check(tx, tx_unavailable, Direction::Tx)?;
+    let mut checked_rx = CheckedDirection::check(rx, rx_unavailable, Direction::Rx)?;
+    saved.validate_sync_manager_separation()?;
     checked_tx.audit_groups(Direction::Tx, slots, esi);
     checked_rx.audit_groups(Direction::Rx, slots, esi);
     let observed = checked_tx
@@ -694,16 +587,15 @@ pub(super) fn compare(
     }
     checked_tx.compare_device_pdos(Direction::Tx, esi, &observed);
     checked_rx.compare_device_pdos(Direction::Rx, esi, &observed);
+    let tx = checked_tx.finish();
+    let rx = checked_rx.finish();
+    let evidence = saved.evidence;
     Ok(Comparison {
-        file_name: path
-            .file_name()
-            .context("saved run report path has no file name")?
-            .to_string_lossy()
-            .into_owned(),
-        sha256: hex::encode(Sha256::digest(&bytes)),
-        reported_backend: report.backend,
-        reported_serial: device.serial,
-        tx: checked_tx.finish(),
-        rx: checked_rx.finish(),
+        file_name: evidence.file_name,
+        sha256: evidence.sha256,
+        reported_backend: evidence.reported_backend,
+        reported_serial: evidence.reported_serial,
+        tx,
+        rx,
     })
 }

@@ -127,6 +127,22 @@ When a group uses multiple SyncManagers in one direction, supply one choice for 
 
 Use `samples/module-pdo-split-group.esi.xml` and `samples/module-pdo-expected-split.json` with the same preview workflow. Supply slots `0=0x400` and `1=0x402`, or use the saved inventory from the `pdo-group-split-across-sync-managers` virtual scenario. Its PDO report supplies `--run-report` evidence. The sample places the Tx padding on SM4 and the Rx padding on SM5. [Split-group request](../samples/module-pdo-expected-split.json) · [ETG.2000, Table 57](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
 
+## Inspect saved dynamic PDO readback
+
+The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+`inspect-pdo-readback PROFILE RUN_REPORT` requires the saved run to identify exactly one device matching the profile. An attached ESI must match that identity too. It lists the observed SyncManagers, assignments, bit offsets and widths. `expected_selection_matches` compares the entire observed assignment and descriptors when the profile carries an offline ESI selection. A missing direction or expectation yields `null`. Older reports can also have an unknown mapping source.
+
+Use `--tx-hex` and `--rx-hex` to supply optional complete images at their observed lengths. Each non-padding entry is packed into raw hex with its first mapped bit at bit zero of the first byte. ESI name and datatype hints appear when concrete catalog entries agree on the same directional object, subindex and width. Entries with absent or conflicting hints still show their offsets and raw bytes.
+
+```powershell
+.\ethercat-workbench-cli.exe esi-import samples/dynamic-pdo.esi.xml --device 0 --out .local/dynamic-profile.json
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario dynamic-pdo-layout --pdo-report .local/dynamic-readback.json
+.\ethercat-workbench-cli.exe inspect-pdo-readback .local/dynamic-profile.json .local/dynamic-readback.json --tx-hex 'A5 34 12 01' --rx-hex '78 56'
+```
+
+The sample shows a 4-byte observed Tx image against the ESI's 3-byte Tx selection. Rx still matches. The first Tx value carries the diagnostic-byte hint even though its PDO index moved, and object `0x6042` appears with its raw value and no ESI hint. [Authored dynamic PDO ESI](../samples/dynamic-pdo.esi.xml)
+
 ## Compare module candidates with saved PDO readback
 
 Add `--run-report` to the fixed-slot preview. It checks the saved report for exactly one device with the selected ESI identity, then compares each resolved PDO with the reported assignment in the same direction. The report records the input file's SHA-256 and reported backend. The bundled readback example is authored for the fixed-slot sample.

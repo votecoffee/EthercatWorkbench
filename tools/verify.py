@@ -774,6 +774,141 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_dynamic_pdo_readback(cli, destination, sample=None):
+    """Keep CoE declarations, observed runtime descriptors and ESI hints separate."""
+    sample = ROOT / "samples/dynamic-pdo.esi.xml" if sample is None else sample
+    selector = ("--identity", "0x00ff1000/19/1")
+    capabilities = {"upload": True, "assign": False, "configure": True}
+    source, = cli_call(cli, "esi-list", sample)
+    assert source["source"]["pdo_capabilities"] == capabilities
+    profile = destination / "dynamic-profile.json"
+    cli_call(cli, "esi-import", sample, *selector, "--out", profile)
+    settings = cli_call(cli, "validate", profile)
+    assert settings["esi"]["pdo_capabilities"] == capabilities
+    assert (settings["tx_bytes"], settings["rx_bytes"]) == (3, 2)
+    assert settings["esi_pdo_selection"]["tx"] == [{"index": 0x1A00, "sm": 3}]
+
+    report = destination / "preop.json"
+    observed = cli_call(cli, "read-virtual-module-inventory", "--scenario", "dynamic-pdo-layout", "--pdo-report", report)
+    audit = observed["audit"]
+    assert observed["preop_al"] == [2, 0] and observed["stopped_al"] == [1, 0]
+    assert audit["state_requests"] == [1, 2, 1] and audit["coe_uploads"] == 32 and audit["mailbox_counter_errors"] == 0
+    assert not any(audit[key] for key in ("coe_downloads", "op_requests", "logical_reads",
+                                         "logical_writes", "physical_output_writes"))
+    command = ("inspect-pdo-readback", profile)
+    output = destination / "inspection.json"
+    review = cli_call(cli, *command, report, "--tx-hex", "A5 34 12 01", "--rx-hex", "78 56", "--out", output)
+    assert review == json.loads(output.read_bytes())
+    assert review["identity"] == settings["expected_identity"]
+    assert review["sha256"] == hashlib.sha256(report.read_bytes()).hexdigest()
+    assert review["esi_sha256"] == settings["esi"]["sha256"] and review["pdo_capabilities"] == capabilities
+    tx, rx = review["tx"], review["rx"]
+    assert tx["mapping_source"] == rx["mapping_source"] == "coe"
+    assert (tx["image_bytes"], rx["image_bytes"]) == (4, 2)
+    assert tx["expected_selection_matches"] is False and rx["expected_selection_matches"] is True
+    assert [pdo["index"] for pdo in tx["sync_managers"][0]["pdos"]] == [0x1A40, 0x1A00]
+    assert [(row["bit"], row["width"], row["object_index"], row["raw_hex"]) for row in tx["entries"]] == [
+        (0, 8, 0x2200, "A5"), (8, 16, 0x6042, "3412"), (24, 1, 0x2100, "01"), (25, 7, 0, None),
+    ]
+    assert [row["esi_hint"] for row in tx["entries"]] == [
+        {"name": "Diagnostic byte", "data_type": "USINT"}, None,
+        {"name": "Status flag", "data_type": "BOOL"}, None,
+    ]
+    assert rx["entries"][0]["raw_hex"] == "7856"
+    assert rx["entries"][0]["esi_hint"] == {"name": "Command word", "data_type": "UINT"}
+
+    no_payload = cli_call(cli, *command, report)
+    assert no_payload["tx"]["payload_hex"] is None
+    assert all(row["raw_hex"] is None for row in no_payload["tx"]["entries"])
+    existing = output.read_bytes()
+    cli_call(cli, *command, report, "--out", output, success=False)
+    assert output.read_bytes() == existing
+
+    def variant(name, mutate):
+        data = json.loads(report.read_bytes())
+        mutate(data)
+        path = destination / (name + ".json")
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def layouts(data):
+        return data["pdo_verification"]["readback"]
+
+    shifted = variant("unaligned-entry", lambda data: layouts(data)["tx"]["sync_managers"][0]["pdos"][1]
+                      .update(entries=[0x21000201, 0x60420010, 7]))
+    shifted_entries = cli_call(cli, *command, shifted, "--tx-hex", "A5 69 24 00")["tx"]["entries"]
+    assert (shifted_entries[2]["bit"], shifted_entries[2]["raw_hex"]) == (9, "3412")
+    for mapping_source in ("sii", None):
+        def change_source(data):
+            tx = layouts(data)["tx"]
+            if mapping_source is None:
+                tx.pop("mapping_source")
+            else:
+                tx["mapping_source"] = mapping_source
+        saved = variant(mapping_source or "source-absent", change_source)
+        assert cli_call(cli, *command, saved)["tx"]["mapping_source"] == mapping_source
+
+    absent = variant("rx-absent", lambda data: layouts(data).update(rx=None, rx_unavailable="fixture omitted Rx"))
+    unavailable = cli_call(cli, *command, absent)
+    assert unavailable["rx"]["expected_selection_matches"] is None and unavailable["rx"]["image_bytes"] is None
+    assert unavailable["rx"]["unavailable"] == "fixture omitted Rx"
+
+    for name, evidence, args, message in (
+        ("wrong-size", report, ("--tx-hex", "A5 34 12"), "requires 4 bytes"),
+        ("missing-rx", absent, ("--rx-hex", "78 56"), "Rx PDO readback is unavailable"),
+        ("wrong-device", variant("wrong-device-report", lambda data: data["devices"][0]["identity"].update(revision=2)),
+         (), "device identity differs"),
+        ("esi-only", variant("esi-only-report", lambda data: layouts(data)["tx"].update(mapping_source="esi")),
+         (), "layout is an ESI expectation"),
+        ("wrong-direction", variant("wrong-direction-report", lambda data: layouts(data)["rx"]["sync_managers"][0]
+                                    ["pdos"][0].update(index=0x1A00)), (), "outside the Rx mapping range"),
+    ):
+        denied = destination / (name + "-inspection.json")
+        error = cli_call(cli, *command, evidence, *args, "--out", denied, success=False)
+        assert message in error and not denied.exists(), error
+
+    original = sample.read_bytes()
+    flag = b'PdoUpload="1" PdoAssign="0" PdoConfig="true"'
+    assert original.count(flag) == 1
+    optional = destination / "capability-presence.esi.xml"
+    optional.write_bytes(original.replace(flag, b'PdoUpload="false"'))
+    listed, = cli_call(cli, "esi-list", optional)
+    assert listed["source"]["pdo_capabilities"] == {"upload": False, "assign": None, "configure": None}
+    optional.write_bytes(original.replace(flag, b"PdoUpload=\"maybe\""))
+    error = cli_call(cli, "esi-list", optional, success=False)
+    assert "invalid ESI PdoUpload boolean" in error
+
+    ambiguous = destination / "conflicting-hints.esi.xml"
+    eol = b"\r\n" if b"\r\n" in original else b"\n"
+    marker = b"        <Mailbox>"
+    duplicate = (b"        <TxPdo><Index>#x1A06</Index><Entry><Index>#x2200</Index><SubIndex>1</SubIndex>"
+                 b"<BitLen>8</BitLen><Name>Other diagnostic</Name><DataType>SINT</DataType></Entry></TxPdo>" + eol)
+    assert original.count(marker) == 1
+    ambiguous.write_bytes(original.replace(marker, duplicate + marker))
+    conflict_profile = destination / "conflicting-hints.json"
+    cli_call(cli, "esi-import", ambiguous, *selector, "--out", conflict_profile)
+    conflict = cli_call(cli, "inspect-pdo-readback", conflict_profile, report, "--tx-hex", "A5 34 12 01")
+    assert conflict["tx"]["entries"][0]["esi_hint"] is None and conflict["tx"]["entries"][0]["raw_hex"] == "A5"
+
+    stale_profile = destination / "stale-esi-identity.json"
+    stale_settings = json.loads(profile.read_bytes())
+    stale_settings["esi"]["identity"]["revision"] += 1
+    stale_settings["esi_pdo_selection"] = None
+    stale_profile.write_text(json.dumps(stale_settings), encoding="utf-8")
+    stale_output = destination / "stale-esi-review.json"
+    error = cli_call(cli, "inspect-pdo-readback", stale_profile, report, "--out", stale_output, success=False)
+    assert "attached ESI identity differs" in error and not stale_output.exists()
+
+    manual_profile = destination / "manual.json"
+    settings.update(esi=None, esi_pdo_selection=None)
+    for field in settings["tx"] + settings["rx"]:
+        field["source"] = "manual"
+    manual_profile.write_text(json.dumps(settings), encoding="utf-8")
+    manual = cli_call(cli, "inspect-pdo-readback", manual_profile, report)
+    assert manual["pdo_capabilities"] is None and manual["tx"]["expected_selection_matches"] is None
+    assert all(row["esi_hint"] is None for row in manual["tx"]["entries"])
+
+
 def verify_modular_readback(cli, destination, sample=None, report=None):
     """Compare descriptor content and placement separately against saved setup evidence."""
     from copy import deepcopy
@@ -7109,6 +7244,9 @@ def main():
     split_group_destination = destination / "modular-expected-split-group"
     split_group_destination.mkdir()
     verify_split_module_group_padding(cli, split_group_destination)
+    dynamic_destination = destination / "dynamic-pdo-readback"
+    dynamic_destination.mkdir()
+    verify_dynamic_pdo_readback(cli, dynamic_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

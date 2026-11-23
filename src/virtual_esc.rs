@@ -86,6 +86,7 @@ pub enum ModuleInventoryCase {
     PdoGroupAlignment,
     PdoGroupMultipleSyncManagers,
     PdoGroupSplitAcrossSyncManagers,
+    DynamicPdoLayout,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -437,6 +438,7 @@ impl VirtualWire {
             ModuleInventoryCase::PdoGroupAlignment => (17, 14_791),
             ModuleInventoryCase::PdoGroupMultipleSyncManagers => (17, 14_792),
             ModuleInventoryCase::PdoGroupSplitAcrossSyncManagers => (18, 14_793),
+            ModuleInventoryCase::DynamicPdoLayout => (19, 14_794),
             _ => (11, 14_785),
         };
         if matches!(
@@ -1715,6 +1717,11 @@ fn modular_pdo_object(index: u16, sub: u8, case: ModuleInventoryCase) -> Option<
         ModuleInventoryCase::RepeatedFixedSlots | ModuleInventoryCase::VariableSlotCounts
     );
     let (width, entries): (u8, &[u32]) = match index {
+        0x1c12 if case == ModuleInventoryCase::DynamicPdoLayout => (2, &[0x1600]),
+        0x1c13 if case == ModuleInventoryCase::DynamicPdoLayout => (2, &[0x1a40, 0x1a00]),
+        0x1a00 if case == ModuleInventoryCase::DynamicPdoLayout => {
+            (4, &[0x6042_0010, 0x2100_0201, 7])
+        }
         0x1c12 if multiple_sms => (2, &[0x1640]),
         0x1c13 if multiple_sms => (2, &[0x1a40]),
         0x1c14 if multiple_sms => (2, &[0x1a10, 0x1a00, 0x1b11]),

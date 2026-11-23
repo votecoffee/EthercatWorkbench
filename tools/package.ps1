@@ -77,6 +77,7 @@ try {
         'samples/module-pdo-expected-multi-sm.json' = 'samples/module-pdo-expected-multi-sm.json'
         'samples/module-pdo-split-group.esi.xml' = 'samples/module-pdo-split-group.esi.xml'
         'samples/module-pdo-expected-split.json' = 'samples/module-pdo-expected-split.json'
+        'samples/dynamic-pdo.esi.xml' = 'samples/dynamic-pdo.esi.xml'
         'samples/fixed-slot-pdo-readback.json' = 'samples/fixed-slot-pdo-readback.json'
         'samples/fixed-slot-module-inventory.json' = 'samples/fixed-slot-module-inventory.json'
         'samples/pdo-choices.esi.xml' = 'samples/pdo-choices.esi.xml'
