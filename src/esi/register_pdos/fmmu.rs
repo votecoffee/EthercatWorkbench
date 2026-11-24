@@ -59,13 +59,15 @@ struct ActiveMapping {
 
 pub(super) struct Table {
     pub(super) evidence: Evidence,
+    pub(super) stations: Vec<u16>,
     active: Vec<ActiveMapping>,
 }
 
 impl Table {
     pub(super) fn load(path: &Path, address: u16) -> Result<Self> {
         ensure!(address != 0, "FMMU station address must be nonzero");
-        let (sha256, position, station) = load_station(path, address)?;
+        let saved = load_station(path, address)?;
+        let station = saved.station;
         let mut issues = station.count_issues();
         let mut active = Vec::new();
         for (slot, read) in station.slots.iter().enumerate() {
@@ -93,14 +95,15 @@ impl Table {
                     .context("FMMU snapshot has no file name")?
                     .to_string_lossy()
                     .into_owned(),
-                sha256,
-                position,
+                sha256: saved.sha256,
+                position: saved.position,
                 station_address: address,
                 reported_slots: station.count.value,
                 captured_slots: station.slots.len(),
                 identity_binding: "absent_from_snapshot",
                 issues,
             },
+            stations: saved.stations,
             active,
         })
     }

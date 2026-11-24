@@ -317,7 +317,7 @@ enum Command {
         /// Saved schema-1 logical payload with an explicit station and start address.
         #[arg(long, requires_all = ["fmmu", "station"])]
         logical_payload: Option<PathBuf>,
-        /// Saved Workbench LRD reply with an explicit expected Working Counter and schema-2 station AL evidence.
+        /// Saved Workbench LRD reply with an expected Working Counter and optional AL and topology evidence.
         #[arg(long, requires_all = ["fmmu", "station"], conflicts_with = "logical_payload")]
         lrd_reply: Option<PathBuf>,
         /// Export to a new JSON file.

@@ -196,6 +196,16 @@ Use schema 2 with the same JSON fields for a Workbench reply containing the LRD 
 
 Schema 2 requires the LRD counter to match its declared expectation and the AL read to return Working Counter 1 with clean SAFEOP and status code 0. A reply that fails either check retains both observations and withholds logical samples. An invalid AL Working Counter leaves the AL status unavailable. The optional ESC snapshot continues to provide historical values. The same-frame AL check observes the selected station and leaves physical device qualification to the bench workflow.
 
+#### Verify station count and order in the same reply
+
+Use schema 3 for a Workbench reply containing the LRD, the selected station's AL read, a broadcast count read, and a position read for each station in the FMMU table. The FMMU file supplies the expected station order. The review requires the broadcast Working Counter and auto-increment traversal count to agree with that table. Every position read must return Working Counter 1 and the configured station address at the expected position. The report records each configured station alias alongside its address. [Saved topology reply sample](../samples/register-pdos-lrd-topology-reply.json) · [ESC addressing and Working Counter reference](https://download.beckhoff.com/download/Document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --fmmu samples/register-pdos-fmmu.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-topology-reply.json --out .local/register-lrd-topology-review.json
+```
+
+The report adds `logical_payload.lrd_reply.topology` with the observed count, positions, conflicting alias positions and verdict. If another station lists the selected station address as its configured alias, Workbench withholds the payload because alias activation is unknown in the saved probe. A count or order mismatch also withholds the payload and preserves the LRD and AL observations. Frame header and traversal-echo failures reject the file. This workflow checks topology within the saved frame. Device identity, the set of LRD contributors and physical bench acceptance remain separate evidence.
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

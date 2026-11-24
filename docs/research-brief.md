@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.107.0** can review a saved Workbench LRD and station AL read in the same frame. Schema 2 checks the reply structure, the expected LRD Working Counter, and clean SAFEOP with AL Working Counter 1 before decoding through the saved FMMU mappings. Physical qualification remains open. [Same-frame AL check](pdo-selection.md#check-safeop-in-the-same-reply) · [Verification history](../VERIFICATION.md)
+Version **0.108.0** reviews same-frame topology probes alongside the saved LRD and AL read. Schema 3 checks the FMMU table's station count and order and withholds decoding on a conflicting configured alias. Physical qualification remains open. [Saved topology reply review](pdo-selection.md#verify-station-count-and-order-in-the-same-reply) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

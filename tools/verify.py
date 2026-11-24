@@ -774,6 +774,122 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
+                                            reply=None, paired_reply=None):
+    """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
+    sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
+    fmmu = ROOT / "samples/register-pdos-fmmu.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    reply = ROOT / "samples/register-pdos-lrd-topology-reply.json" if reply is None else reply
+    paired_reply = ROOT / "samples/register-pdos-lrd-al-reply.json" if paired_reply is None else paired_reply
+    args = ("preview-register-pdos", sample, "--device", 0, "--station", "0x1000", "--snapshot", snapshot)
+    proof = destination / "topology-review.json"
+    review = cli_call(cli, *args, "--fmmu", fmmu, "--lrd-reply", reply, "--out", proof)
+    assert review == json.loads(proof.read_bytes())
+    assert review["fmmu"]["sha256"] == hashlib.sha256(fmmu.read_bytes()).hexdigest()
+    evidence = review["logical_payload"]
+    assert evidence["sha256"] == hashlib.sha256(reply.read_bytes()).hexdigest()
+    declared = json.loads(reply.read_bytes())
+    frame = bytes.fromhex(declared["reply_hex"])
+    lrd = evidence["lrd_reply"]
+    assert lrd["frame_sha256"] == hashlib.sha256(frame).hexdigest()
+    assert lrd["wkc_matches"] and lrd["actual_wkc"] == 1 and lrd["station_al"]["clean_safeop"]
+    topology = lrd["topology"]
+    assert topology["valid"] and topology["conflicting_alias_positions"] == []
+    assert topology["observation"] == {
+        "count_wkc": 2,
+        "positions": [
+            {"position": 0, "expected_station_address": 4096, "station_address": 4096,
+             "configured_alias": 0, "wkc": 1},
+            {"position": 1, "expected_station_address": 4097, "station_address": 4097,
+             "configured_alias": 8193, "wkc": 1},
+        ],
+        "valid": True,
+    }
+    assert review["projections"][0]["logical_sample"]["raw_hex"] == "B79D"
+    assert review["projections"][1]["logical_sample"]["raw_hex"] == "AABB"
+    assert "existing paths are preserved" in cli_call(
+        cli, *args, "--fmmu", fmmu, "--lrd-reply", reply, "--out", proof, success=False)
+    assert json.loads(proof.read_bytes()) == review
+
+    al_header = 28 + declared["byte_count"]
+    count_header = al_header + 18
+    first_position = count_header + 14
+    last_position = first_position + 16
+
+    def variant(name, raw=frame, **metadata):
+        document = {**declared, "reply_hex": raw.hex(" "), **metadata}
+        path = destination / (name + ".json")
+        path.write_bytes(json.dumps(document).encode())
+        return path
+
+    def word_changes(*updates):
+        raw = bytearray(frame)
+        for offset, value in updates:
+            raw[offset:offset + 2] = value.to_bytes(2, "little")
+        return raw
+
+    def inspect(path, table=fmmu):
+        return cli_call(cli, *args, "--fmmu", table, "--lrd-reply", path)
+
+    def held(result, fragment):
+        for projection in result["projections"]:
+            assert projection["logical_sample"]["status"] == "unavailable"
+            assert fragment in projection["logical_sample"]["reason"]
+            assert all(entry["logical_sample"] == projection["logical_sample"] for entry in projection["entries"])
+        assert result["projections"][0]["entries"][0]["sample"]["raw_hex"] == "B6"
+
+    for name, raw in (
+        ("swapped", word_changes((first_position + 10, 4097), (last_position + 10, 4096))),
+        ("count-changed", word_changes((count_header + 12, 1))),
+        ("position-unavailable", word_changes((last_position + 14, 0))),
+    ):
+        result = inspect(variant(name, raw=raw))
+        observed = result["logical_payload"]["lrd_reply"]
+        assert observed["wkc_matches"] and observed["station_al"]["clean_safeop"]
+        assert not observed["topology"]["valid"] and not observed["topology"]["observation"]["valid"]
+        held(result, "same-frame topology did not confirm the FMMU station count and order")
+
+    collision = inspect(variant("alias-conflict", raw=word_changes((last_position + 12, 4096))))
+    topology = collision["logical_payload"]["lrd_reply"]["topology"]
+    assert topology["observation"]["valid"] and not topology["valid"]
+    assert topology["conflicting_alias_positions"] == [1]
+    held(collision, "configured alias at positions [1]")
+    own_alias = inspect(variant("own-alias", raw=word_changes((first_position + 12, 4096))))
+    assert own_alias["logical_payload"]["lrd_reply"]["topology"]["valid"]
+    assert own_alias["projections"][0]["logical_sample"]["raw_hex"] == "B79D"
+
+    reordered = json.loads(fmmu.read_bytes())
+    reordered["devices"].reverse()
+    reversed_table = destination / "reordered-fmmu.json"
+    reversed_table.write_bytes(json.dumps(reordered).encode())
+    reversed_result = inspect(reply, table=reversed_table)
+    assert reversed_result["fmmu"]["position"] == 1
+    first = reversed_result["logical_payload"]["lrd_reply"]["topology"]["observation"]["positions"][0]
+    assert first["expected_station_address"] == 4097 and first["station_address"] == 4096
+    held(reversed_result, "same-frame topology did not confirm the FMMU station count and order")
+
+    al_failed = inspect(variant("al-wkc-zero", raw=word_changes((al_header + 16, 0))))
+    assert al_failed["logical_payload"]["lrd_reply"]["topology"]["valid"]
+    held(al_failed, "AL Working Counter mismatch")
+
+    denied = destination / "unexpected.json"
+    old_frame = bytes.fromhex(json.loads(paired_reply.read_bytes())["reply_hex"])
+    for source, fragment in (
+        (variant("bad-position-echo", raw=word_changes((last_position + 2, 0))),
+         "auto-increment address differs at position 1"),
+        (variant("wrong-probe-register", raw=word_changes((last_position + 4, 0x12))),
+         "does not match the expected Workbench LRD, AL and topology reply"),
+        (variant("missing-probes", raw=old_frame),
+         "does not match the expected Workbench LRD, AL and topology reply"),
+        (variant("schema-downgrade", schema=2),
+         "does not match the expected Workbench LRD and AL reply"),
+    ):
+        assert fragment in cli_call(
+            cli, *args, "--fmmu", fmmu, "--lrd-reply", source, "--out", denied, success=False)
+        assert not denied.exists()
+
+
 def verify_register_pdo_lrd_al_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                       reply=None, single_reply=None):
     """Gate saved virtual register inputs on the same frame's station AL read."""
@@ -971,7 +1087,7 @@ def verify_register_pdo_lrd_reply(cli, destination, sample=None, fmmu=None, snap
         (variant("extra-data", raw=frame + b"\x00" * 4), "trailing bytes"),
         (variant("zero-wkc", expected_wkc=0), "expected LRD Working Counter must be nonzero"),
         (variant("wrong-station", station_address=4097), "differs from selected FMMU station"),
-        (variant("new-schema", schema=3), "unsupported saved LRD reply schema"),
+        (variant("new-schema", schema=4), "unsupported saved LRD reply schema"),
         (variant("wrong-hex", reply_hex="ZX"), "must contain hex byte pairs"),
         (variant("too-many-payload-bytes", byte_count=1025), "payload exceeds 1024 bytes"),
         (variant("wrap", logical_start=0xffffffff), "extends beyond the 32-bit"),
@@ -8095,6 +8211,9 @@ def main():
     register_lrd_al_destination = destination / "register-pdo-lrd-al-reply"
     register_lrd_al_destination.mkdir()
     verify_register_pdo_lrd_al_reply(cli, register_lrd_al_destination)
+    register_lrd_topology_destination = destination / "register-pdo-lrd-topology-reply"
+    register_lrd_topology_destination.mkdir()
+    verify_register_pdo_lrd_topology_reply(cli, register_lrd_topology_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

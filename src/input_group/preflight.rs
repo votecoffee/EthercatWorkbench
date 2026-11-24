@@ -1,6 +1,6 @@
 //! Read and verify the grouped station order and register layout before cyclic input.
 pub(super) mod pdos;
-pub(super) mod topology;
+pub(crate) mod topology;
 use super::{
     InputGroup, Inspection, MappingReview, decode_frame_hex, fmmu, fmmu::Read, pdo_readback,
     sync_manager,

@@ -27,7 +27,7 @@ const MAX_DEVICES: usize = 16;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_PROFILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_FRAME_FILE_BYTES: u64 = 16 * 1024;
-const MAX_DATAGRAMS: usize = 2 * (MAX_DEVICES + 1);
+pub(crate) const MAX_DATAGRAMS: usize = 2 * (MAX_DEVICES + 1);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

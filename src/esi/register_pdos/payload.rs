@@ -1,9 +1,9 @@
 //! Extract register bytes from an explicitly addressed saved logical payload.
 use super::{Sample, fmmu::Check};
 use crate::{
-    input_group::{AlRead, decode_frame_hex, read_json},
+    input_group::{AlRead, MAX_DATAGRAMS, decode_frame_hex, preflight::topology, read_json},
     model::{MAX_PAYLOAD, payload_hex},
-    wire::{Frame, input_datagrams},
+    wire::{Frame, MAX_FRAME_BYTES, input_datagrams},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,27 @@ struct ReplyEvidence {
     wkc_matches: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     station_al: Option<AlRead>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topology: Option<TopologyEvidence>,
+}
+
+#[derive(Serialize)]
+struct TopologyEvidence {
+    observation: topology::Reading,
+    conflicting_alias_positions: Vec<usize>,
+    valid: bool,
+}
+
+impl TopologyEvidence {
+    fn new(observation: topology::Reading, station: u16) -> Self {
+        let conflicting_alias_positions = observation.conflicting_alias_positions(station);
+        let valid = observation.valid && conflicting_alias_positions.is_empty();
+        Self {
+            observation,
+            conflicting_alias_positions,
+            valid,
+        }
+    }
 }
 
 impl ReplyEvidence {
@@ -65,6 +86,18 @@ impl ReplyEvidence {
                     "AL Working Counter mismatch (expected {}, received {})",
                     al.expected_wkc, al.actual_wkc
                 ),
+            });
+        }
+        if let Some(topology) = &self.topology
+            && !topology.valid
+        {
+            return Some(if !topology.observation.valid {
+                "same-frame topology did not confirm the FMMU station count and order".into()
+            } else {
+                format!(
+                    "selected station address also appears as a configured alias at positions {:?}",
+                    topology.conflicting_alias_positions
+                )
             });
         }
         None
@@ -146,10 +179,10 @@ impl Window {
         })
     }
 
-    pub(super) fn load_reply(path: &Path, station: u16) -> Result<Self> {
+    pub(super) fn load_reply(path: &Path, station: u16, stations: &[u16]) -> Result<Self> {
         let (saved, bytes) = read_json::<SavedReply>(path, MAX_FILE_BYTES)?;
         ensure!(
-            matches!(saved.schema, 1 | 2),
+            matches!(saved.schema, 1..=3),
             "unsupported saved LRD reply schema {}",
             saved.schema
         );
@@ -164,25 +197,49 @@ impl Window {
         );
         validate_window(saved.logical_start, saved.byte_count)?;
         let reply = decode_frame_hex(&saved.reply_hex).context("decode saved LRD reply frame")?;
-        let expects_al = saved.schema == 2;
-        let used = if expects_al { 2 } else { 1 };
-        let mut parts = input_datagrams(station, saved.byte_count);
+        let expects_al = saved.schema >= 2;
+        let expects_topology = saved.schema == 3;
+        let mut used = if expects_al { 2 } else { 1 };
+        let inputs = input_datagrams(station, saved.byte_count);
+        let mut parts = [inputs[0]; MAX_DATAGRAMS];
+        parts[..2].copy_from_slice(&inputs);
         parts[0].address = saved.logical_start.to_le_bytes();
-        let frame = Frame::with_count(saved.index, parts, used);
-        let [(payload, actual_wkc), (al_bytes, al_wkc)] =
-            frame.reply(&reply).context(if expects_al {
-                "saved frame does not match the expected Workbench LRD and AL reply"
-            } else {
-                "saved frame does not match the expected Workbench LRD reply"
-            })?;
+        if expects_topology {
+            topology::fill_probe(&mut parts[2..], stations.len());
+            used += 1 + stations.len();
+        }
+        let encoded_len = Frame::<MAX_DATAGRAMS>::encoded_len(&parts[..used]);
         ensure!(
-            reply.len() == Frame::<2>::encoded_len(&parts[..used])
-                || reply.len() == frame.bytes().len(),
+            encoded_len <= MAX_FRAME_BYTES,
+            "expected LRD frame exceeds {MAX_FRAME_BYTES} bytes"
+        );
+        let frame = Frame::with_count(saved.index, parts, used);
+        let observed = frame.reply(&reply).context(match saved.schema {
+            1 => "saved frame does not match the expected Workbench LRD reply",
+            2 => "saved frame does not match the expected Workbench LRD and AL reply",
+            _ => "saved frame does not match the expected Workbench LRD, AL and topology reply",
+        })?;
+        ensure!(
+            reply.len() == encoded_len || reply.len() == frame.bytes().len(),
             "saved LRD reply has trailing bytes beyond the expected Ethernet frame",
         );
-        let station_al = expects_al.then(|| AlRead::from_datagram(station, al_bytes, al_wkc));
+        let (payload, actual_wkc) = observed[0];
+        let station_al =
+            expects_al.then(|| AlRead::from_datagram(station, observed[1].0, observed[1].1));
+        let topology = if expects_topology {
+            let observation = topology::decode_reading(
+                &reply[frame.datagram_offset(2)..],
+                &observed[2..used],
+                stations,
+            )?;
+            Some(TopologyEvidence::new(observation, station))
+        } else {
+            None
+        };
         let wkc_matches = actual_wkc == saved.expected_wkc;
-        let usable = wkc_matches && station_al.as_ref().is_none_or(|al| al.clean_safeop);
+        let usable = wkc_matches
+            && station_al.as_ref().is_none_or(|al| al.clean_safeop)
+            && topology.as_ref().is_none_or(|topology| topology.valid);
         Ok(Self {
             evidence: Evidence::new(
                 path,
@@ -197,6 +254,7 @@ impl Window {
                     actual_wkc,
                     wkc_matches,
                     station_al,
+                    topology,
                 }),
             )?,
             data: if usable { payload.to_vec() } else { Vec::new() },

@@ -177,10 +177,23 @@ pub(super) struct Observation {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
-struct Reading {
+pub(crate) struct Reading {
     count_wkc: u16,
     positions: Vec<Position>,
-    valid: bool,
+    pub(crate) valid: bool,
+}
+
+impl Reading {
+    pub(crate) fn conflicting_alias_positions(&self, station: u16) -> Vec<usize> {
+        self.positions
+            .iter()
+            .filter(|position| {
+                position.configured_alias == Some(station)
+                    && position.station_address != Some(station)
+            })
+            .map(|position| position.position)
+            .collect()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -235,7 +248,7 @@ struct Position {
     configured_alias: Option<u16>,
 }
 
-pub(in crate::input_group) fn fill_probe(parts: &mut [Datagram], expected_count: usize) {
+pub(crate) fn fill_probe(parts: &mut [Datagram], expected_count: usize) {
     parts[0] = Datagram::register(BRD, 0, 0x0000, 2);
     for (position, part) in parts[1..1 + expected_count].iter_mut().enumerate() {
         let address = 0u16.wrapping_sub(position as u16);
@@ -284,7 +297,7 @@ fn inspect_reply(
     })
 }
 
-fn decode_reading(
+pub(crate) fn decode_reading(
     reply: &[u8],
     parts: &[(&[u8], u16)],
     expected_stations: &[u16],
