@@ -326,9 +326,9 @@ enum Command {
         /// Saved Workbench LRD reply with AL, topology and bitwise FMMU review.
         #[arg(long, requires_all = ["fmmu", "station"], conflicts_with = "logical_payload")]
         lrd_reply: Option<PathBuf>,
-        /// Register PDO index to export to an offline decoder profile.
+        /// Register PDO index to export. Repeat in the desired packed order.
         #[arg(long, value_parser = esi::number, requires = "decoder_profile")]
-        decoder_pdo: Option<u32>,
+        decoder_pdo: Vec<u32>,
         /// Save a decoder profile and its reconstructed sample from a verified schema 4 reply.
         #[arg(long, requires_all = ["decoder_pdo", "lrd_reply"], conflicts_with = "out")]
         decoder_profile: Option<PathBuf>,
@@ -1144,9 +1144,12 @@ fn main() -> Result<()> {
                 layout,
             )?;
             if let Some(destination) = decoder_profile {
-                let pdo = u16::try_from(decoder_pdo.context("decoder PDO index is required")?)
+                let pdos = decoder_pdo
+                    .into_iter()
+                    .map(u16::try_from)
+                    .collect::<Result<Vec<_>, _>>()
                     .context("decoder PDO index exceeds 16 bits")?;
-                let profile = report.offline_profile(pdo)?;
+                let profile = report.offline_profile_for_pdos(&pdos)?;
                 profile.save(&destination)?;
                 output(&profile)
             } else {

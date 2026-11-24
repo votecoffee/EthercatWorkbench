@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.114.0** exports a fully verified saved register PDO as a standard offline decoder profile with its reconstructed sample. The desktop opens the profile through its normal workflow and loads the saved bytes on request. Physical qualification remains open. [Register decoder export](pdo-selection.md#export-a-register-pdo-decoder-profile) · [Verification history](../VERIFICATION.md)
+Version **0.115.0** exports several fully verified register PDOs from one saved reply into the same offline decoder profile. The profile preserves the requested order and each PDO's byte boundary and source details. Physical qualification remains open. [Register decoder export](pdo-selection.md#export-a-register-pdo-decoder-profile) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

@@ -5,7 +5,7 @@ The desktop follows the same workflow tabs as EthernetIP Workbench. EtherCAT add
 | Tab | Main task | Secondary detail |
 | --- | --- | --- |
 | Device | Import an ESI and select an exact device/revision, or start an offline demo | Host prerequisites use a separate window; expected identity/manual override and last discovery results expand separately |
-| Inputs | Read typed input values and last-valid age | Raw TxPDO bytes expand. **Offline decoder…** opens the paste-and-decode window, where a register decoder profile adds **Load saved register payload**. |
+| Inputs | Read typed input values and last-valid age | Raw TxPDO bytes expand. **Offline decoder…** opens the paste-and-decode window, where a register decoder profile adds **Load saved register payload** for one or several stored PDOs. |
 | Outputs | Preview and apply typed values to the offline staged RxPDO image | Raw RxPDO staging expands; mapping edits link to Mappings |
 | Logging | Choose a new CSV path, every-valid/on-change mode and selected fields | Buffer/rotation and cycle settings expand separately |
 | Mappings | Edit input or output fields, bit/byte positions, types, transforms and CSV selection | Separate pages for Input fields, Output fields, saved ESI PDO choices and ESI synchronization/mode-PDO staging |

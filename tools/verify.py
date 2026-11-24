@@ -1323,6 +1323,70 @@ def verify_register_decoder_profile(cli, destination, sample=None, layout=None, 
     assert [field["bit"] for field in filtered["tx"]] == [2, 16]
 
 
+def verify_register_decoder_set(cli, destination, sample=None, layout=None, fmmu=None, reply=None):
+    """Pack several verified PDOs in request order with their independent byte boundaries."""
+    sample = ROOT / "samples/register-pdo-decoder-set.esi.xml" if sample is None else sample
+    layout = ROOT / "samples/register-pdo-decoder-set-layout.json" if layout is None else layout
+    fmmu = ROOT / "samples/register-pdos-fmmu-bits.json" if fmmu is None else fmmu
+    reply = ROOT / "samples/register-pdos-lrd-bit-reply.json" if reply is None else reply
+    args = ("preview-register-pdos", sample, "--identity", "0x00ff1000/0x18/1",
+            "--station", "0x1000", "--fmmu", fmmu, "--register-layout", layout, "--lrd-reply", reply)
+
+    def export(path, indices, success=True):
+        selection = [item for index in indices for item in ("--decoder-pdo", index)]
+        return cli_call(cli, *args, *selection, "--decoder-profile", path, success=success)
+
+    path = destination / "decoder-set.json"
+    saved = export(path, ["0x1a20", "0x1a21"])
+    assert saved == json.loads(path.read_bytes()) == cli_call(cli, "validate", path)
+    assert saved["tx_bytes"] == 7 and saved["rx_bytes"] == 0
+    evidence = saved["register_decoder"]
+    assert evidence["packed_bits"] == 56 and evidence["packed_hex"] == "2CBA0400001122"
+    assert "pdo_index" not in evidence and "manual_layout_sha256" not in evidence
+    assert evidence["pdos"] == [
+        {"pdo_index": 0x1a20, "bit_offset": 0, "width_bits": 36,
+         "manual_layout_sha256": hashlib.sha256(layout.read_bytes()).hexdigest()},
+        {"pdo_index": 0x1a21, "bit_offset": 40, "width_bits": 16},
+    ]
+    assert [field["pdo_index"] for field in saved["tx"]] == [0x1a20, 0x1a20, 0x1a20, 0x1a21]
+    fields = cli_call(cli, "decode", path, evidence["packed_hex"])
+    assert [(field["bit"], field["value"]) for field in fields] == [(2, "11"), (9, "93"), (16, "4"), (40, "8721")]
+    assert fields[-1]["field"] == "0x1a21 · AL middle word"
+
+    reversed_path = destination / "reversed.json"
+    reversed_profile = export(reversed_path, ["0x1a21", "0x1a20"])
+    reversed_evidence = reversed_profile["register_decoder"]
+    assert reversed_evidence["packed_bits"] == 52 and reversed_evidence["packed_hex"] == "11222CBA040000"
+    assert [(pdo["pdo_index"], pdo["bit_offset"]) for pdo in reversed_evidence["pdos"]] == [(0x1a21, 0), (0x1a20, 16)]
+    fields = cli_call(cli, "decode", reversed_path, reversed_evidence["packed_hex"])
+    assert [(field["bit"], field["value"]) for field in fields] == [(0, "8721"), (18, "11"), (25, "93"), (32, "4")]
+
+    for name, indices, message in (
+        ("duplicate-selection", ["0x1a20", "0x1a20"], "duplicate decoder PDO"),
+        ("unknown-selection", ["0x1a20", "0x7fff"], "no register projection"),
+        ("unavailable-selection", ["0x1a20", "0x1a22"], "PDO 0x1a22 is unavailable"),
+    ):
+        target = destination / f"{name}.json"
+        assert message in export(target, indices, success=False)
+        assert not target.exists()
+
+    for name, edit, message in (
+        ("unaligned", lambda profile: profile["register_decoder"]["pdos"][1].update(bit_offset=36),
+         "invalid packed range"),
+        ("duplicate-source", lambda profile: profile["register_decoder"]["pdos"][1].update(pdo_index=0x1a20),
+         "duplicate register decoder PDO"),
+        ("nonzero-block-padding", lambda profile: profile["register_decoder"].update(packed_hex="2CBA0400F01122"),
+         "nonzero unused bits"),
+        ("shifted-field", lambda profile: profile["tx"][-1].update(bit=36, width=16),
+         "extends beyond its PDO"),
+    ):
+        profile = json.loads(path.read_bytes())
+        edit(profile)
+        target = destination / f"{name}.json"
+        target.write_bytes(json.dumps(profile).encode())
+        assert message in cli_call(cli, "validate", target, success=False)
+
+
 def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                             reply=None, paired_reply=None):
     """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
@@ -8781,6 +8845,9 @@ def main():
     register_decoder_destination = destination / "register-decoder-profile"
     register_decoder_destination.mkdir()
     verify_register_decoder_profile(cli, register_decoder_destination)
+    register_decoder_set_destination = destination / "register-decoder-set"
+    register_decoder_set_destination.mkdir()
+    verify_register_decoder_set(cli, register_decoder_set_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

@@ -267,6 +267,13 @@ Use `--decoder-pdo` and `--decoder-profile` with a fully verified schema-4 LRD r
 
 Open the export through **Profiles…** on the desktop. Under **Inputs → Offline decoder…**, choose **Load saved register payload** to paste the stored reconstruction and display its typed fields. The profile expects packed register bytes in ESI field order. Live commissioning uses a separate "bench profile" configured for the device's process image.
 
+Repeat `--decoder-pdo` to combine several complete projections from the same verified reply. The export follows the option order and starts each PDO on a byte boundary. The `register_decoder.pdos` list records the original PDO indexes, packed offsets, widths and manual-layout evidence. The desktop uses the same **Load saved register payload** action for the combined profile.
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdo-decoder-set.esi.xml --identity 0x00ff1000/0x18/1 --register-layout samples/register-pdo-decoder-set-layout.json --fmmu samples/register-pdos-fmmu-bits.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-bit-reply.json --decoder-pdo 0x1A20 --decoder-pdo 0x1A21 --decoder-profile .local/register-decoder-set.json
+.\ethercat-workbench-cli.exe decode .local/register-decoder-set.json 2CBA0400001122
+```
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

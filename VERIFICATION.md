@@ -1051,3 +1051,11 @@ The register PDO preview exports a standard offline decoder profile for one comp
 The padded fixture exports five packed bytes and decodes the verified link, counter and AL fields as 11, 93 and 4. The CLI checks profile reload, source hashes, preserved existing destinations, unsupported fields, invalid saved sample sizes and bits, older reply schema, bad reply WKC and native SAFEOP rejection. A pure egui test opens the ordinary offline decoder, checks that opening it preserves pasted text and loads the stored sample through the new button without starting a session.
 
 Formatting, locked Clippy, all 195 Rust tests, the locked Windows x64 build, focused CLI checks and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases recorded two and zero missed deadlines, respectively. The virtual CoE/DC on-change case recorded three missed deadlines. Physical SAFEOP and timing qualification remain open.
+
+## Version 0.115.0 multi-PDO register decoder export (2026-11-24)
+
+The register preview now accepts repeated decoder PDO selections and builds one offline profile from a complete schema-4 reply. Each projection starts at a byte boundary in request order. The profile retains per-PDO indexes, offsets, widths and manual-layout provenance. The single-PDO profile shape and the desktop sample-load action remain compatible.
+
+The authored fixture packs a 36-bit PDO and a 16-bit PDO into seven bytes. The first order produces 2CBA0400001122 and decodes the values 11, 93, 4 and 8721. The reverse order produces 11222CBA040000 and shifts the field offsets accordingly. The CLI checks rejection of duplicate, unknown and unavailable selections before export; it also rejects duplicate provenance, misaligned offsets, nonzero inter-PDO padding and fields crossing block boundaries. Headless egui exercises sample loading for both single and combined profiles.
+
+Formatting, locked Clippy, all 196 Rust tests, the locked Windows x64 build, focused CLI checks and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases each recorded zero missed deadlines. The virtual CoE/DC every-cycle case recorded seven missed deadlines. Physical SAFEOP and timing qualification remain open.
