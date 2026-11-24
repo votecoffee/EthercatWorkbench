@@ -129,7 +129,7 @@ Use `samples/module-pdo-split-group.esi.xml` and `samples/module-pdo-expected-sp
 
 ## Preview an entryless virtual PDO template
 
-ETG.2000 permits an ESI to declare an entryless virtual PDO for configuration tools to populate. It also uses the virtual attribute for ESC register projections. Workbench composes the entryless, non-fixed device template when the request supplies its complete descriptor list. Virtual register projections have a separate [offline review](#review-virtual-txpdos-backed-by-esc-registers). The template workflow excludes selected or default virtual SyncManagers, vendor-dependent definitions and module-level virtual templates. [ETG.2000, Table 81](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+ETG.2000 permits an ESI to declare an entryless virtual PDO for configuration tools to populate. It also uses the virtual attribute for ESC register projections. Workbench composes entryless, non-fixed device or module templates from a complete descriptor list. Virtual register projections have a separate [offline review](#review-virtual-txpdos-backed-by-esc-registers). The template workflow requires ordinary SyncManagers and leaves replaced and oversampled definitions to separate review. [ETG.2000, Tables 71 and 81](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
 
 For a device without slots, run `preview-pdo-layout`. Use `preview-modular-pdos --expect-layout` when the ESI declares slots. Include the exact identity and both direction arrays from the expected-layout format above. For a selected template, add an ordered `entries` array to its assignment. Use decimal `object_index`, `subindex` and `width` for each entry. Supply 1 to 255 entries with widths of 1 to 255 bits. Describe padding explicitly with object index and subindex zero. The request defines geometry and leaves datatype, object access and device write eligibility to separate review.
 
@@ -139,6 +139,17 @@ For a device without slots, run `preview-pdo-layout`. Use `preview-modular-pdos 
 ```
 
 The expected layout identifies `device_virtual_template` as the PDO origin and `esi_with_manual_entries` as the directional mapping source. The sample places manual object `0x2200:01` at Tx bit 0, followed by the ESI's status PDO. The 4-byte Tx and 2-byte Rx expectations match the fixture. A comparison for a direction with manual entries requires an explicitly reported CoE layout. Workbench compares SyncManager, PDO order and every descriptor and reports unavailable when the source is SII or unspecified. The command previews an offline layout and can save a review receipt. [Authored ESI](../samples/virtual-pdo-template.esi.xml) · [Assignment request](../samples/virtual-pdo-expected.json)
+
+### Fill templates for installed module slots
+
+In the modular preview, look for `virtual_template: true` and use `mapping.resolved` as the requested PDO index. Supply the final object indexes for that instance. Workbench resolves the declared PDO and exclusion indexes through the slot or group increments. It takes the manual descriptor indexes exactly as entered. Each template appears in `pdo_sources` as `module_virtual_template` with its slot and module identity.
+
+```powershell
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario mixed-slot-group-indexes --out .local/module-inventory.json --pdo-report .local/module-readback.json
+.\ethercat-workbench-cli.exe preview-modular-pdos samples/virtual-module-pdo-template.esi.xml --identity 0x00ff1000/16/1 --module-inventory .local/module-inventory.json --expect-layout samples/virtual-module-pdo-expected.json --run-report .local/module-readback.json --out .local/module-template-review.json
+```
+
+The authored ESI describes two configurable modules and an empty optional slot between them. The request matches the 7-byte Tx and 4-byte Rx images uploaded in virtual PREOP. A different object index fails the descriptor comparison even when its width is the same. The composed layout is an offline expectation. The modular payload decoder and profile exporter list these templates as withheld because the ESI supplies no typed entries for them. [Authored ESI](../samples/virtual-module-pdo-template.esi.xml) · [Assignment request](../samples/virtual-module-pdo-expected.json)
 
 ## Review virtual TxPDOs backed by ESC registers
 

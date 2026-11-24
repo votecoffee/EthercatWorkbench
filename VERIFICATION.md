@@ -1081,3 +1081,11 @@ Formatting, locked Clippy, all 196 Rust tests, the locked Windows x64 build, foc
 The headless desktop test reopens a relocated two-PDO bundle through the Review worker and renders the verified sample. It checks typed values, packed bytes and the source folder. Changing the folder field or editing the verified profile on disk leaves the completed view tied to its original evidence. A fresh check rejects the edited profile, and the desktop's new-file export matches the CLI verification receipt.
 
 Formatting, locked Clippy, all 197 Rust tests, the locked Windows x64 release build and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases recorded 0 and 2 missed deadlines. Native desktop interaction, physical SAFEOP input and the GUI-plus-logger bench benchmark remain pending.
+
+## Version 0.119.0 virtual module PDO templates (2026-11-24)
+
+The authored ESI has entryless virtual TxPDO and RxPDO templates in two populated module slots with an empty slot between them. A virtual PREOP scan supplied the saved inventory and CoE assignment reads before returning to INIT. The expected 7-byte Tx and 4-byte Rx layouts match the saved descriptors. The provenance lists each resolved PDO, slot and module identity. The wire audit reports 50 CoE uploads and zero CoE downloads, OP requests or logical process-data operations.
+
+Changing a manual object index at the same width fails the comparison, and an SII source leaves it unavailable. The test also checks missing entries, invalid padding, replacement of declared entries, fixed or populated virtual templates, replaced templates, virtual SyncManagers and existing output preservation. The standard modular decoder and profile export retain the decoded device field and identify the template PDOs as withheld.
+
+Formatting, locked Clippy, all 197 Rust tests, the locked Windows x64 release build, the focused CLI test and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases recorded 0 and 1 missed deadlines. Physical mapping compatibility, SAFEOP input and timing qualification remain open.

@@ -2460,6 +2460,117 @@ def verify_virtual_pdo_templates(cli, destination, sample=None, request=None):
     assert symmetric["saved_comparison"]["rx"]["assignments_match"] is True
 
 
+def verify_virtual_module_pdo_templates(cli, destination, sample=None, request=None):
+    """Check resolved virtual module templates against simulated PREOP descriptors."""
+    sample = ROOT / "samples/virtual-module-pdo-template.esi.xml" if sample is None else sample
+    request = ROOT / "samples/virtual-module-pdo-expected.json" if request is None else request
+    selector = ("--identity", "0x00ff1000/16/1")
+    choices = ("--slot", "0=0x400", "--slot", "1=0", "--slot", "2=0x400")
+    draft = cli_call(cli, "preview-modular-pdos", sample, *selector, *choices, "--expect-layout", request)
+    for position, offset in ((0, 0), (2, 0x20)):
+        rx, tx = draft["slots"][position]["pdos"]
+        assert all(pdo["virtual_template"] and pdo["entries"] == [] for pdo in (rx, tx))
+        assert rx["mapping"] == {"declared": 0x1600, "resolved": 0x1600 + offset}
+        assert tx["mapping"] == {"declared": 0x1A00, "resolved": 0x1A00 + offset}
+    assert draft["slots"][1]["pdos"] == []
+    assert draft["slots"][2]["pdos"][1]["excludes"] == [{"declared": 0x1A05, "resolved": 0x1A35}]
+    expected = draft["expected_layout"]
+    assert expected["sha256"] == hashlib.sha256(request.read_bytes()).hexdigest()
+    assert "saved_comparison" not in expected
+    for direction, size in (("tx", 7), ("rx", 4)):
+        image = expected[direction]
+        assert image["image_bytes"] == size
+        assert image["layout"]["mapping_source"] == "esi_with_manual_entries"
+        assert [row["origin"] for row in image["pdo_sources"][:2]] == [
+            {"kind": "module_virtual_template", "slot": slot, "module_ident": 0x400} for slot in (0, 2)
+        ]
+    assert expected["tx"]["pdo_sources"][-1]["origin"] == {"kind": "device"}
+    assert [(entry["bit"], entry["object_index"]) for entry in expected["tx"]["entries"]] == [
+        (0, 0x6041), (16, 0x2100), (17, 0), (24, 0x6841), (40, 0x2300), (41, 0), (48, 0x2200),
+    ]
+
+    inventory = destination / "inventory.json"
+    report = destination / "preop.json"
+    captured = cli_call(cli, "read-virtual-module-inventory", "--scenario", "mixed-slot-group-indexes",
+                        "--out", inventory, "--pdo-report", report)
+    audit = captured["audit"]
+    assert audit["state_requests"] == [1, 2, 1] and audit["coe_uploads"] == 50
+    assert not any(audit[key] for key in ("coe_downloads", "op_requests", "logical_reads",
+                                         "logical_writes", "physical_output_writes"))
+    evidence = ("--module-inventory", inventory, "--run-report", report)
+    command = ("preview-modular-pdos", sample, *selector, *evidence)
+    output = destination / "verified.json"
+    verified = cli_call(cli, *command, "--expect-layout", request,
+                        "--tx-hex", "34 12 01 CD AB FE A5", "--out", output)
+    assert verified == json.loads(output.read_bytes())
+    assert verified["expected_layout"]["saved_comparison"] == {
+        "tx": {"observed_bytes": 7, "assignments_match": True, "unavailable": None},
+        "rx": {"observed_bytes": 4, "assignments_match": True, "unavailable": None},
+    }
+    saved_tx = verified["slots"][2]["pdos"][1]["saved_readback"]
+    assert (saved_tx["state"], saved_tx["bit"], saved_tx["observed_entry_count"]) == ("unsupported", 24, 3)
+    assert verified["decoded_tx"]["withheld_pdos"] == [0x1A00, 0x1A20]
+    assert [field["value"] for field in verified["decoded_tx"]["fields"]] == ["165"]
+    profile = cli_call(cli, "export-modular-profile", sample, *selector, *evidence,
+                       "--out", destination / "partial-decoder.json")
+    assert profile["rx"] == [] and [field["object_index"] for field in profile["tx"]] == [0x2200]
+    assert profile["modular_decoder"]["rx"]["withheld_pdos"] == [0x1600, 0x1620]
+    cli_call(cli, *command, "--expect-layout", request, "--out", output, success=False)
+    assert verified == json.loads(output.read_bytes())
+
+    def variant(name, modify, source=request):
+        data = json.loads(source.read_bytes())
+        modify(data)
+        path = destination / (name + ".json")
+        path.write_bytes(json.dumps(data).encode("utf-8"))
+        return path
+
+    drifted = variant("unresolved-object", lambda data: data["tx"][1]["entries"][0].update(object_index=0x6041))
+    comparison = cli_call(cli, *command, "--expect-layout", drifted)["expected_layout"]["saved_comparison"]
+    assert comparison["tx"]["observed_bytes"] == 7 and comparison["tx"]["assignments_match"] is False
+    assert comparison["rx"]["assignments_match"] is True
+
+    sii = variant("sii-source", lambda data: data["pdo_verification"]["readback"]["tx"].update(mapping_source="sii"),
+                  source=report)
+    held = cli_call(cli, "preview-modular-pdos", sample, *selector, *choices, "--run-report", sii,
+                    "--expect-layout", request)["expected_layout"]["saved_comparison"]
+    assert held["tx"]["assignments_match"] is None and "require saved CoE" in held["tx"]["unavailable"]
+
+    def reject(esi, manifest, fragment):
+        target = destination / "unexpected.json"
+        error = cli_call(cli, "preview-modular-pdos", esi, *selector, *choices,
+                         "--expect-layout", manifest, "--out", target, success=False)
+        assert fragment in error and not target.exists(), error
+
+    missing = variant("missing-entries", lambda data: data["tx"][1].pop("entries"))
+    reject(sample, missing, "virtual PDO 0x1a20 needs explicit manual entries")
+    ordinary = variant("overwrite-ordinary", lambda data: data["tx"][2].update(entries=data["tx"][0]["entries"]))
+    reject(sample, ordinary, "only for an entryless virtual PDO template")
+    invalid_padding = variant("invalid-padding", lambda data: data["tx"][0]["entries"][2].update(subindex=2))
+    reject(sample, invalid_padding, "invalid PDO padding descriptor")
+
+    xml = sample.read_bytes()
+    for name, original, replacement, fragment in (
+        ("entry-present", b"<Name>Axis status</Name>", b"<Name>Axis status</Name><Entry><Index>272</Index>"
+         b"<BitLen>8</BitLen></Entry>", "must be an entryless, non-fixed template"),
+        ("fixed", b'<TxPdo Sm="3" Virtual="true">', b'<TxPdo Sm="3" Virtual="true" Fixed="true">',
+         "must be an entryless, non-fixed template"),
+        ("replaced", b'<TxPdo Sm="3" Virtual="true">', b'<TxPdo Sm="3" Virtual="true" OverwrittenByModule="true">',
+         "require separate interpretation"),
+        ("virtual-sm", b"<Sm>Inputs</Sm>", b'<Sm Virtual="true">Inputs</Sm>',
+         "references a virtual SyncManager"),
+        ("virtual-default-sm", b'<TxPdo Sm="3" Virtual="true">', b'<TxPdo Sm="4" Virtual="true">',
+         "references a virtual SyncManager"),
+    ):
+        assert xml.count(original) == 1
+        changed = xml.replace(original, replacement)
+        if name == "virtual-default-sm":
+            changed = changed.replace(b"<Sm>Inputs</Sm>", b'<Sm>Inputs</Sm><Sm Virtual="true">Inputs</Sm>')
+        alternate = destination / (name + ".esi.xml")
+        alternate.write_bytes(changed)
+        reject(alternate, request, fragment)
+
+
 def verify_dynamic_pdo_readback(cli, destination, sample=None):
     """Keep CoE declarations, observed runtime descriptors and ESI hints separate."""
     sample = ROOT / "samples/dynamic-pdo.esi.xml" if sample is None else sample
@@ -8995,6 +9106,9 @@ def main():
     template_destination = destination / "virtual-pdo-template"
     template_destination.mkdir()
     verify_virtual_pdo_templates(cli, template_destination)
+    module_template_destination = destination / "virtual-module-pdo-template"
+    module_template_destination.mkdir()
+    verify_virtual_module_pdo_templates(cli, module_template_destination)
     register_pdo_destination = destination / "register-pdos"
     register_pdo_destination.mkdir()
     verify_register_pdos(cli, register_pdo_destination)

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.14">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored virtual module PDO fixture</Name></Vendor>
+  <Descriptions>
+    <Groups><Group><Type>Fixture</Type><Name>Authored sample group</Name></Group></Groups>
+    <Devices>
+      <Device Physics="YY">
+        <Type ProductCode="#x00000010" RevisionNo="1">VirtualMixedSlotGroupIndexes</Type>
+        <Name>Authored virtual module PDO templates</Name>
+        <GroupType>Fixture</GroupType>
+        <Sm>MBoxOut</Sm>
+        <Sm>MBoxIn</Sm>
+        <Sm>Outputs</Sm>
+        <Sm>Inputs</Sm>
+        <TxPdo Sm="3">
+          <Index>#x1A40</Index>
+          <Name>Base status</Name>
+          <Entry><Index>#x2200</Index><SubIndex>1</SubIndex><BitLen>8</BitLen><Name>Base status</Name><DataType>USINT</DataType></Entry>
+        </TxPdo>
+        <Slots SlotPdoIncrement="#x10" SlotIndexIncrement="#x100" MaxSlotGroupCount="2" SlotGroupPdoIncrement="#x40" SlotGroupIndexIncrement="#x400">
+          <Slot SlotGroup="1" MinInstances="1" MaxInstances="1">
+            <Name>First axis</Name>
+            <ModuleIdent Default="1">#x400</ModuleIdent>
+          </Slot>
+          <Slot SlotGroup="1" MinInstances="0" MaxInstances="1">
+            <Name>Optional middle axis</Name>
+            <ModuleIdent Default="1">0</ModuleIdent>
+            <ModuleIdent>#x400</ModuleIdent>
+          </Slot>
+          <Slot SlotGroup="2" MinInstances="1" MaxInstances="1" SlotGroupPdoIncrement="#x30" SlotGroupIndexIncrement="#x800">
+            <Name>Third axis</Name>
+            <ModuleIdent Default="1">#x400</ModuleIdent>
+            <ModuleIdent>#x401</ModuleIdent>
+          </Slot>
+          <SlotGroupData SlotGroup="1"><Name>First group</Name></SlotGroupData>
+          <SlotGroupData SlotGroup="2"><Name>Second group</Name></SlotGroupData>
+        </Slots>
+      </Device>
+    </Devices>
+    <Modules>
+      <Module>
+        <Type ModuleIdent="#x400">VirtualAxis</Type>
+        <Name>Axis module</Name>
+        <RxPdo Sm="2" Virtual="true">
+          <Index DependOnSlot="1">#x1600</Index>
+          <Name>Axis command</Name>
+        </RxPdo>
+        <TxPdo Sm="3" Virtual="true">
+          <Index DependOnSlot="1">#x1A00</Index>
+          <Name>Axis status</Name>
+          <Exclude DependOnSlotGroup="1">#x1A05</Exclude>
+        </TxPdo>
+      </Module>
+      <Module>
+        <Type ModuleIdent="#x401">VirtualEmptyModule</Type>
+        <Name>Module without process data</Name>
+      </Module>
+    </Modules>
+  </Descriptions>
+</EtherCATInfo>

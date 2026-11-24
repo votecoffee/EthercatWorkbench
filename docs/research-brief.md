@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.118.0** opens verified register decoder bundles in the desktop Review tab. It shows the decoded values from the verified profile and exports the same receipt as the CLI. Physical qualification remains open. [Desktop register decoder review](desktop-review.md#review-a-register-decoder-bundle) · [Verification history](../VERIFICATION.md)
+Version **0.119.0** composes entryless virtual module PDO templates using explicit descriptors at resolved slot indexes and compares them with saved CoE assignments. Physical qualification remains open. [Virtual module templates](pdo-selection.md#fill-templates-for-installed-module-slots) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

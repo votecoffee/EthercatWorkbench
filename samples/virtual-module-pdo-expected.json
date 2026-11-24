@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "identity": {
+    "vendor": 16715776,
+    "product": 16,
+    "revision": 1
+  },
+  "tx": [
+    {
+      "index": 6656,
+      "sm": 3,
+      "entries": [
+        {
+          "object_index": 24641,
+          "subindex": 0,
+          "width": 16
+        },
+        {
+          "object_index": 8448,
+          "subindex": 2,
+          "width": 1
+        },
+        {
+          "object_index": 0,
+          "subindex": 0,
+          "width": 7
+        }
+      ]
+    },
+    {
+      "index": 6688,
+      "sm": 3,
+      "entries": [
+        {
+          "object_index": 26689,
+          "subindex": 0,
+          "width": 16
+        },
+        {
+          "object_index": 8960,
+          "subindex": 2,
+          "width": 1
+        },
+        {
+          "object_index": 0,
+          "subindex": 0,
+          "width": 7
+        }
+      ]
+    },
+    {
+      "index": 6720,
+      "sm": 3
+    }
+  ],
+  "rx": [
+    {
+      "index": 5632,
+      "sm": 2,
+      "entries": [
+        {
+          "object_index": 24640,
+          "subindex": 0,
+          "width": 16
+        }
+      ]
+    },
+    {
+      "index": 5664,
+      "sm": 2,
+      "entries": [
+        {
+          "object_index": 26688,
+          "subindex": 0,
+          "width": 16
+        }
+      ]
+    }
+  ]
+}

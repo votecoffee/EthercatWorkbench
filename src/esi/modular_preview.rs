@@ -197,6 +197,8 @@ struct PdoPreview {
     declared_sm: Option<u8>,
     #[serde(skip)]
     mandatory: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    virtual_template: bool,
     mapping: Index,
     entries: Vec<Entry>,
     excludes: Vec<Index>,
@@ -628,13 +630,18 @@ fn resolve_pdo(
     entry_offsets: IndexOffsets,
     source: &EsiSource,
 ) -> Result<PdoPreview> {
+    let virtual_template = bool_attr(pdo, "Virtual")?;
     ensure!(
-        !bool_attr(pdo, "Virtual")?
-            && !bool_attr(pdo, "OverwrittenByModule")?
+        !bool_attr(pdo, "OverwrittenByModule")?
             && pdo
                 .attributes()
                 .all(|attribute| !attribute.name().starts_with("OS")),
-        "virtual, replaced or oversampled PDO templates require separate interpretation"
+        "replaced or oversampled PDO templates require separate interpretation"
+    );
+    ensure!(
+        !virtual_template
+            || (!bool_attr(pdo, "Fixed")? && !pdo.children().any(|entry| named(entry, "Entry"))),
+        "virtual module PDO must be an entryless, non-fixed template"
     );
     let direction = if named(pdo, "TxPdo") {
         Direction::Tx
@@ -669,6 +676,7 @@ fn resolve_pdo(
         name: label(pdo, "Name").map(str::to_owned),
         declared_sm: default_sm(pdo)?,
         mandatory: bool_attr(pdo, "Mandatory")?,
+        virtual_template,
         device_level_index_match: source.pdo_catalog.iter().any(|definition| {
             definition.direction == direction && definition.index == mapping.resolved
         }),

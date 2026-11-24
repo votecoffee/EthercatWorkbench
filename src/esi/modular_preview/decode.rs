@@ -125,7 +125,9 @@ pub(super) fn field_positions<'a>(
                 .as_ref()
                 .and_then(Candidate::matched_location);
             let Some((mut bit, sync_manager)) = location else {
-                if pdo.entries.iter().any(|entry| entry.object.resolved != 0) {
+                if pdo.virtual_template
+                    || pdo.entries.iter().any(|entry| entry.object.resolved != 0)
+                {
                     withheld_pdos.push(pdo.mapping.resolved);
                 }
                 continue;

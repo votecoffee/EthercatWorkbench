@@ -97,6 +97,7 @@ enum Origin {
     Device,
     DeviceVirtualTemplate,
     Module { slot: usize, module_ident: u32 },
+    ModuleVirtualTemplate { slot: usize, module_ident: u32 },
     GroupPadding { alignment_bytes: u32 },
 }
 
@@ -285,21 +286,35 @@ fn candidate_descriptors(
         .collect();
     for slot in slots {
         for pdo in slot.pdos.iter().filter(|pdo| pdo.direction == direction) {
-            candidates.insert(
-                pdo.mapping.resolved,
-                Candidate {
-                    origin: Origin::Module {
+            let (origin, entries) = if pdo.virtual_template {
+                (
+                    Origin::ModuleVirtualTemplate {
                         slot: slot.slot,
                         module_ident: slot.module_ident,
                     },
-                    declared_sm: pdo.declared_sm,
-                    group: slot.module_pdo_group,
-                    mandatory: pdo.mandatory,
-                    entries: CandidateEntries::Declared(Ok(pdo
+                    CandidateEntries::Manual,
+                )
+            } else {
+                (
+                    Origin::Module {
+                        slot: slot.slot,
+                        module_ident: slot.module_ident,
+                    },
+                    CandidateEntries::Declared(Ok(pdo
                         .entries
                         .iter()
                         .map(|entry| descriptor(entry.object.resolved, entry.subindex, entry.width))
                         .collect())),
+                )
+            };
+            candidates.insert(
+                pdo.mapping.resolved,
+                Candidate {
+                    origin,
+                    declared_sm: pdo.declared_sm,
+                    group: slot.module_pdo_group,
+                    mandatory: pdo.mandatory,
+                    entries,
                     excludes: pdo.excludes.iter().map(|index| index.resolved).collect(),
                 },
             );
@@ -465,7 +480,7 @@ fn compose_direction(
                     descriptors.with_context(|| format!("read PDO {index:#06x} descriptors"))?;
                 ensure!(
                     assignment.entries.is_none(),
-                    "PDO {index:#06x} accepts manual entries only for an entryless virtual device template"
+                    "PDO {index:#06x} accepts manual entries only for an entryless virtual PDO template"
                 );
                 descriptors
             }

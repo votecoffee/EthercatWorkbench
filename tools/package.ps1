@@ -98,6 +98,8 @@ try {
         'samples/register-pdos-lrd-bit-reply.json' = 'samples/register-pdos-lrd-bit-reply.json'
         'samples/register-pdos-lrd-contributors-reply.json' = 'samples/register-pdos-lrd-contributors-reply.json'
         'samples/virtual-pdo-expected.json' = 'samples/virtual-pdo-expected.json'
+        'samples/virtual-module-pdo-template.esi.xml' = 'samples/virtual-module-pdo-template.esi.xml'
+        'samples/virtual-module-pdo-expected.json' = 'samples/virtual-module-pdo-expected.json'
         'samples/fixed-slot-pdo-readback.json' = 'samples/fixed-slot-pdo-readback.json'
         'samples/fixed-slot-module-inventory.json' = 'samples/fixed-slot-module-inventory.json'
         'samples/pdo-choices.esi.xml' = 'samples/pdo-choices.esi.xml'

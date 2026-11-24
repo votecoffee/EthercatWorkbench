@@ -535,18 +535,20 @@ impl<'a> CheckedDirection<'a> {
                 assigned_exclusions: Vec::new(),
             };
         };
-        let expected = candidate
-            .entries
-            .iter()
-            .map(|entry| Descriptor {
-                object_index: entry.object.resolved,
-                subindex: entry.subindex,
-                width: usize::from(entry.width),
-            })
-            .collect();
+        let expected = (!candidate.virtual_template).then(|| {
+            candidate
+                .entries
+                .iter()
+                .map(|entry| Descriptor {
+                    object_index: entry.object.resolved,
+                    subindex: entry.subindex,
+                    width: usize::from(entry.width),
+                })
+                .collect()
+        });
         assignment.compare(
             candidate.declared_sm,
-            Some(expected),
+            expected,
             candidate.excludes.iter().map(|index| index.resolved),
             observed,
         )
