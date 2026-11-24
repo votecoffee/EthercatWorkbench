@@ -10,10 +10,12 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, ops::Range, path::Path};
 
+mod audit;
 mod fmmu;
 mod layout;
 mod payload;
 pub mod profile;
+pub use audit::Verification as DecoderVerification;
 
 const ESC_REGISTER_END: usize = 0x0f00;
 

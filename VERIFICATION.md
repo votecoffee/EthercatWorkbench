@@ -1059,3 +1059,11 @@ The register preview now accepts repeated decoder PDO selections and builds one 
 The authored fixture packs a 36-bit PDO and a 16-bit PDO into seven bytes. The first order produces 2CBA0400001122 and decodes the values 11, 93, 4 and 8721. The reverse order produces 11222CBA040000 and shifts the field offsets accordingly. The CLI checks rejection of duplicate, unknown and unavailable selections before export; it also rejects duplicate provenance, misaligned offsets, nonzero inter-PDO padding and fields crossing block boundaries. Headless egui exercises sample loading for both single and combined profiles.
 
 Formatting, locked Clippy, all 196 Rust tests, the locked Windows x64 build, focused CLI checks and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases each recorded zero missed deadlines. The virtual CoE/DC every-cycle case recorded seven missed deadlines. Physical SAFEOP and timing qualification remain open.
+
+## Version 0.116.0 saved register decoder verification (2026-11-24)
+
+The register preview can rebuild a saved profile from the supplied ESI, FMMU table, LRD reply and original manual choices. It reuses the profile's PDO order and compares source digests, identity, station, placement, reconstructed sample bytes and typed decoder fields. The JSON receipt identifies the exact profile bytes by SHA-256. A mismatch returns a failing process status and can still be saved to a new receipt. Profile names, run settings and logging options are outside the reconstruction comparison.
+
+The CLI checks a combined profile and a single-PDO profile, exact copies of evidence at renamed paths, preserved existing output files, and edits to local profile names and logging options. It verifies failure reports for modified payloads and endian flags, changed source-file bytes, an ESI and layout digest mismatch, and a saved reply whose Working Counter invalidates reconstruction.
+
+Formatting, locked Clippy, all 196 Rust tests, the locked Windows x64 build, focused CLI checks and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases each recorded one missed deadline. Physical SAFEOP and timing qualification remain open.

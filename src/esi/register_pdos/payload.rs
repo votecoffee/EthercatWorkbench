@@ -130,7 +130,7 @@ impl ReplyEvidence {
 #[derive(Serialize)]
 pub(super) struct Evidence {
     file_name: String,
-    sha256: String,
+    pub(super) sha256: String,
     source: &'static str,
     station_address: u16,
     logical_start: u32,

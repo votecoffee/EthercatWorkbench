@@ -274,6 +274,16 @@ Repeat `--decoder-pdo` to combine several complete projections from the same ver
 .\ethercat-workbench-cli.exe decode .local/register-decoder-set.json 2CBA0400001122
 ```
 
+#### Verify a saved register decoder profile
+
+Use `--verify-decoder PROFILE` with the ESI, FMMU table, saved LRD reply and the original manual layout or start-bit choices. Workbench reads the PDO order from the profile and rebuilds its packed sample and typed mapping. The check compares the recorded source hashes, selected identity and station, manual placement, packed PDO ranges, sample bytes and decoder fields. You can use renamed or relocated copies of the source files. Local profile names, logging choices and run settings are outside the reconstruction comparison.
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdo-decoder-set.esi.xml --identity 0x00ff1000/0x18/1 --register-layout samples/register-pdo-decoder-set-layout.json --fmmu samples/register-pdos-fmmu-bits.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-bit-reply.json --verify-decoder .local/register-decoder-set.json --out .local/register-decoder-verification.json
+```
+
+The receipt identifies the checked profile by SHA-256 and reports whether the reconstruction succeeded. A digest or reconstruction mismatch returns a failing exit status and includes its reason in the receipt. Use a new path for the optional receipt.
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

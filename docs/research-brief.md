@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.115.0** exports several fully verified register PDOs from one saved reply into the same offline decoder profile. The profile preserves the requested order and each PDO's byte boundary and source details. Physical qualification remains open. [Register decoder export](pdo-selection.md#export-a-register-pdo-decoder-profile) · [Verification history](../VERIFICATION.md)
+Version **0.116.0** verifies exported register decoder profiles against the original saved ESI, FMMU and LRD evidence. The CLI rebuilds the packed sample and typed mapping and reports source or profile differences. Physical qualification remains open. [Register decoder verification](pdo-selection.md#verify-a-saved-register-decoder-profile) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

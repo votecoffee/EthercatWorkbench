@@ -1387,6 +1387,106 @@ def verify_register_decoder_set(cli, destination, sample=None, layout=None, fmmu
         assert message in cli_call(cli, "validate", target, success=False)
 
 
+def verify_register_decoder_audit(cli, destination, sample=None, layout=None, fmmu=None, reply=None):
+    """Rebuild profile contents from immutable evidence and report semantic differences."""
+    sample = ROOT / "samples/register-pdo-decoder-set.esi.xml" if sample is None else sample
+    layout = ROOT / "samples/register-pdo-decoder-set-layout.json" if layout is None else layout
+    fmmu = ROOT / "samples/register-pdos-fmmu-bits.json" if fmmu is None else fmmu
+    reply = ROOT / "samples/register-pdos-lrd-bit-reply.json" if reply is None else reply
+
+    def evidence(esi=sample, mapping=layout, table=fmmu, packet=reply):
+        return ("preview-register-pdos", esi, "--identity", "0x00ff1000/0x18/1",
+                "--station", "0x1000", "--fmmu", table, "--register-layout", mapping, "--lrd-reply", packet)
+
+    profile = destination / "original-profile.json"
+    cli_call(cli, *evidence(), "--decoder-pdo", "0x1a21", "--decoder-pdo", "0x1a20",
+             "--decoder-profile", profile)
+    original = profile.read_bytes()
+    receipt = destination / "audit.json"
+    result = cli_call(cli, *evidence(), "--verify-decoder", profile, "--out", receipt)
+    assert result == json.loads(receipt.read_bytes())
+    assert result == {
+        "schema": 1, "scope": "saved_register_decoder_reconstruction", "profile_file_name": profile.name,
+        "profile_sha256": hashlib.sha256(original).hexdigest(), "pdo_indexes": [0x1a21, 0x1a20],
+        "rebuilt": True, "verified": True, "issues": [],
+    }
+    assert "existing paths are preserved" in cli_call(
+        cli, *evidence(), "--verify-decoder", profile, "--out", profile, success=False)
+    assert profile.read_bytes() == original
+
+    def copy(name, source):
+        path = destination / name
+        path.write_bytes(source.read_bytes())
+        return path
+
+    renamed = evidence(copy("copied.esi.xml", sample), copy("copied-layout.json", layout),
+                       copy("copied-fmmu.json", fmmu), copy("copied-reply.json", reply))
+    assert cli_call(cli, *renamed, "--verify-decoder", profile) == result
+
+    def change_profile(name, update):
+        path = destination / (name + ".json")
+        changed = json.loads(original)
+        update(changed)
+        path.write_bytes(json.dumps(changed).encode())
+        return path
+
+    def rename_and_log(data):
+        data.update(name="Local decoder name", scheduler="relative", rotate_rows=23)
+        data["tx"][0]["log"] = True
+
+    custom = change_profile("local-settings", rename_and_log)
+    assert cli_call(cli, *evidence(), "--verify-decoder", custom)["verified"]
+
+    for name, edit, check in (
+        ("sample-changed", lambda data: data["register_decoder"].update(packed_hex="10222CBA040000"), "packed_sample"),
+        ("endian-changed", lambda data: data["tx"][0].update(big_endian=True), "decoder_fields"),
+    ):
+        changed = change_profile(name, edit)
+        rejected = cli_call(cli, *evidence(), "--verify-decoder", changed, success=False)
+        assert rejected["rebuilt"] and not rejected["verified"]
+        assert [issue["check"] for issue in rejected["issues"]] == [check]
+
+    for name, source, argument in (
+        ("reformatted-reply", reply, "packet"), ("reformatted-fmmu", fmmu, "table"),
+    ):
+        path = destination / (name + ".json")
+        path.write_bytes(source.read_bytes() + b"\n")
+        rejected = cli_call(cli, *evidence(**{argument: path}), "--verify-decoder", profile, success=False)
+        assert rejected["rebuilt"] and not rejected["verified"]
+        assert [issue["check"] for issue in rejected["issues"]] == [
+            "reply_hash" if argument == "packet" else "fmmu_hash",
+        ]
+
+    stale_esi = destination / "modified.esi.xml"
+    stale_esi.write_bytes(sample.read_bytes() + b"\n")
+    changed_layout = destination / "modified-layout.json"
+    source = json.loads(layout.read_bytes())
+    source["esi_sha256"] = hashlib.sha256(stale_esi.read_bytes()).hexdigest()
+    changed_layout.write_bytes(json.dumps(source).encode())
+    rejected = cli_call(cli, *evidence(esi=stale_esi, mapping=changed_layout), "--verify-decoder", profile, success=False)
+    assert rejected["rebuilt"] and not rejected["verified"]
+    assert [issue["check"] for issue in rejected["issues"]] == ["esi_hash", "manual_layout_hash", "manual_placement"]
+
+    faulty_reply = destination / "bad-wkc.json"
+    source = json.loads(reply.read_bytes())
+    frame = bytearray.fromhex(source["reply_hex"])
+    offset = 26 + source["byte_count"]
+    frame[offset:offset + 2] = b"\x01\x00"
+    source["reply_hex"] = frame.hex()
+    faulty_reply.write_bytes(json.dumps(source).encode())
+    failure = destination / "failed-audit.json"
+    rejected = cli_call(cli, *evidence(packet=faulty_reply), "--verify-decoder", profile, "--out", failure, success=False)
+    assert rejected == json.loads(failure.read_bytes())
+    assert not rejected["rebuilt"] and not rejected["verified"]
+    assert [issue["check"] for issue in rejected["issues"]] == ["reply_hash", "reconstruction"]
+    assert profile.read_bytes() == original
+
+    single = destination / "single-decoder.json"
+    cli_call(cli, *evidence(), "--decoder-pdo", "0x1a21", "--decoder-profile", single)
+    result = cli_call(cli, *evidence(), "--verify-decoder", single)
+    assert result["pdo_indexes"] == [0x1a21] and result["verified"]
+
+
 def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                             reply=None, paired_reply=None):
     """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
@@ -8848,6 +8948,9 @@ def main():
     register_decoder_set_destination = destination / "register-decoder-set"
     register_decoder_set_destination.mkdir()
     verify_register_decoder_set(cli, register_decoder_set_destination)
+    register_decoder_audit_destination = destination / "register-decoder-audit"
+    register_decoder_audit_destination.mkdir()
+    verify_register_decoder_audit(cli, register_decoder_audit_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

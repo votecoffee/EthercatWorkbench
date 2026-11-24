@@ -332,6 +332,9 @@ enum Command {
         /// Save a decoder profile and its reconstructed sample from a verified schema 4 reply.
         #[arg(long, requires_all = ["decoder_pdo", "lrd_reply"], conflicts_with = "out")]
         decoder_profile: Option<PathBuf>,
+        /// Rebuild a saved register decoder from the supplied evidence and check its contents.
+        #[arg(long, requires = "lrd_reply", conflicts_with = "decoder_profile")]
+        verify_decoder: Option<PathBuf>,
         /// Export to a new JSON file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -1118,6 +1121,7 @@ fn main() -> Result<()> {
             lrd_reply,
             decoder_pdo,
             decoder_profile,
+            verify_decoder,
             out,
         } => {
             use esi::register_pdos::{LayoutSource, LogicalSource};
@@ -1152,6 +1156,14 @@ fn main() -> Result<()> {
                 let profile = report.offline_profile_for_pdos(&pdos)?;
                 profile.save(&destination)?;
                 output(&profile)
+            } else if let Some(path) = verify_decoder {
+                let verification = report.verify_offline_profile(&path)?;
+                inspection_export(&verification, out.as_deref())?;
+                ensure!(
+                    verification.verified,
+                    "register decoder profile differs from the supplied evidence"
+                );
+                Ok(())
             } else {
                 inspection_export(&report, out.as_deref())
             }
