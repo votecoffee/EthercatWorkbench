@@ -176,6 +176,16 @@ Add `--logical-payload FILE` to a review with `--fmmu` and `--station`. The sche
 
 The report adds a `logical_sample` for each complete projection and entry whose bytes are covered. It follows the checked FMMU placements and assembles the raw result in register order. The example recovers DL status bytes `B79D` from logical addresses `0x10200021` and `0x10200000`. A field can be available even when another field falls outside the window. An incomplete entry or unverified placement carries an unavailable reason. The ESC snapshot's existing `sample` values remain separately attributed, including when the bytes disagree.
 
+### Decode a saved Workbench LRD reply
+
+Use `--lrd-reply FILE` with the FMMU table and selected station. Supply a schema-1 JSON object with `station_address`, `index`, `logical_start`, `byte_count`, `expected_wkc` and `reply_hex`. Use JSON integers for station, index, logical start, byte count and the nonzero expected Working Counter. Supply one untagged Workbench Ethernet II reply containing a single LRD datagram, with any Ethernet minimum padding and with the FCS excluded. The logical window follows the same 1 to 1024 byte limit as the supplied-payload option. Choose one of `--lrd-reply` and `--logical-payload`. [Saved LRD reply sample](../samples/register-pdos-lrd-reply.json)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --fmmu samples/register-pdos-fmmu-split.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-reply.json --snapshot samples/esc-diagnostics.json --out .local/register-lrd-review.json
+```
+
+Workbench checks the reply signature and expected command, datagram index, logical address and length. A structurally valid reply adds the frame hash and expected and actual Working Counters under `logical_payload.lrd_reply`. A counter mismatch withholds the logical samples and preserves the report for review. A matching counter admits payload bytes through the checked FMMU ranges. The sample recovers `B79D` in register order. Station selection comes from the supplied metadata and FMMU snapshot. Actual device identity, the set of responders and physical SAFEOP qualification remain separate evidence. [EtherCAT LRD and Working Counter reference](https://download.beckhoff.com/download/Document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

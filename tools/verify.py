@@ -774,6 +774,108 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_register_pdo_lrd_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
+                                   reply=None, payload=None):
+    """Check saved packet structure and WKC before using a logical read as payload evidence."""
+    sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
+    fmmu = ROOT / "samples/register-pdos-fmmu-split.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    reply = ROOT / "samples/register-pdos-lrd-reply.json" if reply is None else reply
+    payload = ROOT / "samples/register-pdos-logical-payload.json" if payload is None else payload
+    args = ("preview-register-pdos", sample, "--device", 0)
+    setup = ("--fmmu", fmmu, "--station", "0x1000", "--snapshot", snapshot)
+    proof = destination / "validated-reply.json"
+    result = cli_call(cli, *args, *setup, "--lrd-reply", reply, "--out", proof)
+    assert result == json.loads(proof.read_bytes())
+    declared = json.loads(reply.read_bytes())
+    frame = bytes.fromhex(declared["reply_hex"])
+    evidence = result["logical_payload"]
+    assert evidence == {
+        "file_name": reply.name, "sha256": hashlib.sha256(reply.read_bytes()).hexdigest(),
+        "source": "saved_lrd_reply", "station_address": 4096,
+        "logical_start": 0x10200000, "byte_count": 0x62,
+        "lrd_reply": {"frame_sha256": hashlib.sha256(frame).hexdigest(), "index": 37,
+                      "expected_wkc": 1, "actual_wkc": 1, "wkc_matches": True},
+    }
+    dl, counter, al, build = result["projections"]
+    assert dl["logical_sample"] == {"status": "available", "raw_hex": "B79D"}
+    assert counter["entries"][0]["logical_sample"]["raw_hex"] == "AABB"
+    assert al["entries"][1]["logical_sample"]["raw_hex"] == "1122"
+    assert build["logical_sample"]["status"] == "unavailable"
+    assert dl["entries"][0]["sample"]["raw_hex"] == "B6"
+    assert "existing paths are preserved" in cli_call(
+        cli, *args, *setup, "--lrd-reply", reply, "--out", proof, success=False)
+    assert json.loads(proof.read_bytes()) == result
+
+    def variant(name, *, bom=False, raw=frame, **metadata):
+        value = {**declared, "reply_hex": raw.hex(" "), **metadata}
+        path = destination / (name + ".json")
+        path.write_bytes((b"\xef\xbb\xbf" if bom else b"") + json.dumps(value).encode("utf-8"))
+        return path
+
+    def changed(offset, value):
+        return frame[:offset] + bytes([value]) + frame[offset + 1:]
+
+    def inspect(path):
+        return cli_call(cli, *args, *setup, "--lrd-reply", path)
+
+    for actual, expected in ((0, 1), (2, 1), (1, 2)):
+        modified = variant(f"wkc-{actual}-{expected}", expected_wkc=expected,
+                           raw=frame[:-2] + actual.to_bytes(2, "little"))
+        observation = inspect(modified)
+        details = observation["logical_payload"]["lrd_reply"]
+        assert (details["actual_wkc"], details["expected_wkc"], details["wkc_matches"]) == (actual, expected, False)
+        reason = f"LRD Working Counter mismatch (expected {expected}, received {actual})"
+        for row in observation["projections"]:
+            assert row["logical_sample"] == {"status": "unavailable", "reason": reason}
+            assert all(entry["logical_sample"] == row["logical_sample"] for entry in row["entries"])
+        assert observation["projections"][0]["entries"][0]["sample"]["raw_hex"] == "B6"
+
+    upper = 0xfffffffe
+    small_frame = (frame[:14] + (0x1000 | 14).to_bytes(2, "little") + bytes([0x0a, 37])
+                   + upper.to_bytes(4, "little") + b"\x02\x00\x00\x00\x7E\x7F\x01\x00")
+    for packet in (small_frame, small_frame.ljust(60, b"\x00")):
+        boundary = variant(f"upper-{len(packet)}", bom=True, raw=packet, logical_start=upper, byte_count=2)
+        report = inspect(boundary)
+        assert report["logical_payload"]["sha256"] == hashlib.sha256(boundary.read_bytes()).hexdigest()
+        assert report["logical_payload"]["lrd_reply"]["frame_sha256"] == hashlib.sha256(packet).hexdigest()
+        assert report["projections"][3]["logical_sample"] == {"status": "available", "raw_hex": "7E7F"}
+
+    denied = destination / "unexpected.json"
+    mismatch = "does not match the expected Workbench LRD reply"
+    for source, fragment in (
+        (variant("wrong-command", raw=changed(16, 0x0c)), mismatch),
+        (variant("wrong-source", raw=changed(6, 0x10)), mismatch),
+        (variant("wrong-type", raw=changed(12, 0x81)), mismatch),
+        (variant("bad-index", index=38), mismatch),
+        (variant("wrong-address", logical_start=0x10200001), mismatch),
+        (variant("wrong-byte-count", byte_count=0x61), mismatch),
+        (variant("more-datagrams", raw=changed(23, 0x80)), mismatch),
+        (variant("truncated", raw=frame[:-1]), mismatch),
+        (variant("extra-data", raw=frame + b"\x00" * 4), "trailing bytes"),
+        (variant("zero-wkc", expected_wkc=0), "expected LRD Working Counter must be nonzero"),
+        (variant("wrong-station", station_address=4097), "differs from selected FMMU station"),
+        (variant("new-schema", schema=2), "unsupported saved LRD reply schema"),
+        (variant("wrong-hex", reply_hex="ZX"), "must contain hex byte pairs"),
+        (variant("too-many-payload-bytes", byte_count=1025), "payload exceeds 1024 bytes"),
+        (variant("wrap", logical_start=0xffffffff), "extends beyond the 32-bit"),
+    ):
+        assert fragment in cli_call(cli, *args, *setup, "--lrd-reply", source, "--out", denied, success=False)
+        assert not denied.exists()
+    assert "--fmmu" in cli_call(cli, *args, "--lrd-reply", reply, success=False)
+    assert "cannot be used with" in cli_call(cli, *args, *setup, "--lrd-reply", reply,
+                                            "--logical-payload", payload, success=False)
+
+    broken_table = json.loads(fmmu.read_bytes())
+    broken_table["devices"][0]["slots"][1]["value"][12] = 0
+    broken = destination / "partial-fmmu.json"
+    broken.write_bytes(json.dumps(broken_table).encode())
+    held = cli_call(cli, *args, "--fmmu", broken, "--station", "4096", "--lrd-reply", reply)
+    assert held["logical_payload"]["lrd_reply"]["wkc_matches"] is True
+    assert held["projections"][0]["logical_sample"]["status"] == "unavailable"
+    assert "partially covers" in held["projections"][0]["logical_sample"]["reason"]
+
+
 def verify_register_pdo_logical_payload(cli, destination, sample=None, fmmu=None, snapshot=None,
                                         payload=None, single_fmmu=None):
     """Reassemble an addressed logical window through checked virtual TxPDO mappings."""
@@ -7871,6 +7973,9 @@ def main():
     register_payload_destination = destination / "register-pdo-logical-payload"
     register_payload_destination.mkdir()
     verify_register_pdo_logical_payload(cli, register_payload_destination)
+    register_lrd_destination = destination / "register-pdo-lrd-reply"
+    register_lrd_destination.mkdir()
+    verify_register_pdo_lrd_reply(cli, register_lrd_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

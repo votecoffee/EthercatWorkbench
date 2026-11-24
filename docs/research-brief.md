@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.105.0** decodes an addressed logical payload through checked single-slot or split FMMU placements. It assembles raw data in register order and withholds incomplete results. The report keeps logical payload bytes and ESC snapshot bytes independently attributed. Physical qualification remains open. [Logical payload review](pdo-selection.md#decode-a-saved-logical-payload) · [Verification history](../VERIFICATION.md)
+Version **0.106.0** reviews a saved single-datagram Workbench LRD reply with declared station, address and expected Working Counter. It checks the frame headers, reports the observed counter, and decodes through checked FMMUs when the counters match. Physical qualification remains open. [Saved reply review](pdo-selection.md#decode-a-saved-workbench-lrd-reply) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

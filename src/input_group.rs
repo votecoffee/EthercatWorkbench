@@ -506,7 +506,7 @@ impl InputGroup {
     }
 }
 
-fn decode_frame_hex(text: &str) -> Result<Vec<u8>> {
+pub(crate) fn decode_frame_hex(text: &str) -> Result<Vec<u8>> {
     let hex: String = text
         .chars()
         .filter(|c| !c.is_ascii_whitespace())

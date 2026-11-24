@@ -317,6 +317,9 @@ enum Command {
         /// Saved schema-1 logical payload with an explicit station and start address.
         #[arg(long, requires_all = ["fmmu", "station"])]
         logical_payload: Option<PathBuf>,
+        /// Saved Workbench single-datagram LRD reply with an explicit expected Working Counter.
+        #[arg(long, requires_all = ["fmmu", "station"], conflicts_with = "logical_payload")]
+        lrd_reply: Option<PathBuf>,
         /// Export to a new JSON file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -1098,8 +1101,15 @@ fn main() -> Result<()> {
             fmmu,
             station,
             logical_payload,
+            lrd_reply,
             out,
         } => {
+            use esi::register_pdos::LogicalSource;
+
+            let logical = logical_payload
+                .as_deref()
+                .map(LogicalSource::Payload)
+                .or_else(|| lrd_reply.as_deref().map(LogicalSource::LrdReply));
             let station = station
                 .map(u16::try_from)
                 .transpose()
@@ -1110,7 +1120,7 @@ fn main() -> Result<()> {
                 identity.as_ref(),
                 snapshot.as_deref(),
                 fmmu.as_deref().zip(station),
-                logical_payload.as_deref(),
+                logical,
             )?;
             inspection_export(&report, out.as_deref())
         }

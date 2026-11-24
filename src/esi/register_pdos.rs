@@ -77,13 +77,18 @@ enum Sample {
     Unavailable { reason: String },
 }
 
+pub enum LogicalSource<'a> {
+    Payload(&'a Path),
+    LrdReply(&'a Path),
+}
+
 pub fn preview(
     esi: &Path,
     index: Option<usize>,
     identity: Option<&Identity>,
     snapshot: Option<&Path>,
     fmmu: Option<(&Path, u16)>,
-    logical_payload: Option<&Path>,
+    logical_payload: Option<LogicalSource<'_>>,
 ) -> Result<Review> {
     let devices = load(esi)?;
     let device = select_device(&devices, index, identity)?;
@@ -100,11 +105,15 @@ pub fn preview(
         );
     }
     let logical_payload = logical_payload
-        .map(|path| {
+        .map(|source| {
             let table = fmmu
                 .as_ref()
                 .context("logical payload review requires a saved FMMU table")?;
-            payload::Window::load(path, table.evidence.station_address)
+            let station = table.evidence.station_address;
+            match source {
+                LogicalSource::Payload(path) => payload::Window::load(path, station),
+                LogicalSource::LrdReply(path) => payload::Window::load_reply(path, station),
+            }
         })
         .transpose()?;
     let projections = device
