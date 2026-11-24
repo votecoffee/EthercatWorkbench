@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.106.0** reviews a saved single-datagram Workbench LRD reply with declared station, address and expected Working Counter. It checks the frame headers, reports the observed counter, and decodes through checked FMMUs when the counters match. Physical qualification remains open. [Saved reply review](pdo-selection.md#decode-a-saved-workbench-lrd-reply) · [Verification history](../VERIFICATION.md)
+Version **0.107.0** can review a saved Workbench LRD and station AL read in the same frame. Schema 2 checks the reply structure, the expected LRD Working Counter, and clean SAFEOP with AL Working Counter 1 before decoding through the saved FMMU mappings. Physical qualification remains open. [Same-frame AL check](pdo-selection.md#check-safeop-in-the-same-reply) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

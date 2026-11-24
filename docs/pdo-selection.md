@@ -178,13 +178,23 @@ The report adds a `logical_sample` for each complete projection and entry whose 
 
 ### Decode a saved Workbench LRD reply
 
-Use `--lrd-reply FILE` with the FMMU table and selected station. Supply a schema-1 JSON object with `station_address`, `index`, `logical_start`, `byte_count`, `expected_wkc` and `reply_hex`. Use JSON integers for station, index, logical start, byte count and the nonzero expected Working Counter. Supply one untagged Workbench Ethernet II reply containing a single LRD datagram, with any Ethernet minimum padding and with the FCS excluded. The logical window follows the same 1 to 1024 byte limit as the supplied-payload option. Choose one of `--lrd-reply` and `--logical-payload`. [Saved LRD reply sample](../samples/register-pdos-lrd-reply.json)
+Use `--lrd-reply FILE` with the FMMU table and selected station. For a single LRD datagram, supply a schema-1 JSON object with `station_address`, `index`, `logical_start`, `byte_count`, `expected_wkc` and `reply_hex`. Use JSON integers for station, index, logical start, byte count and the nonzero expected Working Counter. Supply one untagged Workbench Ethernet II reply containing a single LRD datagram, with any Ethernet minimum padding and with the FCS excluded. The logical window follows the same 1 to 1024 byte limit as the supplied-payload option. Choose one of `--lrd-reply` and `--logical-payload`. [Saved LRD reply sample](../samples/register-pdos-lrd-reply.json)
 
 ```powershell
 .\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --fmmu samples/register-pdos-fmmu-split.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-reply.json --snapshot samples/esc-diagnostics.json --out .local/register-lrd-review.json
 ```
 
 Workbench checks the reply signature and expected command, datagram index, logical address and length. A structurally valid reply adds the frame hash and expected and actual Working Counters under `logical_payload.lrd_reply`. A counter mismatch withholds the logical samples and preserves the report for review. A matching counter admits payload bytes through the checked FMMU ranges. The sample recovers `B79D` in register order. Station selection comes from the supplied metadata and FMMU snapshot. Actual device identity, the set of responders and physical SAFEOP qualification remain separate evidence. [EtherCAT LRD and Working Counter reference](https://download.beckhoff.com/download/Document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
+#### Check SAFEOP in the same reply
+
+Use schema 2 with the same JSON fields for a Workbench reply containing the LRD followed by one configured-address FPRD. The FPRD must read six bytes at `0x0130` from the selected station. This includes AL status at `0x0130` and its status code at `0x0134`. Workbench checks both datagrams and reports the second read as `logical_payload.lrd_reply.station_al`. [Saved LRD and AL sample](../samples/register-pdos-lrd-al-reply.json) · [ESC AL registers](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec2_registers_v3.3.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --fmmu samples/register-pdos-fmmu-split.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-al-reply.json --snapshot samples/esc-diagnostics.json --out .local/register-lrd-al-review.json
+```
+
+Schema 2 requires the LRD counter to match its declared expectation and the AL read to return Working Counter 1 with clean SAFEOP and status code 0. A reply that fails either check retains both observations and withholds logical samples. An invalid AL Working Counter leaves the AL status unavailable. The optional ESC snapshot continues to provide historical values. The same-frame AL check observes the selected station and leaves physical device qualification to the bench workflow.
 
 ## Inspect saved dynamic PDO readback
 

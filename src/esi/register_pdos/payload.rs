@@ -1,9 +1,9 @@
 //! Extract register bytes from an explicitly addressed saved logical payload.
 use super::{Sample, fmmu::Check};
 use crate::{
-    input_group::{decode_frame_hex, read_json},
+    input_group::{AlRead, decode_frame_hex, read_json},
     model::{MAX_PAYLOAD, payload_hex},
-    wire::{Datagram, Frame, LRD},
+    wire::{Frame, input_datagrams},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,34 @@ struct ReplyEvidence {
     expected_wkc: u16,
     actual_wkc: u16,
     wkc_matches: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    station_al: Option<AlRead>,
+}
+
+impl ReplyEvidence {
+    fn unavailable_reason(&self) -> Option<String> {
+        if !self.wkc_matches {
+            return Some(format!(
+                "LRD Working Counter mismatch (expected {}, received {})",
+                self.expected_wkc, self.actual_wkc
+            ));
+        }
+        if let Some(al) = &self.station_al
+            && !al.clean_safeop
+        {
+            return Some(match &al.status {
+                Some(status) => format!(
+                    "AL read did not report clean SAFEOP (state {}, status {:#06x}, code {:#06x})",
+                    status.state, status.raw, status.code
+                ),
+                None => format!(
+                    "AL Working Counter mismatch (expected {}, received {})",
+                    al.expected_wkc, al.actual_wkc
+                ),
+            });
+        }
+        None
+    }
 }
 
 #[derive(Serialize)]
@@ -121,7 +149,7 @@ impl Window {
     pub(super) fn load_reply(path: &Path, station: u16) -> Result<Self> {
         let (saved, bytes) = read_json::<SavedReply>(path, MAX_FILE_BYTES)?;
         ensure!(
-            saved.schema == 1,
+            matches!(saved.schema, 1 | 2),
             "unsupported saved LRD reply schema {}",
             saved.schema
         );
@@ -136,20 +164,25 @@ impl Window {
         );
         validate_window(saved.logical_start, saved.byte_count)?;
         let reply = decode_frame_hex(&saved.reply_hex).context("decode saved LRD reply frame")?;
-        let parts = [Datagram {
-            command: LRD,
-            address: saved.logical_start.to_le_bytes(),
-            len: saved.byte_count,
-        }];
-        let frame = Frame::new(saved.index, parts);
-        let [(payload, actual_wkc)] = frame
-            .reply(&reply)
-            .context("saved frame does not match the expected Workbench LRD reply")?;
+        let expects_al = saved.schema == 2;
+        let used = if expects_al { 2 } else { 1 };
+        let mut parts = input_datagrams(station, saved.byte_count);
+        parts[0].address = saved.logical_start.to_le_bytes();
+        let frame = Frame::with_count(saved.index, parts, used);
+        let [(payload, actual_wkc), (al_bytes, al_wkc)] =
+            frame.reply(&reply).context(if expects_al {
+                "saved frame does not match the expected Workbench LRD and AL reply"
+            } else {
+                "saved frame does not match the expected Workbench LRD reply"
+            })?;
         ensure!(
-            reply.len() == Frame::<1>::encoded_len(&parts) || reply.len() == frame.bytes().len(),
+            reply.len() == Frame::<2>::encoded_len(&parts[..used])
+                || reply.len() == frame.bytes().len(),
             "saved LRD reply has trailing bytes beyond the expected Ethernet frame",
         );
+        let station_al = expects_al.then(|| AlRead::from_datagram(station, al_bytes, al_wkc));
         let wkc_matches = actual_wkc == saved.expected_wkc;
+        let usable = wkc_matches && station_al.as_ref().is_none_or(|al| al.clean_safeop);
         Ok(Self {
             evidence: Evidence::new(
                 path,
@@ -163,26 +196,21 @@ impl Window {
                     expected_wkc: saved.expected_wkc,
                     actual_wkc,
                     wkc_matches,
+                    station_al,
                 }),
             )?,
-            data: if wkc_matches {
-                payload.to_vec()
-            } else {
-                Vec::new()
-            },
+            data: if usable { payload.to_vec() } else { Vec::new() },
         })
     }
 
     pub(super) fn sample(&self, check: &Check, requested: Range<usize>) -> Sample {
-        if let Some(reply) = &self.evidence.lrd_reply
-            && !reply.wkc_matches
+        if let Some(reason) = self
+            .evidence
+            .lrd_reply
+            .as_ref()
+            .and_then(ReplyEvidence::unavailable_reason)
         {
-            return Sample::Unavailable {
-                reason: format!(
-                    "LRD Working Counter mismatch (expected {}, received {})",
-                    reply.expected_wkc, reply.actual_wkc
-                ),
-            };
+            return Sample::Unavailable { reason };
         }
         let data = match check {
             Check::Matched {

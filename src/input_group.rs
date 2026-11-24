@@ -141,10 +141,23 @@ pub(crate) struct Device<'a> {
 #[derive(Debug, Serialize)]
 pub struct AlRead {
     pub station_address: u16,
-    expected_wkc: u16,
+    pub(crate) expected_wkc: u16,
     pub actual_wkc: u16,
     pub clean_safeop: bool,
     pub status: Option<AlStatus>,
+}
+
+impl AlRead {
+    pub(crate) fn from_datagram(station_address: u16, bytes: &[u8], actual_wkc: u16) -> Self {
+        let raw = al_readback(bytes, actual_wkc);
+        Self {
+            station_address,
+            expected_wkc: 1,
+            actual_wkc,
+            clean_safeop: raw.is_some_and(|(status, code)| clean_safeop(status, code)),
+            status: raw.map(|(status, code)| al_status(status, code)),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -523,16 +536,7 @@ fn decode_al_reads(stations: &[u16], parts: &[(&[u8], u16)]) -> Vec<AlRead> {
     stations
         .iter()
         .zip(parts)
-        .map(|(&station, &(bytes, status_wkc))| {
-            let raw = al_readback(bytes, status_wkc);
-            AlRead {
-                station_address: station,
-                expected_wkc: 1,
-                actual_wkc: status_wkc,
-                clean_safeop: raw.is_some_and(|(status, code)| clean_safeop(status, code)),
-                status: raw.map(|(status, code)| al_status(status, code)),
-            }
-        })
+        .map(|(&station, &(bytes, status_wkc))| AlRead::from_datagram(station, bytes, status_wkc))
         .collect()
 }
 

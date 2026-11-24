@@ -774,6 +774,122 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_register_pdo_lrd_al_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
+                                      reply=None, single_reply=None):
+    """Gate saved virtual register inputs on the same frame's station AL read."""
+    sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
+    fmmu = ROOT / "samples/register-pdos-fmmu-split.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    reply = ROOT / "samples/register-pdos-lrd-al-reply.json" if reply is None else reply
+    single_reply = ROOT / "samples/register-pdos-lrd-reply.json" if single_reply is None else single_reply
+    command = ("preview-register-pdos", sample, "--device", 0,
+               "--fmmu", fmmu, "--station", "0x1000", "--snapshot", snapshot)
+    proof = destination / "lrd-al-review.json"
+    review = cli_call(cli, *command, "--lrd-reply", reply, "--out", proof)
+    assert review == json.loads(proof.read_bytes())
+    declared = json.loads(reply.read_bytes())
+    frame = bytes.fromhex(declared["reply_hex"])
+    evidence = review["logical_payload"]
+    assert evidence["sha256"] == hashlib.sha256(reply.read_bytes()).hexdigest()
+    lrd = evidence["lrd_reply"]
+    assert lrd["frame_sha256"] == hashlib.sha256(frame).hexdigest()
+    assert lrd["wkc_matches"] and lrd["expected_wkc"] == lrd["actual_wkc"] == 1
+    al = lrd["station_al"]
+    assert al["station_address"] == 4096 and al["expected_wkc"] == al["actual_wkc"] == 1
+    assert al["clean_safeop"] and not al["status"]["error"] and al["status"]["state"] == "SAFEOP"
+    assert al["status"]["raw"] == 4 and al["status"]["code"] == 0
+    dl, counter, status, _ = review["projections"]
+    assert dl["logical_sample"]["raw_hex"] == "B79D"
+    assert counter["logical_sample"]["raw_hex"] == "AABB"
+    assert status["logical_sample"]["raw_hex"] == "040011220000"
+    assert status["entries"][0]["sample"]["raw_hex"] == "1400"
+    assert "existing paths are preserved" in cli_call(
+        cli, *command, "--lrd-reply", reply, "--out", proof, success=False)
+    assert json.loads(proof.read_bytes()) == review
+
+    al_header = 28 + declared["byte_count"]
+    al_bytes = al_header + 10
+
+    def variant(name, raw=frame, **metadata):
+        source = {**declared, "reply_hex": raw.hex(" "), **metadata}
+        path = destination / (name + ".json")
+        path.write_bytes(json.dumps(source).encode("utf-8"))
+        return path
+
+    def al_variant(name, *, status=4, code=0, wkc=1, lrd_wkc=1):
+        copy = bytearray(frame)
+        for offset, value in ((al_header - 2, lrd_wkc), (al_bytes, status),
+                              (al_bytes + 4, code), (al_bytes + 6, wkc)):
+            copy[offset:offset + 2] = value.to_bytes(2, "little")
+        return variant(name, raw=copy)
+
+    def inspect(source):
+        return cli_call(cli, *command, "--lrd-reply", source)
+
+    def withheld(report, reason):
+        for pdo in report["projections"]:
+            assert pdo["logical_sample"]["status"] == "unavailable"
+            assert reason in pdo["logical_sample"]["reason"]
+            assert all(entry["logical_sample"] == pdo["logical_sample"] for entry in pdo["entries"])
+        assert report["projections"][0]["entries"][0]["sample"]["raw_hex"] == "B6"
+
+    for name, status, code, state in (
+        ("preop", 2, 0, "PREOP"), ("op", 8, 0, "OP"),
+        ("error-bit", 0x14, 0, "SAFEOP"), ("nonzero-code", 4, 0x1d, "SAFEOP"),
+    ):
+        report = inspect(al_variant(name, status=status, code=code))
+        details = report["logical_payload"]["lrd_reply"]
+        assert details["wkc_matches"] and not details["station_al"]["clean_safeop"]
+        observation = details["station_al"]["status"]
+        assert (observation["raw"], observation["code"], observation["state"]) == (status, code, state)
+        withheld(report, "AL read did not report clean SAFEOP")
+    for count in (0, 2):
+        report = inspect(al_variant(f"al-wkc-{count}", wkc=count))
+        details = report["logical_payload"]["lrd_reply"]
+        assert details["wkc_matches"] and details["station_al"]["actual_wkc"] == count
+        assert details["station_al"]["status"] is None and not details["station_al"]["clean_safeop"]
+        withheld(report, f"AL Working Counter mismatch (expected 1, received {count})")
+    report = inspect(al_variant("lrd-wkc-zero", lrd_wkc=0))
+    assert not report["logical_payload"]["lrd_reply"]["wkc_matches"]
+    assert report["logical_payload"]["lrd_reply"]["station_al"]["clean_safeop"]
+    withheld(report, "LRD Working Counter mismatch (expected 1, received 0)")
+    flagged = inspect(al_variant("identity-flag", status=0x24))
+    assert flagged["logical_payload"]["lrd_reply"]["station_al"]["status"]["uninterpreted_flags"] == 0x20
+    assert flagged["projections"][0]["logical_sample"]["raw_hex"] == "B79D"
+
+    def changed(offset, value):
+        return frame[:offset] + bytes([value]) + frame[offset + 1:]
+
+    denied = destination / "unexpected.json"
+    bad = "does not match the expected Workbench LRD and AL reply"
+    single_frame = bytes.fromhex(json.loads(single_reply.read_bytes())["reply_hex"])
+    for source, fragment in (
+        (variant("wrong-al-station", raw=changed(al_header + 2, 1)), bad),
+        (variant("wrong-al-command", raw=changed(al_header, 1)), bad),
+        (variant("wrong-al-index", raw=changed(al_header + 1, 38)), bad),
+        (variant("wrong-al-register", raw=changed(al_header + 4, 0x34)), bad),
+        (variant("wrong-al-length", raw=changed(al_header + 6, 2)), bad),
+        (variant("broken-chain", raw=changed(23, 0)), bad),
+        (variant("extra-continuation", raw=changed(al_header + 7, 0x80)), bad),
+        (variant("no-al", raw=single_frame), bad),
+        (variant("wrong-schema", schema=1), "does not match the expected Workbench LRD reply"),
+        (variant("short-al", raw=frame[:-1]), bad),
+        (variant("extra-packet-bytes", raw=frame + b"\x00"), "trailing bytes"),
+    ):
+        assert fragment in cli_call(cli, *command, "--lrd-reply", source, "--out", denied, success=False)
+        assert not denied.exists()
+
+    upper = 0xfffffffe
+    small = (frame[:14] + (0x1000 | 32).to_bytes(2, "little") + bytes([0x0a, 37])
+             + upper.to_bytes(4, "little") + b"\x02\x80\x00\x00\x7E\x7F\x01\x00"
+             + frame[al_header:])
+    assert len(small) == 48
+    report = inspect(variant("padded-upper", raw=small.ljust(60, b"\x00"),
+                             logical_start=upper, byte_count=2))
+    assert report["logical_payload"]["lrd_reply"]["station_al"]["clean_safeop"]
+    assert report["projections"][3]["logical_sample"]["raw_hex"] == "7E7F"
+
+
 def verify_register_pdo_lrd_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                    reply=None, payload=None):
     """Check saved packet structure and WKC before using a logical read as payload evidence."""
@@ -855,7 +971,7 @@ def verify_register_pdo_lrd_reply(cli, destination, sample=None, fmmu=None, snap
         (variant("extra-data", raw=frame + b"\x00" * 4), "trailing bytes"),
         (variant("zero-wkc", expected_wkc=0), "expected LRD Working Counter must be nonzero"),
         (variant("wrong-station", station_address=4097), "differs from selected FMMU station"),
-        (variant("new-schema", schema=2), "unsupported saved LRD reply schema"),
+        (variant("new-schema", schema=3), "unsupported saved LRD reply schema"),
         (variant("wrong-hex", reply_hex="ZX"), "must contain hex byte pairs"),
         (variant("too-many-payload-bytes", byte_count=1025), "payload exceeds 1024 bytes"),
         (variant("wrap", logical_start=0xffffffff), "extends beyond the 32-bit"),
@@ -7976,6 +8092,9 @@ def main():
     register_lrd_destination = destination / "register-pdo-lrd-reply"
     register_lrd_destination.mkdir()
     verify_register_pdo_lrd_reply(cli, register_lrd_destination)
+    register_lrd_al_destination = destination / "register-pdo-lrd-al-reply"
+    register_lrd_al_destination.mkdir()
+    verify_register_pdo_lrd_al_reply(cli, register_lrd_al_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)
