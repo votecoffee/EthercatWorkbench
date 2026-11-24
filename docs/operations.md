@@ -73,6 +73,8 @@ For manual setup, edit/save a profile through **Device**, **Mappings** and **Pro
 
 Profiles use schema 1 with defaults for omitted settings and validation on load/save. Saves create new paths, use UTF-8 and flush. Preserve the source profile when preparing variants. Typed staging has its own preview/apply guard; [output staging](output-staging.md) explains ranges, overlaps, zero initialization and provenance.
 
+Use `preview-register-pdos ESI --device INDEX` to review device-level virtual TxPDO register addresses. Add `--snapshot FILE` to see the historical bytes that the saved ESC snapshot covers. [Register-backed virtual TxPDOs](pdo-selection.md#review-virtual-txpdos-backed-by-esc-registers)
+
 Use `preview-pdo-layout ESI --device INDEX --expect-layout REQUEST` to compose an offline device PDO image. An explicit entry list can fill an entryless virtual device PDO template. Add `--run-report` for an exact comparison with saved CoE descriptors. [Virtual PDO templates](pdo-selection.md#preview-an-entryless-virtual-pdo-template)
 
 Use `inspect-pdo-readback PROFILE RUN_REPORT` to review the saved PDO layout for the profile's expected device. Add `--tx-hex` or `--rx-hex` to inspect raw values using observed entry positions. Use `export-observed-pdo-profile` to save a new offline decoder with supported ESI types or explicit `--tx-kind` and `--rx-kind` choices. [Saved dynamic PDO readback](pdo-selection.md#inspect-saved-dynamic-pdo-readback)

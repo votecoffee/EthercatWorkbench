@@ -295,6 +295,23 @@ enum Command {
         #[arg(long)]
         pdo_report: Option<PathBuf>,
     },
+    /// Inspect ESI TxPDOs that describe ESC registers and optionally decode a saved ESC snapshot.
+    #[command(group(clap::ArgGroup::new("register_pdo_device").required(true).multiple(true).args(["device", "identity"])))]
+    PreviewRegisterPdos {
+        file: PathBuf,
+        /// Zero-based device entry in esi-list.
+        #[arg(long)]
+        device: Option<usize>,
+        /// Exact VENDOR/PRODUCT/REVISION, optionally guarding the device index.
+        #[arg(long, value_parser = esi::identity_selector)]
+        identity: Option<ethercat_workbench::model::Identity>,
+        /// Raw ESC diagnostics snapshot, using the same format as decode-esc.
+        #[arg(long)]
+        snapshot: Option<PathBuf>,
+        /// Export to a new JSON file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Compose a device-level PDO layout offline from an ESI and explicit JSON assignments.
     #[command(group(clap::ArgGroup::new("layout_device").required(true).multiple(true).args(["device", "identity"])))]
     PreviewPdoLayout {
@@ -1063,6 +1080,17 @@ fn main() -> Result<()> {
                 save_inspection(evidence, path)?;
             }
             output(&report)
+        }
+        Command::PreviewRegisterPdos {
+            file,
+            device,
+            identity,
+            snapshot,
+            out,
+        } => {
+            let report =
+                esi::register_pdos::preview(&file, device, identity.as_ref(), snapshot.as_deref())?;
+            inspection_export(&report, out.as_deref())
         }
         Command::PreviewPdoLayout {
             file,

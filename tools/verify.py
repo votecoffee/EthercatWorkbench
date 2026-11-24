@@ -774,6 +774,126 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_register_pdos(cli, destination, sample=None, snapshot=None):
+    """Review ESI register byte slices and the historical bytes a snapshot actually covers."""
+    sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    command = ("preview-register-pdos", sample, "--identity", "0x00ff1000/20/1")
+    draft = cli_call(cli, *command)
+    assert draft["scope"] == "offline_esi_register_pdos" and draft["snapshot"] is None
+    assert draft["identity"] == {"vendor": 0xFF1000, "product": 20, "revision": 1}
+    assert draft["esi_sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert [row["pdo_index"] for row in draft["projections"]] == [0x1A20, 0x1A21, 0x1A22, 0x1A23]
+    assert [row["byte_count"] for row in draft["projections"]] == [2, 2, 6, 2]
+    assert all(row["unavailable"] is None for row in draft["projections"])
+    assert all(entry["sample"] is None for row in draft["projections"] for entry in row["entries"])
+    assert [row["declared_sync_manager"] for row in draft["projections"]] == [0, 1, 2, 3]
+    assert [row["declared_start_address"] for row in draft["projections"]] == [
+        "#x0110", "#x0300", "#x0130", "#x0002",
+    ]
+    target = destination / "review.json"
+    checked = cli_call(cli, *command, "--device", 0, "--snapshot", snapshot, "--out", target)
+    assert checked == json.loads(target.read_bytes())
+    evidence = checked["snapshot"]
+    assert evidence["sha256"] == hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    assert evidence["identity_binding"] == "absent_from_snapshot"
+    assert evidence["source"] == "authored" and evidence["station_address"] == 0x1000
+    projections = checked["projections"]
+    assert [(e["declared_index"], e["byte_offset"], e["sample"]["raw_hex"])
+            for e in projections[0]["entries"]] == [(0x0110, 0, "B6"), (0x0111, 1, "9E")]
+    assert projections[1]["entries"][0]["sample"] == {"status": "available", "raw_hex": "0102"}
+    assert [entry["byte_offset"] for entry in projections[2]["entries"]] == [0, 2, 4]
+    assert projections[2]["entries"][0]["sample"]["raw_hex"] == "1400"
+    assert projections[2]["entries"][1]["sample"] == {
+        "status": "unavailable", "reason": "register range is absent from the ESC snapshot",
+    }
+    assert projections[2]["entries"][2]["sample"]["raw_hex"] == "1D00"
+    assert projections[3]["entries"][0]["sample"]["raw_hex"] == "3412"
+    assert "existing paths are preserved" in cli_call(cli, *command, "--out", target, success=False)
+
+    scan = cli_call(cli, "scan-virtual", "--case", "port-errors")
+    assert scan["audit"]["register_writes"] == scan["audit"]["logical_writes"] == 0
+    assert scan["audit"]["state_requests"] == []
+    raw = scan["devices"][0]["diagnostics"]["snapshot"]
+    virtual_path = destination / "virtual-esc.json"
+    virtual_path.write_bytes(json.dumps(raw).encode())
+    virtual_review = cli_call(cli, *command, "--snapshot", virtual_path)
+    assert virtual_review["snapshot"]["source"] == "virtual_esc"
+    assert virtual_review["snapshot"]["identity_binding"] == "absent_from_snapshot"
+    observed = virtual_review["projections"]
+    assert [entry["sample"]["raw_hex"] for entry in observed[0]["entries"]] == [
+        f"{byte:02X}" for byte in raw["dl_status"].to_bytes(2, "little")
+    ]
+    assert observed[2]["entries"][2]["sample"]["raw_hex"] == "1D00"
+
+    original = sample.read_bytes()
+
+    def xml_variant(name, old, new):
+        assert original.count(old) == 1
+        path = destination / (name + ".esi.xml")
+        path.write_bytes(original.replace(old, new))
+        return path
+
+    start = b'<Sm StartAddress="#x0110" Virtual="true">Inputs</Sm>'
+    entry = b'<Index>#x0111</Index><SubIndex>0</SubIndex><BitLen>8</BitLen>'
+    for name, old, new, message in (
+        ("physical-sm", start, start.replace(b' Virtual="true"', b""), "ESI virtual SyncManager"),
+        ("wrong-direction", start, start.replace(b"Inputs", b"Outputs"), "must declare Inputs"),
+        ("missing-start", start, start.replace(b' StartAddress="#x0110"', b""), "needs StartAddress"),
+        ("bad-start", start, start.replace(b"#x0110", b"bad"), "invalid virtual SyncManager StartAddress"),
+        ("shared", b'<TxPdo Sm="1" Virtual="true">', b'<TxPdo Sm="0" Virtual="true">',
+         "multiple default PDO assignments"),
+        ("non-contiguous", entry, entry.replace(b"#x0111", b"#x0112"), "must be contiguous"),
+        ("subindex", entry, entry.replace(b"<SubIndex>0", b"<SubIndex>3"), "nonzero SubIndex"),
+        ("bit-entry", entry, entry.replace(b"<BitLen>8", b"<BitLen>1"), "multiple of 8 bits"),
+        ("ambiguous-padding", entry, entry.replace(b"#x0111", b"0"), "could describe padding"),
+        ("vendor-dependent", b'Fixed="true"', b'Fixed="true" OverwrittenByModule="true"',
+         "vendor-dependent PDO"),
+    ):
+        changed = xml_variant(name, old, new)
+        blocked = cli_call(cli, command[0], changed, *command[2:], "--snapshot", snapshot)["projections"][0]
+        assert blocked["byte_count"] is None and message in blocked["unavailable"], blocked
+        assert all(e["sample"] is None and e["byte_offset"] is None for e in blocked["entries"])
+
+    counter = b'<Index>#x0300</Index><BitLen>16</BitLen>'
+    wide = xml_variant("outside-snapshot", counter, counter.replace(b"<BitLen>16", b"<BitLen>168"))
+    covered = cli_call(cli, command[0], wide, *command[2:], "--snapshot", snapshot)["projections"][1]
+    assert covered["byte_count"] == 21
+    assert covered["entries"][0]["sample"] == {
+        "status": "unavailable", "reason": "entry extends beyond the saved register block",
+    }
+    terminal = destination / "outside-esc.esi.xml"
+    terminal.write_bytes(original.replace(b'StartAddress="#x0300"', b'StartAddress="#x0EFF"')
+                         .replace(counter, counter.replace(b"#x0300", b"#x0EFF")))
+    blocked = cli_call(cli, command[0], terminal, *command[2:])["projections"][1]
+    assert blocked["unavailable"] == "entry extends outside the ESC register area"
+
+    partial = json.loads(snapshot.read_bytes())
+    partial["counters"] = {"value": None, "unavailable": "fixture read timed out"}
+    partial_path = destination / "partial.json"
+    partial_path.write_bytes(b"\xef\xbb\xbf" + json.dumps(partial).encode())
+    checked = cli_call(cli, *command, "--snapshot", partial_path)
+    assert checked["snapshot"]["sha256"] == hashlib.sha256(partial_path.read_bytes()).hexdigest()
+    assert checked["projections"][1]["entries"][0]["sample"] == {
+        "status": "unavailable", "reason": "ESC counters unavailable: fixture read timed out",
+    }
+    partial["started_utc"] = "2026-01-01T00:00:00-05:00"
+    bad = destination / "non-utc.json"
+    bad.write_bytes(json.dumps(partial).encode())
+    denied = destination / "unexpected.json"
+    assert "must be UTC" in cli_call(cli, *command, "--snapshot", bad, "--out", denied, success=False)
+    assert "was not found" in cli_call(cli, command[0], sample, "--identity", "0x00ff1000/20/2",
+                                      "--out", denied, success=False)
+    assert not denied.exists()
+
+    profile = destination / "profile.json"
+    cli_call(cli, "esi-import", sample, "--device", 0, "--out", profile)
+    defaults = cli_call(cli, "validate", profile)
+    assert defaults["tx_bytes"] == 0 and defaults["esi_pdo_selection"]["tx"] == []
+    error = cli_call(cli, "select-pdos", profile, "--tx-pdo", "0x1a20@0", "--out", denied, success=False)
+    assert "requires unsupported virtual/module/vendor interpretation" in error and not denied.exists()
+
+
 def verify_virtual_pdo_templates(cli, destination, sample=None, request=None):
     """Exercise explicit template entries against a CoE readback and refusal cases."""
     sample = ROOT / "samples/virtual-pdo-template.esi.xml" if sample is None else sample
@@ -7443,6 +7563,9 @@ def main():
     template_destination = destination / "virtual-pdo-template"
     template_destination.mkdir()
     verify_virtual_pdo_templates(cli, template_destination)
+    register_pdo_destination = destination / "register-pdos"
+    register_pdo_destination.mkdir()
+    verify_register_pdos(cli, register_pdo_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

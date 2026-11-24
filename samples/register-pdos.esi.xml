@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.14">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored register PDO fixture</Name></Vendor>
+  <Descriptions>
+    <Groups><Group><Type>Fixture</Type><Name>Authored sample group</Name></Group></Groups>
+    <Devices>
+      <Device Physics="YY">
+        <Type ProductCode="#x00000014" RevisionNo="1">VirtualRegisterPdos</Type>
+        <Name>Authored ESC register projections</Name>
+        <GroupType>Fixture</GroupType>
+        <Sm StartAddress="#x0110" Virtual="true">Inputs</Sm>
+        <Sm StartAddress="#x0300" Virtual="true">Inputs</Sm>
+        <Sm StartAddress="#x0130" Virtual="true">Inputs</Sm>
+        <Sm StartAddress="#x0002" Virtual="true">Inputs</Sm>
+        <TxPdo Sm="0" Virtual="true" Fixed="true">
+          <Index>#x1A20</Index><Name>Data link status</Name>
+          <Entry><Index>#x0110</Index><SubIndex>0</SubIndex><BitLen>8</BitLen><Name>Status low</Name><DataType>USINT</DataType></Entry>
+          <Entry><Index>#x0111</Index><SubIndex>0</SubIndex><BitLen>8</BitLen><Name>Status high</Name><DataType>USINT</DataType></Entry>
+        </TxPdo>
+        <TxPdo Sm="1" Virtual="true">
+          <Index>#x1A21</Index><Name>Port 0 counters</Name>
+          <Entry><Index>#x0300</Index><BitLen>16</BitLen><Name>Port 0 counter bytes</Name><DataType>UINT</DataType></Entry>
+        </TxPdo>
+        <TxPdo Sm="2" Virtual="true">
+          <Index>#x1A22</Index><Name>AL status register range</Name>
+          <Entry><Index>#x0130</Index><BitLen>16</BitLen><Name>AL status</Name><DataType>UINT</DataType></Entry>
+          <Entry><Index>#x0132</Index><BitLen>16</BitLen><Name>Unrecorded middle bytes</Name><DataType>UINT</DataType></Entry>
+          <Entry><Index>#x0134</Index><BitLen>16</BitLen><Name>AL status code</Name><DataType>UINT</DataType></Entry>
+        </TxPdo>
+        <TxPdo Sm="3" Virtual="true">
+          <Index>#x1A23</Index><Name>ESC build</Name>
+          <Entry><Index>#x0002</Index><BitLen>16</BitLen><Name>Build bytes</Name><DataType>UINT</DataType></Entry>
+        </TxPdo>
+        <TxPdo Virtual="true">
+          <Index>#x1A24</Index><Name>Entryless configuration template</Name>
+        </TxPdo>
+      </Device>
+    </Devices>
+  </Descriptions>
+</EtherCATInfo>

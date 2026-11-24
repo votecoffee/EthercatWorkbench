@@ -79,6 +79,7 @@ try {
         'samples/module-pdo-expected-split.json' = 'samples/module-pdo-expected-split.json'
         'samples/dynamic-pdo.esi.xml' = 'samples/dynamic-pdo.esi.xml'
         'samples/virtual-pdo-template.esi.xml' = 'samples/virtual-pdo-template.esi.xml'
+        'samples/register-pdos.esi.xml' = 'samples/register-pdos.esi.xml'
         'samples/virtual-pdo-expected.json' = 'samples/virtual-pdo-expected.json'
         'samples/fixed-slot-pdo-readback.json' = 'samples/fixed-slot-pdo-readback.json'
         'samples/fixed-slot-module-inventory.json' = 'samples/fixed-slot-module-inventory.json'

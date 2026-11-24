@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.101.0** composes an offline PDO image using explicitly supplied entries for eligible entryless virtual device PDOs. The preview records the request and ESI hashes and compares ordered descriptors against saved CoE evidence. The authored fixture matches 4 Tx bytes and 2 Rx bytes. Observed profiles support scoped typed decoding and offline Rx staging. Physical qualification remains open. [Virtual PDO templates](pdo-selection.md#preview-an-entryless-virtual-pdo-template) · [Verification history](../VERIFICATION.md)
+Version **0.102.0** reviews contiguous byte-aligned virtual TxPDOs from an ESI and annotates each entry with raw bytes when a saved ESC snapshot covers it. The report hashes both sources and records that the snapshot has no vendor/product/revision binding. The authored sample exercises status, counters, a missing register range and an AL code. Physical qualification remains open. [Register-backed virtual TxPDOs](pdo-selection.md#review-virtual-txpdos-backed-by-esc-registers) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

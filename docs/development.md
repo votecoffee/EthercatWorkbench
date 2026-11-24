@@ -10,6 +10,8 @@ Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supp
 
 ## Data and ownership
 
+`esi/register_pdos.rs` reviews original virtual SyncManager declarations and register geometry. The CLI reuses the bounded ESC snapshot parser in `esc.rs` and hashes the same bytes it decodes. Each entry uses one saved register block. Review output carries the ESI identity and records the absence of identity binding in the snapshot.
+
 `preview-pdo-layout` uses the expected-layout composer shared with the modular review. That composer keeps the ESI declaration and manual entries provenance on each chosen virtual template. The directional source marks the resulting expectation. Saved evidence readers reject expected layouts as readback and the comparison requires an explicit CoE source for a direction with manual template entries.
 
 `comparison_files.rs` prepares the recorded report and CSV-part references, validates the audit association, and checks source bytes with bounded memory and cooperative cancellation. Desktop Review passes the opened result hash to the worker. The CLI prints the same per-file status report and offers a create-new receipt.

@@ -129,7 +129,7 @@ Use `samples/module-pdo-split-group.esi.xml` and `samples/module-pdo-expected-sp
 
 ## Preview an entryless virtual PDO template
 
-ETG.2000 permits an ESI to declare an entryless virtual PDO for configuration tools to populate. It also uses the virtual attribute for ESC register projections. Workbench composes the entryless, non-fixed device template when the request supplies its complete descriptor list. Virtual PDOs with declared entries, selected or default virtual SyncManagers, vendor-dependent definitions and module-level virtual templates require separate interpretation. [ETG.2000, Table 81](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+ETG.2000 permits an ESI to declare an entryless virtual PDO for configuration tools to populate. It also uses the virtual attribute for ESC register projections. Workbench composes the entryless, non-fixed device template when the request supplies its complete descriptor list. Virtual register projections have a separate [offline review](#review-virtual-txpdos-backed-by-esc-registers). The template workflow excludes selected or default virtual SyncManagers, vendor-dependent definitions and module-level virtual templates. [ETG.2000, Table 81](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
 
 For a device without slots, run `preview-pdo-layout`. Use `preview-modular-pdos --expect-layout` when the ESI declares slots. Include the exact identity and both direction arrays from the expected-layout format above. For a selected template, add an ordered `entries` array to its assignment. Use decimal `object_index`, `subindex` and `width` for each entry. Supply 1 to 255 entries with widths of 1 to 255 bits. Describe padding explicitly with object index and subindex zero. The request defines geometry and leaves datatype, object access and device write eligibility to separate review.
 
@@ -139,6 +139,16 @@ For a device without slots, run `preview-pdo-layout`. Use `preview-modular-pdos 
 ```
 
 The expected layout identifies `device_virtual_template` as the PDO origin and `esi_with_manual_entries` as the directional mapping source. The sample places manual object `0x2200:01` at Tx bit 0, followed by the ESI's status PDO. The 4-byte Tx and 2-byte Rx expectations match the fixture. A comparison for a direction with manual entries requires an explicitly reported CoE layout. Workbench compares SyncManager, PDO order and every descriptor and reports unavailable when the source is SII or unspecified. The command previews an offline layout and can save a review receipt. [Authored ESI](../samples/virtual-pdo-template.esi.xml) · [Assignment request](../samples/virtual-pdo-expected.json)
+
+## Review virtual TxPDOs backed by ESC registers
+
+Run `preview-register-pdos` with an ESI and an exact identity or device index. The review lists device-level virtual TxPDOs with declared entries. The supported geometry uses a virtual `Inputs` SyncManager with an explicit `StartAddress` and one default PDO. Each entry must describe consecutive nonzero ESC register addresses, beginning at that start, with zero or omitted subindex and a whole-byte bit length. The entire range must stay within `0x0000–0x0EFF`. Unsupported geometry stays visible with the reason and the original declarations. [ETG.2000, Tables 29 and 81](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --snapshot samples/esc-diagnostics.json --out .local/register-pdo-review.json
+```
+
+Omit `--snapshot` for an ESI-only review. A snapshot supplies raw bytes per entry when its saved register block covers the whole entry. The bundled sample reports the two DL status bytes as `B6` and `9E`, the first two port counters as `0102`, and the AL code as `1D00`. The same report leaves the unrecorded `0x0132–0x0133` entry unavailable. The JSON preserves the source hashes, snapshot label, station and UTC anchor. The snapshot format has no device identity, so confirm it came from the intended SubDevice before using the sampled bytes. This workflow covers offline inspection of raw values. Live FMMU setup and register access remain separate. [Authored ESI](../samples/register-pdos.esi.xml) · [ESC snapshot format](esc-diagnostics.md)
 
 ## Inspect saved dynamic PDO readback
 

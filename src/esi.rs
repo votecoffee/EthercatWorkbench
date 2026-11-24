@@ -2,10 +2,11 @@ use crate::model::{EsiSource, Field, Identity, Profile};
 use anyhow::{Context, Result, bail, ensure};
 use roxmltree::{Document, Node};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 pub mod modular;
 pub mod modular_preview;
+pub mod register_pdos;
 
 const MAX_ESI_BYTES: usize = 16 * 1024 * 1024;
 
@@ -17,6 +18,13 @@ pub struct Device {
     pub tx_bytes: usize,
     pub rx_bytes: usize,
     pub notes: Vec<String>,
+    virtual_sync_managers: BTreeMap<u8, VirtualSyncManager>,
+}
+
+#[derive(Debug)]
+struct VirtualSyncManager {
+    name: String,
+    start_address: Option<String>,
 }
 
 impl Device {
@@ -169,10 +177,14 @@ fn with_description<T>(
             }
             let pdo_catalog = pdo_catalog(device)?;
             let pdo_capabilities = pdo_capabilities(device)?;
-            let mut virtual_sync_managers = Vec::new();
+            let mut virtual_sync_managers = BTreeMap::new();
             for (index, sm) in device.children().filter(|n| named(*n, "Sm")).enumerate() {
                 if bool_attr(sm, "Virtual")? {
-                    virtual_sync_managers.push(u8::try_from(index).context("virtual SyncManager index exceeds 8 bits")?);
+                    let index = u8::try_from(index).context("virtual SyncManager index exceeds 8 bits")?;
+                    virtual_sync_managers.insert(index, VirtualSyncManager {
+                        name: dc_text(sm).trim().to_owned(),
+                        start_address: sm.attribute("StartAddress").map(str::to_owned),
+                    });
                 }
             }
             for pdo in pdo_catalog.iter().filter(|p| p.default_sm.is_none()) {
@@ -205,7 +217,7 @@ fn with_description<T>(
                     pdo_catalog,
                     pdo_capabilities,
                     device_pdo_group,
-                    virtual_sync_managers,
+                    virtual_sync_managers: virtual_sync_managers.keys().copied().collect(),
                     modular,
                     notes: notes.clone(),
                     identity: Identity {
@@ -219,6 +231,7 @@ fn with_description<T>(
                 tx_bytes,
                 rx_bytes,
                 notes,
+                virtual_sync_managers,
             })
         })
         .collect::<Result<Vec<_>>>()?;

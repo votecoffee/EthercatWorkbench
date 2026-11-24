@@ -288,13 +288,21 @@ impl Snapshot {
 }
 
 pub fn load(path: &Path) -> Result<Diagnosis> {
+    decode_snapshot(&read_snapshot(path)?)
+}
+
+pub(crate) fn read_snapshot(path: &Path) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)?
         .take(64 * 1024 + 1)
         .read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 64 * 1024, "ESC snapshot exceeds 64 KiB");
+    Ok(bytes)
+}
+
+pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Diagnosis> {
     let snapshot: Snapshot =
-        serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
+        serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
             .context("parse ESC snapshot")?;
     snapshot.decode()
 }
