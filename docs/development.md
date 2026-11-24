@@ -12,7 +12,7 @@ Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supp
 
 `esi/register_pdos.rs` reviews original virtual SyncManager declarations and register geometry. The CLI reuses the bounded ESC snapshot parser in `esc.rs` and hashes the same bytes it decodes. Each entry uses one saved register block. Review output carries the ESI identity and records the absence of identity binding in the snapshot.
 
-`esi/register_pdos/fmmu.rs` compares declared physical register ranges with the selected station in a saved FMMU table. It shares the FMMU decoder and slot count checks with `input_group/fmmu.rs`. Bit ranges detect overlaps from neighboring mappings, including partial-byte overlaps. The register review keeps this comparison independent of the saved raw ESC samples.
+`esi/register_pdos/fmmu.rs` compares declared physical register ranges with the selected station in a saved FMMU table. It shares the FMMU decoder and slot count checks with `input_group/fmmu.rs`. The review clips each covering FMMU to the projected register range and requires exact physical coverage. Bit ranges detect overlaps from neighboring mappings, including partial-byte overlaps. The report gives each verified segment its own logical address and keeps the placement independent of saved raw ESC samples.
 
 `preview-pdo-layout` uses the expected-layout composer shared with the modular review. That composer keeps the ESI declaration and manual entries provenance on each chosen virtual template. The directional source marks the resulting expectation. Saved evidence readers reject expected layouts as readback and the comparison requires an explicit CoE source for a direction with manual template entries.
 

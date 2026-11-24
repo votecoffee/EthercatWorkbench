@@ -963,3 +963,11 @@ Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the 
 The authored two-station snapshot matched four projections at station `0x1000`. The counters mapped to `0x10200011`, one byte into their FMMU. The ESC build mapped to `0xFFFFFFFE` and ended at the logical address space boundary. The AL status range matched while its unretained middle bytes stayed unavailable. The fixture verified partial and write-enabled mappings, physical and logical bit overlaps, an adjacent logical range, an unrelated write-only logical alias, an inactive mapping, bad slot and count Working Counters, reversed and overflowing bit ranges, unsupported ESI geometry and station mismatch. It also checked the legacy preview without FMMU evidence and preservation of existing outputs.
 
 Formatting, locked Clippy, 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The one-second 1 ms virtual on-change case recorded one missed deadline in this run. Physical timing and native SAFEOP qualification remain open.
+
+## Version 0.104.0 split FMMU review for register-backed TxPDOs (2026-11-24)
+
+The saved FMMU review clips each covering slot to the projected register range. Active, byte-aligned, read-only slots must cover the range exactly once. Logical read overlap at the selected station blocks the match. A split match records each slot, projection offset, logical start, physical start and length in register order.
+
+The authored table split three projections. DL status mapped to 0x10200021 and 0x10200000 in register order. The 16-bit counter spanned two slots. The AL projection spanned three slots and retained the independent unavailable sample for its middle bytes. The fixture checked clipping, gaps, physical overlap, logical overlap between participating slots, partial-byte alignment, write enablement and a failed slot Working Counter.
+
+Formatting, locked Clippy, all 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The single-slot fixture preserved its alignment diagnostic. Physical timing and native SAFEOP qualification remain open.

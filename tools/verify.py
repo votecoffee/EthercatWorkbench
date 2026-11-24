@@ -774,6 +774,79 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_split_register_pdo_fmmus(cli, destination, sample=None, fmmu=None, snapshot=None):
+    """Validate clipped, ordered register coverage across multiple saved FMMU slots."""
+    sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
+    fmmu = ROOT / "samples/register-pdos-fmmu-split.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    command = ("preview-register-pdos", sample, "--device", 0, "--station", "0x1000", "--snapshot", snapshot)
+    path = destination / "split-review.json"
+    report = cli_call(cli, *command, "--fmmu", fmmu, "--out", path)
+    assert report == json.loads(path.read_bytes())
+    assert report["fmmu"]["sha256"] == hashlib.sha256(fmmu.read_bytes()).hexdigest()
+    assert report["fmmu"]["reported_slots"] == report["fmmu"]["captured_slots"] == 8
+    assert report["fmmu"]["issues"] == []
+    dl, counter, al, build = report["projections"]
+
+    def split(row, physical_start, expected):
+        verdict = row["fmmu_check"]
+        assert verdict["status"] == "matched_split"
+        assert verdict["physical_start"] == physical_start and verdict["byte_count"] == row["byte_count"]
+        assert set(verdict) == {"status", "physical_start", "byte_count", "segments"}
+        assert [(seg["slot"], seg["projection_byte_offset"], seg["physical_start"],
+                 seg["logical_start"], seg["byte_count"]) for seg in verdict["segments"]] == expected
+
+    split(dl, 0x0110, [
+        (1, 0, 0x0110, 0x10200021, 1),
+        (0, 1, 0x0111, 0x10200000, 1),
+    ])
+    split(counter, 0x0300, [
+        (2, 0, 0x0300, 0x10200030, 1),
+        (3, 1, 0x0301, 0x10200031, 1),
+    ])
+    assert counter["entries"][0]["width_bits"] == 16
+    assert counter["entries"][0]["sample"] == {"status": "available", "raw_hex": "0102"}
+    split(al, 0x0130, [
+        (4, 0, 0x0130, 0x10200040, 2),
+        (6, 2, 0x0132, 0x10200050, 2),
+        (7, 4, 0x0134, 0x10200060, 2),
+    ])
+    assert al["entries"][1]["sample"]["status"] == "unavailable"
+    assert build["fmmu_check"] == {"status": "matched", "slot": 5, "physical_start": 2,
+                                  "logical_start": 0xfffffffe, "byte_count": 2}
+
+    def variant(name, slot, edit):
+        altered = json.loads(fmmu.read_bytes())
+        edit(altered["devices"][0]["slots"][slot])
+        target = destination / (name + ".json")
+        target.write_bytes(json.dumps(altered).encode("utf-8"))
+        return cli_call(cli, *command, "--fmmu", target)
+
+    def byte(index, value):
+        def replace_byte(slot):
+            slot["value"][index] = value
+        return replace_byte
+
+    for name, slot, edit, row, fragment in (
+        ("interior-gap", 6, byte(12, 0), 2, "gap at projected register byte 0x0132"),
+        ("leading-gap", 4, byte(12, 0), 2, "gap at projected register byte 0x0130"),
+        ("trailing-gap", 7, byte(12, 0), 2, "gap at projected register byte 0x0134"),
+        ("physical-overlap", 1, byte(4, 3), 0, "overlap the projected register range"),
+        ("logical-overlap", 3, byte(0, 0x30), 1, "projected logical read range"),
+        ("partial-byte", 3, byte(7, 6), 1, "not byte aligned"),
+        ("write-enabled", 6, byte(11, 3), 2, "write-enabled"),
+    ):
+        changed = variant(name, slot, edit)
+        verdict = changed["projections"][row]["fmmu_check"]
+        assert verdict["status"] == "conflict" and fragment in verdict["reason"], verdict
+        assert "segments" not in verdict and "logical_start" not in verdict
+        assert changed["projections"][3]["fmmu_check"]["status"] == "matched"
+
+    bad = variant("split-wkc", 1, lambda slot: slot.update(wkc=0))
+    assert bad["fmmu"]["issues"] == ["FMMU 1 WKC 0, expected 1"]
+    assert all(row["fmmu_check"]["status"] == "unavailable" for row in bad["projections"])
+
+
 def verify_register_pdo_fmmus(cli, destination, sample=None, fmmu=None, snapshot=None):
     """Check register-to-logical spans using the saved FMMU bank from one station."""
     sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
@@ -7689,6 +7762,9 @@ def main():
     register_fmmu_destination = destination / "register-pdo-fmmus"
     register_fmmu_destination.mkdir()
     verify_register_pdo_fmmus(cli, register_fmmu_destination)
+    split_fmmu_destination = destination / "split-register-pdo-fmmus"
+    split_fmmu_destination.mkdir()
+    verify_split_register_pdo_fmmus(cli, split_fmmu_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

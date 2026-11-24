@@ -25,6 +25,11 @@ pub(super) enum Check {
         logical_start: u32,
         byte_count: usize,
     },
+    MatchedSplit {
+        physical_start: u16,
+        byte_count: usize,
+        segments: Vec<Segment>,
+    },
     Unmapped {
         reason: String,
     },
@@ -34,6 +39,15 @@ pub(super) enum Check {
     Unavailable {
         reason: String,
     },
+}
+
+#[derive(Serialize)]
+pub(super) struct Segment {
+    slot: usize,
+    projection_byte_offset: usize,
+    physical_start: u16,
+    logical_start: u32,
+    byte_count: usize,
 }
 
 struct ActiveMapping {
@@ -99,19 +113,23 @@ impl Table {
         }
         let start = u64::from(register) * 8;
         let physical = start..start + (width as u64) * 8;
-        let physical_hits: Vec<_> = self
+        let mut physical_hits: Vec<_> = self
             .active
             .iter()
             .filter(|slot| overlaps(&slot.physical, &physical))
             .collect();
-        let slot = match physical_hits.as_slice() {
-            [] => {
-                return Check::Unmapped {
-                    reason: "no active FMMU covers the register range".into(),
-                };
-            }
-            [slot] => slot,
-            _ => {
+        if physical_hits.is_empty() {
+            return Check::Unmapped {
+                reason: "no active FMMU covers the register range".into(),
+            };
+        }
+        physical_hits.sort_unstable_by_key(|slot| (slot.physical.start, slot.slot));
+        let mut segments = Vec::with_capacity(physical_hits.len());
+        let mut next = physical.start;
+        for slot in &physical_hits {
+            let covered =
+                slot.physical.start.max(physical.start)..slot.physical.end.min(physical.end);
+            if covered.start < next {
                 return Check::Conflict {
                     reason: format!(
                         "multiple active FMMUs {:?} overlap the projected register range",
@@ -122,50 +140,73 @@ impl Table {
                     ),
                 };
             }
-        };
+            if !slot.mapping.read_enabled || slot.mapping.write_enabled {
+                return Check::Conflict {
+                    reason: format!(
+                        "FMMU {} covering the register range is write-enabled",
+                        slot.slot
+                    ),
+                };
+            }
+            if !slot.mapping.byte_aligned() {
+                return Check::Conflict {
+                    reason: format!("FMMU {} is not byte aligned", slot.slot),
+                };
+            }
 
-        if !slot.mapping.read_enabled || slot.mapping.write_enabled {
-            return Check::Conflict {
-                reason: format!(
-                    "FMMU {} covering the register range is write-enabled",
-                    slot.slot
-                ),
-            };
+            if covered.start > next {
+                break;
+            }
+
+            let logical_start = slot.logical.start + (covered.start - slot.physical.start);
+            let logical = logical_start..logical_start + (covered.end - covered.start);
+            if let Some(other) = self.active.iter().find(|other| {
+                other.slot != slot.slot
+                    && other.mapping.read_enabled
+                    && overlaps(&other.logical, &logical)
+            }) {
+                return Check::Conflict {
+                    reason: format!(
+                        "FMMU {} overlaps FMMU {} in the projected logical read range",
+                        other.slot, slot.slot
+                    ),
+                };
+            }
+            segments.push(Segment {
+                slot: slot.slot,
+                projection_byte_offset: ((covered.start - physical.start) / 8) as usize,
+                physical_start: (covered.start / 8) as u16,
+                logical_start: (logical.start / 8) as u32,
+                byte_count: ((covered.end - covered.start) / 8) as usize,
+            });
+            next = covered.end;
         }
-        if !slot.mapping.byte_aligned() {
-            return Check::Conflict {
-                reason: format!("FMMU {} is not byte aligned", slot.slot),
-            };
-        }
-        if slot.physical.start > physical.start || slot.physical.end < physical.end {
-            return Check::Conflict {
-                reason: format!(
+
+        if next < physical.end {
+            let reason = match physical_hits.as_slice() {
+                [slot] => format!(
                     "FMMU {} only partially covers the register range",
                     slot.slot
                 ),
-            };
-        }
-
-        let start = slot.logical.start + (physical.start - slot.physical.start);
-        let logical = start..start + (physical.end - physical.start);
-        if let Some(other) = self.active.iter().find(|other| {
-            other.slot != slot.slot
-                && other.mapping.read_enabled
-                && overlaps(&other.logical, &logical)
-        }) {
-            return Check::Conflict {
-                reason: format!(
-                    "FMMU {} overlaps FMMU {} in the projected logical read range",
-                    other.slot, slot.slot
+                _ => format!(
+                    "active FMMUs leave a gap at projected register byte {:#06x}",
+                    next / 8
                 ),
             };
+            return Check::Conflict { reason };
         }
-
-        Check::Matched {
-            slot: slot.slot,
+        if let [segment] = segments.as_slice() {
+            return Check::Matched {
+                slot: segment.slot,
+                physical_start: segment.physical_start,
+                logical_start: segment.logical_start,
+                byte_count: segment.byte_count,
+            };
+        }
+        Check::MatchedSplit {
             physical_start: register,
-            logical_start: (logical.start / 8) as u32,
             byte_count: width,
+            segments,
         }
     }
 }

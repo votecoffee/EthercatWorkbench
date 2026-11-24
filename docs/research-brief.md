@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.103.0** checks the logical placement of register-backed virtual TxPDOs in a saved FMMU table for an explicitly selected station. The review identifies partial coverage, overlaps, write-enabled slots and invalid readback. It retains the recorded register bytes as independent historical evidence. Physical qualification remains open. [Saved FMMU review](pdo-selection.md#locate-a-projection-in-saved-fmmu-evidence) · [Verification history](../VERIFICATION.md)
+Version **0.104.0** reviews register-backed virtual TxPDOs that span multiple saved FMMU slots. It verifies exact byte coverage and reports separate logical addresses in physical register order. Gaps, overlaps, write-enabled slots and invalid evidence remain visible. Physical qualification remains open. [Saved FMMU review](pdo-selection.md#locate-a-projection-in-saved-fmmu-evidence) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 
