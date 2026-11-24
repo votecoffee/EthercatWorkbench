@@ -8,7 +8,7 @@ use std::path::Path;
 
 const MAX_PROFILE_BYTES: u64 = 16 * 1024 * 1024;
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Verification {
     schema: u32,
     scope: &'static str,
@@ -44,7 +44,7 @@ impl SavedProfile {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct Issue {
     check: &'static str,
     detail: String,

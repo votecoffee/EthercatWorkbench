@@ -1075,3 +1075,9 @@ The register decoder bundle command verifies an exported profile against the ori
 The authored two-PDO example reopens and decodes after relocation. The tests check exact original bytes and hashes, existing destination preservation, a missing completion receipt, bad source hashes, an altered profile with and without an updated receipt, and reconstruction from saved inline start bits without a separate layout file.
 
 Formatting, locked Clippy, all 196 Rust tests, the locked Windows x64 build, focused CLI checks and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases recorded eight and two missed deadlines. Physical SAFEOP and timing qualification remain open.
+
+## Version 0.118.0 desktop register decoder bundle review (2026-11-24)
+
+The headless desktop test reopens a relocated two-PDO bundle through the Review worker and renders the verified sample. It checks typed values, packed bytes and the source folder. Changing the folder field or editing the verified profile on disk leaves the completed view tied to its original evidence. A fresh check rejects the edited profile, and the desktop's new-file export matches the CLI verification receipt.
+
+Formatting, locked Clippy, all 197 Rust tests, the locked Windows x64 release build and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases recorded 0 and 2 missed deadlines. Native desktop interaction, physical SAFEOP input and the GUI-plus-logger bench benchmark remain pending.

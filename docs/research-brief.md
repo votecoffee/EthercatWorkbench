@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.117.0** bundles a saved register decoder with the exact ESI, FMMU readings, LRD reply and optional manual layout. The CLI follows the fixed bundle paths and rebuilds the verification after relocation. Physical qualification remains open. [Portable register decoder evidence](pdo-selection.md#bundle-verified-register-decoder-evidence) · [Verification history](../VERIFICATION.md)
+Version **0.118.0** opens verified register decoder bundles in the desktop Review tab. It shows the decoded values from the verified profile and exports the same receipt as the CLI. Physical qualification remains open. [Desktop register decoder review](desktop-review.md#review-a-register-decoder-bundle) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

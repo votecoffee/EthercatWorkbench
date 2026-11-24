@@ -1,7 +1,7 @@
 //! Background saved-file review, shared with the desktop without owning any bus state.
 use crate::{
-    benchmark, capture_audit, comparison_bundle, input_group::bundle as group_bundle,
-    model::Profile, pcap_inspect, shared_memory::reader,
+    benchmark, capture_audit, comparison_bundle, esi::register_pdos::bundle as register_bundle,
+    input_group::bundle as group_bundle, model::Profile, pcap_inspect, shared_memory::reader,
 };
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -67,6 +67,9 @@ pub enum Task {
     ReviewGroupBundle {
         directory: PathBuf,
     },
+    ReviewRegisterBundle {
+        directory: PathBuf,
+    },
     CompareBundle {
         directory: PathBuf,
         expected_receipt_sha256: String,
@@ -85,7 +88,8 @@ impl Task {
         let (inputs, csv) = match self {
             Self::VerifyBundle { directory }
             | Self::CompareBundle { directory, .. }
-            | Self::ReviewGroupBundle { directory } => {
+            | Self::ReviewGroupBundle { directory }
+            | Self::ReviewRegisterBundle { directory } => {
                 ensure!(
                     !directory.as_os_str().is_empty(),
                     "enter an evidence bundle folder"
@@ -252,6 +256,9 @@ impl Task {
             Self::ReviewGroupBundle { directory } => {
                 Outcome::GroupBundle(Box::new(group_bundle::review(directory, Some(stop))?))
             }
+            Self::ReviewRegisterBundle { directory } => {
+                Outcome::RegisterBundle(Box::new(register_bundle::review(directory, Some(stop))?))
+            }
             Self::CompareBundle {
                 directory,
                 expected_receipt_sha256,
@@ -277,6 +284,7 @@ pub enum Outcome {
     ComparisonBundle(Box<CompletedBundle>),
     VerifiedBundle(Box<comparison_bundle::VerifiedBundle>),
     GroupBundle(Box<group_bundle::Review>),
+    RegisterBundle(Box<register_bundle::Review>),
     BundleComparisonResult(Box<benchmark::Comparison>),
     Pcap(Box<pcap_inspect::Report>),
 }

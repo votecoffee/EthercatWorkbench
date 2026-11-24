@@ -3,6 +3,8 @@ use super::{LayoutSource, LogicalSource, audit::SavedProfile, preview_with_layou
 use crate::{
     comparison_bundle::{copy_checked, json_bytes, require_entry, write_new},
     input_group::read_json,
+    model::Profile,
+    review::check_cancel,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -44,7 +46,7 @@ impl<'a> Sources<'a> {
     }
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Stamp {
     bytes: u64,
@@ -62,7 +64,7 @@ impl Stamp {
     }
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
     schema: u32,
@@ -89,12 +91,26 @@ impl Receipt {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct VerifiedBundle {
-    directory: PathBuf,
-    receipt_sha256: String,
+    pub directory: PathBuf,
+    pub receipt_sha256: String,
     receipt: Receipt,
     verification: super::DecoderVerification,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Review {
+    #[serde(flatten)]
+    pub verified: VerifiedBundle,
+    #[serde(skip)]
+    pub profile: Profile,
+}
+
+struct Checked {
+    receipt: Receipt,
+    verification: super::DecoderVerification,
+    profile: Profile,
 }
 
 pub fn create(sources: Sources<'_>, output: &Path) -> Result<Receipt> {
@@ -104,7 +120,7 @@ pub fn create(sources: Sources<'_>, output: &Path) -> Result<Receipt> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).context("inspect bundle destination"),
     }
-    let (receipt, _) = check_sources(&sources)?;
+    let receipt = check_sources(&sources, None)?.receipt;
     fs::create_dir(&root)
         .with_context(|| format!("create new bundle directory {}", root.display()))?;
     (|| -> Result<()> {
@@ -125,6 +141,11 @@ pub fn create(sources: Sources<'_>, output: &Path) -> Result<Receipt> {
 }
 
 pub fn verify(directory: &Path) -> Result<VerifiedBundle> {
+    Ok(review(directory, None)?.verified)
+}
+
+pub(crate) fn review(directory: &Path, stop: Option<&AtomicBool>) -> Result<Review> {
+    check_cancel(stop)?;
     let directory =
         std::path::absolute(directory).context("resolve register decoder bundle directory")?;
     require_entry(&directory, true)?;
@@ -136,6 +157,7 @@ pub fn verify(directory: &Path) -> Result<VerifiedBundle> {
         "expected a schema 1 register decoder bundle"
     );
     for (name, stamp) in receipt.entries() {
+        check_cancel(stop)?;
         let file = directory.join(name);
         require_entry(&file, false)?;
         ensure!(
@@ -152,24 +174,30 @@ pub fn verify(directory: &Path) -> Result<VerifiedBundle> {
         register_layout: receipt.register_layout.as_ref().map(|_| layout.as_path()),
         device_index: receipt.device_index,
     };
-    let (observed, verification) = check_sources(&sources)?;
+    let checked = check_sources(&sources, stop)?;
     ensure!(
-        receipt == observed,
+        receipt == checked.receipt,
         "bundle SHA-256 or file length differs from reconstructed evidence"
     );
-    Ok(VerifiedBundle {
-        directory,
-        receipt_sha256: hex::encode(Sha256::digest(bytes)),
-        receipt,
-        verification,
+    check_cancel(stop)?;
+    Ok(Review {
+        verified: VerifiedBundle {
+            directory,
+            receipt_sha256: hex::encode(Sha256::digest(bytes)),
+            receipt,
+            verification: checked.verification,
+        },
+        profile: checked.profile,
     })
 }
 
-fn check_sources(sources: &Sources<'_>) -> Result<(Receipt, super::DecoderVerification)> {
+fn check_sources(sources: &Sources<'_>, stop: Option<&AtomicBool>) -> Result<Checked> {
     for file in sources.paths() {
+        check_cancel(stop)?;
         require_entry(file, false)?;
     }
     let saved = SavedProfile::load(sources.profile)?;
+    check_cancel(stop)?;
     let provenance = saved
         .profile
         .register_decoder
@@ -205,6 +233,7 @@ fn check_sources(sources: &Sources<'_>) -> Result<(Receipt, super::DecoderVerifi
         Some(LogicalSource::LrdReply(sources.lrd_reply)),
         layout,
     )?;
+    check_cancel(stop)?;
     let verification = review.verify_loaded_profile(&saved)?;
     verification
         .require_verified()
@@ -243,5 +272,9 @@ fn check_sources(sources: &Sources<'_>) -> Result<(Receipt, super::DecoderVerifi
         )?,
         register_layout,
     };
-    Ok((receipt, verification))
+    Ok(Checked {
+        receipt,
+        verification,
+        profile: saved.profile,
+    })
 }

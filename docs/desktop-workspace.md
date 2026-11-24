@@ -11,7 +11,7 @@ The desktop follows the same workflow tabs as EthernetIP Workbench. EtherCAT add
 | Mappings | Edit input or output fields, bit/byte positions, types, transforms and CSV selection | Separate pages for Input fields, Output fields, saved ESI PDO choices and ESI synchronization/mode-PDO staging |
 | Integration | Configure optional read-only HTTP, MQTT and shared-memory feeds | Settings appear only for enabled feeds; worker results are in Diagnostics |
 | Diagnostics | Inspect device/AL/PDO evidence, requested scheduling, observed spacing, synchronization and independent losses | Expand detailed metadata/readback; save a completed run report to a new path |
-| Review | Audit/compare saved reports and CSV | Separate pages for run reports/CSV, saved comparisons, Ethernet PCAP, saved input snapshots and grouped capture bundles |
+| Review | Audit/compare saved reports and CSV | Separate pages for run reports/CSV, saved comparisons, Ethernet PCAP, saved input snapshots, grouped captures and register decoder bundles |
 
 ## First offline session
 

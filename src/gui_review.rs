@@ -1,4 +1,5 @@
 mod grouped;
+mod register;
 
 use eframe::egui;
 use ethercat_workbench::{
@@ -21,6 +22,7 @@ enum Page {
     Pcap,
     Shared,
     Grouped,
+    RegisterDecoder,
 }
 
 pub struct Panel {
@@ -45,6 +47,7 @@ pub struct Panel {
     shared_mapping: SharedMapping,
     shared_report: String,
     grouped: grouped::Panel,
+    register: register::Panel,
 }
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum SharedMapping {
@@ -77,6 +80,7 @@ impl Default for Panel {
             shared_mapping: SharedMapping::Raw,
             shared_report: String::new(),
             grouped: grouped::Panel::default(),
+            register: register::Panel::default(),
         }
     }
 }
@@ -284,6 +288,7 @@ impl Panel {
             ui.selectable_value(&mut self.page, Page::Pcap, "Ethernet PCAP");
             ui.selectable_value(&mut self.page, Page::Shared, "Saved input snapshot");
             ui.selectable_value(&mut self.page, Page::Grouped, "Grouped capture");
+            ui.selectable_value(&mut self.page, Page::RegisterDecoder, "Register decoder");
         });
         ui.separator();
         if self.page == Page::SavedComparison {
@@ -299,6 +304,19 @@ impl Panel {
                 self.controller.completed().map(|job| &job.outcome)
             {
                 self.grouped.show(ui, result);
+                self.result_export(ui, enabled);
+            }
+            return;
+        }
+        if self.page == Page::RegisterDecoder {
+            let enabled = !self.is_running() && !bus_busy;
+            if let Some(task) = self.register.controls(ui, enabled) {
+                self.start(task);
+            }
+            if let Some(Outcome::RegisterBundle(result)) =
+                self.controller.completed().map(|job| &job.outcome)
+            {
+                register::show(ui, result);
                 self.result_export(ui, enabled);
             }
             return;
@@ -424,6 +442,7 @@ impl Panel {
                 | Task::BundleComparison { .. }
                 | Task::VerifyBundle { .. }
                 | Task::ReviewGroupBundle { .. }
+                | Task::ReviewRegisterBundle { .. }
                 | Task::CompareBundle { .. } => &[],
             };
             ui.collapsing("Inputs used", |ui| {
@@ -472,7 +491,8 @@ impl Panel {
                 | Outcome::ComparisonBundle(_)
                 | Outcome::VerifiedBundle(_)
                 | Outcome::BundleComparisonResult(_)
-                | Outcome::GroupBundle(_) => {
+                | Outcome::GroupBundle(_)
+                | Outcome::RegisterBundle(_) => {
                     unreachable!("this outcome has its own review page")
                 }
             }
@@ -1512,6 +1532,7 @@ mod tests {
             Page::Pcap,
             Page::Shared,
             Page::Grouped,
+            Page::RegisterDecoder,
         ] {
             panel.page = page;
             let text = text_from_layout(|ui| panel.draw(ui, false, &Profile::default()));
@@ -1531,6 +1552,10 @@ mod tests {
             assert_eq!(
                 text.contains("Verify grouped capture"),
                 page == Page::Grouped
+            );
+            assert_eq!(
+                text.contains("Verify register decoder bundle"),
+                page == Page::RegisterDecoder
             );
             assert_eq!(panel.pcap_path, "retained.pcap");
             assert_eq!(panel.shared_path, "retained.bin");
@@ -1679,6 +1704,107 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!panel.is_running(), "saved review worker did not finish");
+    }
+
+    #[test]
+    fn register_decoder_review_freezes_a_verified_bundle_and_exports_the_cli_receipt() {
+        use ethercat_workbench::esi::register_pdos::{
+            LayoutSource, LogicalSource, bundle, preview_with_layout,
+        };
+        let scratch = GroupScratch::create();
+        let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples");
+        let esi = samples.join("register-pdo-decoder-set.esi.xml");
+        let fmmu = samples.join("register-pdos-fmmu-bits.json");
+        let reply = samples.join("register-pdos-lrd-bit-reply.json");
+        let layout = samples.join("register-pdo-decoder-set-layout.json");
+        let decoder = preview_with_layout(
+            &esi,
+            Some(0),
+            None,
+            None,
+            Some((&fmmu, 0x1000)),
+            Some(LogicalSource::LrdReply(&reply)),
+            LayoutSource::File(&layout),
+        )
+        .unwrap()
+        .offline_profile_for_pdos(&[0x1a20, 0x1a21])
+        .unwrap();
+        let profile_path = scratch.0.join("original-profile.json");
+        decoder.save(&profile_path).unwrap();
+        let source = scratch.0.join("original-bundle");
+        bundle::create(
+            bundle::Sources {
+                profile: &profile_path,
+                esi: &esi,
+                fmmu: &fmmu,
+                lrd_reply: &reply,
+                register_layout: Some(&layout),
+                device_index: Some(0),
+            },
+            &source,
+        )
+        .unwrap();
+        let relocated = scratch.0.join("relocated-register-bundle");
+        std::fs::create_dir(&relocated).unwrap();
+        for file in std::fs::read_dir(&source).unwrap() {
+            let file = file.unwrap();
+            std::fs::copy(file.path(), relocated.join(file.file_name())).unwrap();
+        }
+        let cli_receipt = serde_json::to_value(bundle::verify(&relocated).unwrap()).unwrap();
+        let original_profile = Profile::default();
+        let mut panel = Panel {
+            page: Page::RegisterDecoder,
+            ..Default::default()
+        };
+        panel.register.path = relocated.display().to_string();
+        let task = panel.register.task();
+        assert!(
+            task.execute(&std::sync::atomic::AtomicBool::new(true))
+                .is_err()
+        );
+        panel.start(task.clone());
+        panel.register.path = "other-bundle".into();
+        wait_for_saved_job(&mut panel);
+        assert_eq!(
+            panel.controller.state(),
+            State::Complete,
+            "{:?}",
+            panel.controller.error()
+        );
+        let completed = panel.controller.completed().unwrap();
+        assert_eq!(completed.task, task);
+        let Outcome::RegisterBundle(result) = &completed.outcome else {
+            panic!("expected a verified register decoder bundle");
+        };
+        assert_eq!(result.profile, decoder);
+        std::fs::write(
+            relocated.join("profile.json"),
+            b"changed after verification",
+        )
+        .unwrap();
+        let text = text_from_layout(|ui| panel.draw(ui, false, &original_profile));
+        for label in [
+            "Verified register decoder bundle",
+            "relocated-register-bundle",
+            "0x1a20 · Link status bits",
+            "0x1a21 · AL middle word",
+            "8721",
+            "Packed sample and evidence",
+            "2CBA0400001122",
+        ] {
+            assert!(text.contains(label), "missing {label} in {text}");
+        }
+        let export = scratch.0.join("register-verification.json");
+        panel.controller.save_new(&export).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&export).unwrap()).unwrap(),
+            cli_receipt
+        );
+        assert!(panel.controller.save_new(&export).is_err());
+        panel.start(task);
+        wait_for_saved_job(&mut panel);
+        assert_eq!(panel.controller.state(), State::Failed);
+        assert!(panel.controller.completed().is_none());
     }
 
     #[test]

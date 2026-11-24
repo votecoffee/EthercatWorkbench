@@ -293,7 +293,7 @@ Use `bundle-register-decoder` to put a verified offline profile and its original
 .\ethercat-workbench-cli.exe verify-register-decoder-bundle .local/register-decoder-bundle --out .local/register-bundle-verification.json
 ```
 
-Move or copy the whole directory to review it elsewhere. Workbench reads the fixed filenames in the bundle, rebuilds the decoder, and checks the file lengths and SHA-256 hashes against the completion receipt. Open the bundled `profile.json` with the desktop offline decoder or the CLI `decode` command.
+Move or copy the whole directory to review it elsewhere. Workbench reads the fixed filenames in the bundle, rebuilds the decoder, and checks the file lengths and SHA-256 hashes against the completion receipt. Open **Review → Register decoder** to verify the folder and view the typed sample. To decode a different payload, open the bundled `profile.json` with the desktop offline decoder or the CLI `decode` command. [Desktop register decoder review](desktop-review.md#review-a-register-decoder-bundle)
 
 ## Inspect saved dynamic PDO readback
 
