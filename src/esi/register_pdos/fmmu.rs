@@ -37,6 +37,11 @@ pub(super) enum Check {
         width_bits: Option<usize>,
         segments: Vec<BitSegment>,
     },
+    MatchedEntries {
+        width_bits: usize,
+        byte_count: usize,
+        segments: Vec<BitSegment>,
+    },
     Unmapped {
         reason: String,
     },
@@ -57,7 +62,7 @@ pub(super) struct Segment {
     pub(super) byte_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(super) struct BitSegment {
     slot: usize,
     pub(super) projection_bit_offset: usize,
@@ -67,6 +72,16 @@ pub(super) struct BitSegment {
 }
 
 impl BitSegment {
+    fn from_bytes(slot: usize, physical_start: u16, logical_start: u32, byte_count: usize) -> Self {
+        Self {
+            slot,
+            projection_bit_offset: 0,
+            physical_start_bit: u64::from(physical_start) * 8,
+            logical_start_bit: u64::from(logical_start) * 8,
+            bit_count: byte_count * 8,
+        }
+    }
+
     fn byte_segment(&self) -> Option<Segment> {
         (self.projection_bit_offset.is_multiple_of(8)
             && self.physical_start_bit.is_multiple_of(8)
@@ -79,6 +94,69 @@ impl BitSegment {
             logical_start: (self.logical_start_bit / 8) as u32,
             byte_count: self.bit_count / 8,
         })
+    }
+}
+
+impl Check {
+    pub(super) fn combine(checks: &[Self]) -> Self {
+        let mut segments = Vec::new();
+        let mut width_bits = 0;
+        for (entry, check) in checks.iter().enumerate() {
+            let start = segments.len();
+            match check {
+                Self::Matched {
+                    slot,
+                    physical_start,
+                    logical_start,
+                    byte_count,
+                } => {
+                    segments.push(BitSegment::from_bytes(
+                        *slot,
+                        *physical_start,
+                        *logical_start,
+                        *byte_count,
+                    ));
+                }
+                Self::MatchedSplit {
+                    segments: bytes, ..
+                } => segments.extend(bytes.iter().map(|segment| {
+                    let mut bits = BitSegment::from_bytes(
+                        segment.slot,
+                        segment.physical_start,
+                        segment.logical_start,
+                        segment.byte_count,
+                    );
+                    bits.projection_bit_offset = segment.projection_byte_offset * 8;
+                    bits
+                })),
+                Self::MatchedBits { segments: bits, .. }
+                | Self::MatchedEntries { segments: bits, .. } => {
+                    segments.extend_from_slice(bits);
+                }
+                Self::Unmapped { reason }
+                | Self::Conflict { reason }
+                | Self::Unavailable { reason } => {
+                    return Self::Unavailable {
+                        reason: format!(
+                            "ESI entry {} has unavailable FMMU placement ({reason})",
+                            entry + 1
+                        ),
+                    };
+                }
+            }
+            for segment in &mut segments[start..] {
+                segment.projection_bit_offset += width_bits;
+            }
+            width_bits += segments[start..]
+                .iter()
+                .map(|segment| segment.bit_count)
+                .sum::<usize>();
+        }
+        Self::MatchedEntries {
+            width_bits,
+            byte_count: width_bits.div_ceil(8),
+            segments,
+        }
     }
 }
 

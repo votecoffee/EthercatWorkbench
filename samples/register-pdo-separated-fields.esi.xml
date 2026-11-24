@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.14">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored register-layout fixture</Name></Vendor>
+  <Descriptions>
+    <Groups><Group><Type>Fixture</Type><Name>Authored sample group</Name></Group></Groups>
+    <Devices>
+      <Device Physics="YY">
+        <Type ProductCode="#x00000016" RevisionNo="1">SeparateRegisterFields</Type>
+        <Name>Authored fields from separate registers</Name>
+        <GroupType>Fixture</GroupType>
+        <Sm StartAddress="#x0110" Virtual="true">Inputs</Sm>
+        <TxPdo Sm="0" Virtual="true" Fixed="true">
+          <Index>#x1A20</Index><Name>Selected ESC register fields</Name>
+          <Entry><Index>#x0110</Index><SubIndex>0</SubIndex><BitLen>4</BitLen><Name>Link status bits</Name><DataType>BIT4</DataType></Entry>
+          <Entry><Index>#x0300</Index><SubIndex>0</SubIndex><BitLen>7</BitLen><Name>Counter bits</Name><DataType>BIT7</DataType></Entry>
+          <Entry><Index>#x0130</Index><SubIndex>0</SubIndex><BitLen>16</BitLen><Name>AL status</Name><DataType>UINT</DataType></Entry>
+        </TxPdo>
+      </Device>
+    </Devices>
+  </Descriptions>
+</EtherCATInfo>

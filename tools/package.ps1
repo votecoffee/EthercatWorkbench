@@ -81,6 +81,8 @@ try {
         'samples/virtual-pdo-template.esi.xml' = 'samples/virtual-pdo-template.esi.xml'
         'samples/register-pdos.esi.xml' = 'samples/register-pdos.esi.xml'
         'samples/register-pdo-bit-fields.esi.xml' = 'samples/register-pdo-bit-fields.esi.xml'
+        'samples/register-pdo-separated-fields.esi.xml' = 'samples/register-pdo-separated-fields.esi.xml'
+        'samples/register-pdo-manual-layout.json' = 'samples/register-pdo-manual-layout.json'
         'samples/register-pdos-fmmu.json' = 'samples/register-pdos-fmmu.json'
         'samples/register-pdos-fmmu-split.json' = 'samples/register-pdos-fmmu-split.json'
         'samples/register-pdos-logical-payload.json' = 'samples/register-pdos-logical-payload.json'

@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashMap, ops::Range, path::Path};
 
 mod fmmu;
+mod layout;
 mod payload;
 
 const ESC_REGISTER_END: usize = 0x0f00;
@@ -22,6 +23,8 @@ pub struct Review {
     identity: Identity,
     esi_file_name: String,
     esi_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manual_register_layout: Option<layout::Evidence>,
     snapshot: Option<SnapshotEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fmmu: Option<fmmu::Evidence>,
@@ -71,7 +74,11 @@ struct Entry {
     byte_offset: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bit_offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    physical_start_bit: Option<usize>,
     sample: Option<Sample>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fmmu_check: Option<fmmu::Check>,
     #[serde(skip_serializing_if = "Option::is_none")]
     logical_sample: Option<Sample>,
 }
@@ -86,6 +93,11 @@ enum Sample {
 pub enum LogicalSource<'a> {
     Payload(&'a Path),
     LrdReply(&'a Path),
+}
+
+pub enum LayoutSource<'a> {
+    StartBits(&'a [(u16, u8)]),
+    File(&'a Path),
 }
 
 pub fn start_bit(text: &str) -> Result<(u16, u8)> {
@@ -118,6 +130,26 @@ pub fn preview_with_start_bits(
     logical_payload: Option<LogicalSource<'_>>,
     start_bits: &[(u16, u8)],
 ) -> Result<Review> {
+    preview_with_layout(
+        esi,
+        index,
+        identity,
+        snapshot,
+        fmmu,
+        logical_payload,
+        LayoutSource::StartBits(start_bits),
+    )
+}
+
+pub fn preview_with_layout(
+    esi: &Path,
+    index: Option<usize>,
+    identity: Option<&Identity>,
+    snapshot: Option<&Path>,
+    fmmu: Option<(&Path, u16)>,
+    logical_payload: Option<LogicalSource<'_>>,
+    source: LayoutSource<'_>,
+) -> Result<Review> {
     let devices = load(esi)?;
     let device = select_device(&devices, index, identity)?;
     let pdos: Vec<_> = device
@@ -127,17 +159,28 @@ pub fn preview_with_start_bits(
         .filter(|pdo| pdo.direction == Direction::Tx && pdo.virtual_pdo && !pdo.entries.is_empty())
         .collect();
     let mut manual = HashMap::new();
-    for &(index, bit) in start_bits {
-        ensure!(bit < 8, "register start bit must be 0 through 7");
-        ensure!(
-            pdos.iter().filter(|pdo| pdo.index == index).count() == 1,
-            "manual start bit needs a unique virtual TxPDO with entries at {index:#06x}"
-        );
-        ensure!(
-            manual.insert(index, bit).is_none(),
-            "duplicate manual register start bit for PDO {index:#06x}"
-        );
-    }
+    let saved = match source {
+        LayoutSource::StartBits(start_bits) => {
+            for &(index, bit) in start_bits {
+                ensure!(bit < 8, "register start bit must be 0 through 7");
+                ensure!(
+                    pdos.iter().filter(|pdo| pdo.index == index).count() == 1,
+                    "manual start bit needs a unique virtual TxPDO with entries at {index:#06x}"
+                );
+                ensure!(
+                    manual.insert(index, bit).is_none(),
+                    "duplicate manual register start bit for PDO {index:#06x}"
+                );
+            }
+            None
+        }
+        LayoutSource::File(path) => Some(layout::load(
+            path,
+            &device.source.identity,
+            &device.source.sha256,
+            &pdos,
+        )?),
+    };
     let snapshot = snapshot.map(load_saved).transpose()?;
     let fmmu = fmmu
         .map(|(path, station)| fmmu::Table::load(path, station))
@@ -172,6 +215,10 @@ pub fn preview_with_start_bits(
                 fmmu.as_ref(),
                 logical_payload.as_ref(),
                 manual.get(&pdo.index).copied(),
+                saved
+                    .as_ref()
+                    .and_then(|(_, pdos)| pdos.get(&pdo.index))
+                    .map(Vec::as_slice),
             )
         })
         .collect();
@@ -181,6 +228,7 @@ pub fn preview_with_start_bits(
         identity: device.source.identity.clone(),
         esi_file_name: device.source.file_name.clone(),
         esi_sha256: device.source.sha256.clone(),
+        manual_register_layout: saved.map(|(evidence, _)| evidence),
         snapshot: snapshot.map(|(evidence, _)| evidence),
         fmmu: fmmu.map(|table| table.evidence),
         logical_payload: logical_payload.map(|window| window.evidence),
@@ -215,17 +263,29 @@ fn projection(
     fmmu: Option<&fmmu::Table>,
     logical_payload: Option<&payload::Window>,
     manual_start_bit: Option<u8>,
+    entry_start_bits: Option<&[u8]>,
 ) -> Projection {
     let sm = pdo
         .default_sm
         .and_then(|index| device.virtual_sync_managers.get(&index));
-    let (physical, unavailable) = match geometry(device, pdo, sm, manual_start_bit) {
-        Ok(range) => (Some(range), None),
-        Err(error) => (None, Some(format!("{error:#}"))),
+    let (physical, unavailable) =
+        match geometry(device, pdo, sm, manual_start_bit, entry_start_bits) {
+            Ok(ranges) => (Some(ranges), None),
+            Err(error) => (None, Some(format!("{error:#}"))),
+        };
+    let width_bits = physical
+        .as_ref()
+        .map(|ranges| ranges.iter().map(Range::len).sum::<usize>());
+    let entry_checks: Vec<_> = match (entry_start_bits, &physical, fmmu) {
+        (Some(_), Some(ranges), Some(table)) => ranges
+            .iter()
+            .map(|range| table.compare(range.clone()))
+            .collect(),
+        _ => Vec::new(),
     };
-    let width_bits = physical.as_ref().map(Range::len);
     let fmmu_check = fmmu.map(|table| match &physical {
-        Some(range) => table.compare(range.clone()),
+        Some(_) if entry_start_bits.is_some() => fmmu::Check::combine(&entry_checks),
+        Some(ranges) => table.compare(ranges[0].start..ranges[ranges.len() - 1].end),
         None => fmmu::Check::Unavailable {
             reason: "ESI projection geometry is unavailable".into(),
         },
@@ -233,25 +293,34 @@ fn projection(
     let logical = logical_payload.zip(fmmu_check.as_ref());
     let logical_sample =
         logical.map(|(window, check)| window.sample(check, 0..width_bits.unwrap_or_default()));
+    let mut entry_checks = entry_checks.into_iter();
+    let manual_placement = manual_start_bit.is_some() || entry_start_bits.is_some();
     let mut bit_offset = 0;
     let entries = pdo
         .entries
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(position, entry)| {
             let offset = bit_offset;
             bit_offset += entry.width;
-            let sample = match (&physical, snapshot) {
-                (Some(range), Some(snapshot)) => Some(
-                    match saved_bits(snapshot, range.start + offset, entry.width) {
+            let start = physical.as_ref().map(|ranges| ranges[position].start);
+            let sample = match (start, snapshot) {
+                (Some(start), Some(snapshot)) => {
+                    Some(match saved_bits(snapshot, start, entry.width) {
                         Ok(bytes) => Sample::Available {
                             raw_hex: hex::encode_upper(bytes),
                         },
                         Err(error) => Sample::Unavailable {
                             reason: error.to_string(),
                         },
-                    },
-                ),
+                    })
+                }
                 _ => None,
+            };
+            let entry_check = entry_checks.next();
+            let logical_sample = match (logical_payload, entry_check.as_ref()) {
+                (Some(window), Some(check)) => Some(window.sample(check, 0..entry.width)),
+                _ => logical.map(|(window, check)| window.sample(check, offset..bit_offset)),
             };
             Entry {
                 name: entry.name.clone(),
@@ -263,10 +332,11 @@ fn projection(
                     && offset.is_multiple_of(8)
                     && entry.width.is_multiple_of(8))
                 .then_some(offset / 8),
-                bit_offset: (manual_start_bit.is_some() && physical.is_some()).then_some(offset),
+                bit_offset: (manual_placement && physical.is_some()).then_some(offset),
+                physical_start_bit: entry_start_bits.and(start),
                 sample,
-                logical_sample: logical
-                    .map(|(window, check)| window.sample(check, offset..bit_offset)),
+                fmmu_check: entry_check,
+                logical_sample,
             }
         })
         .collect();
@@ -276,7 +346,7 @@ fn projection(
         declared_sync_manager: pdo.default_sm,
         declared_start_address: sm.and_then(|sm| sm.start_address.clone()),
         manual_start_bit,
-        width_bits: manual_start_bit.and(width_bits),
+        width_bits: width_bits.filter(|_| manual_placement),
         byte_count: width_bits.map(|bits| bits.div_ceil(8)),
         unavailable,
         fmmu_check,
@@ -290,7 +360,8 @@ fn geometry(
     pdo: &Definition,
     sm: Option<&VirtualSyncManager>,
     manual_start_bit: Option<u8>,
-) -> Result<Range<usize>> {
+    entry_start_bits: Option<&[u8]>,
+) -> Result<Vec<Range<usize>>> {
     ensure!(
         !pdo.unsupported,
         "vendor-dependent PDO requires separate interpretation"
@@ -320,30 +391,49 @@ fn geometry(
         start < ESC_REGISTER_END,
         "StartAddress is outside the ESC register area"
     );
-    let start = start * 8 + usize::from(manual_start_bit.unwrap_or_default());
-    let mut end = start;
-    for entry in &pdo.entries {
+    ensure!(
+        entry_start_bits.is_none() || usize::from(pdo.entries[0].index) == start,
+        "first manual register entry must start at the virtual SyncManager StartAddress"
+    );
+    let mut next = start * 8 + usize::from(manual_start_bit.unwrap_or_default());
+    let mut ranges = Vec::with_capacity(pdo.entries.len());
+    let manual = manual_start_bit.is_some() || entry_start_bits.is_some();
+    for (position, entry) in pdo.entries.iter().enumerate() {
         ensure!(entry.index != 0, "zero Index could describe padding");
         ensure!(
-            manual_start_bit.is_some() || entry.subindex == 0,
+            manual || entry.subindex == 0,
             "nonzero SubIndex needs separate interpretation"
         );
         ensure!(entry.width > 0, "register entry width must be positive");
         ensure!(
-            manual_start_bit.is_some() || entry.width.is_multiple_of(8),
+            manual || entry.width.is_multiple_of(8),
             "a register entry with a non-byte width needs --register-start-bit PDO=BIT"
         );
+        let start = if let Some(bits) = entry_start_bits {
+            usize::from(entry.index) * 8 + usize::from(bits[position])
+        } else {
+            ensure!(
+                usize::from(entry.index) == next / 8,
+                "register indexes must be contiguous from StartAddress"
+            );
+            next
+        };
+        next = start + entry.width;
         ensure!(
-            usize::from(entry.index) == end / 8,
-            "register indexes must be contiguous from StartAddress"
-        );
-        end += entry.width;
-        ensure!(
-            end <= ESC_REGISTER_END * 8,
+            next <= ESC_REGISTER_END * 8,
             "entry extends outside the ESC register area"
         );
+        ranges.push(start..next);
     }
-    Ok(start..end)
+    if entry_start_bits.is_some() {
+        let mut ordered: Vec<_> = ranges.iter().collect();
+        ordered.sort_unstable_by_key(|range| range.start);
+        ensure!(
+            ordered.windows(2).all(|pair| pair[0].end <= pair[1].start),
+            "manual register entries overlap in the physical address space"
+        );
+    }
+    Ok(ranges)
 }
 
 fn saved_bits(snapshot: &Snapshot, start: usize, width: usize) -> Result<Vec<u8>> {

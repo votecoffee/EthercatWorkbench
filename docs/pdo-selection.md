@@ -236,6 +236,16 @@ Use `--register-start-bit PDO=BIT` to supply a physical start bit from 0 through
 
 `manual_start_bit` records the supplied choice. `width_bits` and each entry's `bit_offset` describe the packed projection. Each raw value starts at bit zero of its first output byte, with unused high bits zero in its final byte. The sample decodes three fields as `05`, `2D` and `03`. Its historical ESC snapshot shows `35` for the middle field. The saved LRD still requires valid FMMU coverage and its schema's reply checks. [Authored ESI sample](../samples/register-pdo-bit-fields.esi.xml)
 
+#### Review fields from separate register ranges
+
+Use `--register-layout FILE` with a schema-1 JSON layout. The `identity` object specifies `vendor`, `product` and `revision` as integers. Set `esi_sha256` to the SHA-256 digest of the selected ESI file. Each `pdos` item identifies one virtual TxPDO by `pdo_index` and provides exactly one `entry_start_bits` value from 0 through 7 per declared entry. Each offset is relative to its ESI `Index` byte. The first entry still starts in the declared virtual SyncManager start byte. Later entries can use separate register addresses. Physical ranges must stay within the ESC register area and be disjoint. Use either the layout file or `--register-start-bit` for a review.
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdo-separated-fields.esi.xml --identity 0x00ff1000/0x16/1 --register-layout samples/register-pdo-manual-layout.json --snapshot samples/esc-diagnostics.json --fmmu samples/register-pdos-fmmu-bits.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-bit-reply.json --out .local/separate-register-review.json
+```
+
+The sample reads fields at registers `0x0110`, `0x0300` and `0x0130` in ESI order. The report records the manual file name and hash, each entry's physical start bit and checked logical placement, and separate historical and logical samples. `matched_entries` lists all the segments in packed order. The combined logical value is available only when every field is readable. A missing mapping or overlapping read can leave the other fields available. Each entry uses the same FMMU check for exact coverage and read access. [Authored ESI](../samples/register-pdo-separated-fields.esi.xml) · [Manual layout](../samples/register-pdo-manual-layout.json) · [Beckhoff FMMU reference](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

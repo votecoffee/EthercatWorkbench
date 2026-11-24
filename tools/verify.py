@@ -1043,6 +1043,119 @@ def verify_register_pdo_manual_bits(cli, destination, sample=None, fmmu=None, sn
     assert "extends outside the ESC register area" in rejected["unavailable"]
 
 
+def verify_register_pdo_separate_fields(cli, destination, sample=None, layout=None, fmmu=None,
+                                        snapshot=None, reply=None):
+    """Check exact-ESI manual placements and independently available logical samples."""
+    sample = ROOT / "samples/register-pdo-separated-fields.esi.xml" if sample is None else sample
+    layout = ROOT / "samples/register-pdo-manual-layout.json" if layout is None else layout
+    fmmu = ROOT / "samples/register-pdos-fmmu-bits.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    reply = ROOT / "samples/register-pdos-lrd-bit-reply.json" if reply is None else reply
+    args = ("preview-register-pdos", sample, "--identity", "0x00ff1000/0x16/1",
+            "--station", "0x1000", "--snapshot", snapshot)
+
+    def review(table=fmmu, selected_layout=layout, esi=sample, *extra):
+        return cli_call(cli, args[0], esi, *args[2:], "--fmmu", table, "--lrd-reply", reply,
+                        "--register-layout", selected_layout, *extra)
+
+    output = destination / "separate-fields-review.json"
+    report = review(fmmu, layout, sample, "--out", output)
+    assert report == json.loads(output.read_bytes())
+    assert report["manual_register_layout"] == {
+        "file_name": layout.name, "sha256": hashlib.sha256(layout.read_bytes()).hexdigest(),
+    }
+    assert report["logical_payload"]["lrd_reply"]["wkc_matches"]
+    projection, = report["projections"]
+    assert projection["width_bits"] == 27 and projection["byte_count"] == 4
+    assert projection["logical_sample"]["raw_hex"] == "DB250000"
+    assert projection["fmmu_check"]["status"] == "matched_entries"
+    entries = projection["entries"]
+    assert [entry["bit_offset"] for entry in entries] == [0, 4, 11]
+    assert [entry["physical_start_bit"] for entry in entries] == [0x0110 * 8 + 1, 0x0300 * 8 + 5, 0x0130 * 8]
+    segments = projection["fmmu_check"]["segments"]
+    assert [segment["projection_bit_offset"] for segment in segments] == [0, 4, 11]
+    assert [segment["slot"] for segment in segments] == [4, 1, 2]
+    assert [entry["logical_sample"]["raw_hex"] for entry in entries] == ["0B", "5D", "0400"]
+    assert [entry["sample"]["raw_hex"] for entry in entries] == ["0B", "10", "1400"]
+
+    table = json.loads(fmmu.read_bytes())
+    table["devices"][0]["slots"][1]["value"][12] = 0
+    missing = destination / "unmapped-counter.json"
+    missing.write_bytes(json.dumps(table).encode())
+    result = review(missing)
+    assert result["logical_payload"]["lrd_reply"]["wkc_matches"]
+    projection = result["projections"][0]
+    assert "entry 2" in projection["fmmu_check"]["reason"]
+    assert projection["logical_sample"]["status"] == "unavailable"
+    assert [entry["fmmu_check"]["status"] for entry in projection["entries"]] == [
+        "matched_bits", "unmapped", "matched",
+    ]
+    assert [entry["logical_sample"].get("raw_hex") for entry in projection["entries"]] == ["0B", None, "0400"]
+    assert projection["entries"][1]["sample"]["raw_hex"] == "10"
+
+    table = json.loads(fmmu.read_bytes())
+    foreign = table["devices"][1]["slots"][1]["value"]
+    foreign[0] = 0x11
+    foreign[6:8] = [5, 5]
+    collision = destination / "foreign-counter-bit.json"
+    collision.write_bytes(json.dumps(table).encode())
+    projection = review(collision)["projections"][0]
+    assert projection["fmmu_check"]["status"] == "matched_entries"
+    assert projection["logical_sample"]["status"] == "unavailable"
+    assert [entry["logical_sample"].get("raw_hex") for entry in projection["entries"]] == ["0B", None, "0400"]
+    assert "station 0x1001" in projection["entries"][1]["logical_sample"]["reason"]
+
+    saved_reply = json.loads(reply.read_bytes())
+    wkc_offset = 26 + saved_reply["byte_count"]
+    raw_reply = bytearray.fromhex(saved_reply["reply_hex"])
+    raw_reply[wkc_offset:wkc_offset + 2] = b"\x01\x00"
+    saved_reply["reply_hex"] = raw_reply.hex()
+    wrong_wkc = destination / "wrong-reply-wkc.json"
+    wrong_wkc.write_bytes(json.dumps(saved_reply).encode())
+    projection = cli_call(cli, *args, "--fmmu", fmmu, "--lrd-reply", wrong_wkc,
+                          "--register-layout", layout)["projections"][0]
+    assert all(entry["logical_sample"]["status"] == "unavailable" for entry in projection["entries"])
+    assert projection["entries"][1]["sample"]["raw_hex"] == "10"
+
+    addressed = destination / "only-counter-addressed.json"
+    addressed.write_bytes(json.dumps({"schema": 1, "station_address": 0x1000,
+                                     "logical_start": saved_reply["logical_start"] + 0x11,
+                                     "payload_hex": "AA BB"}).encode())
+    projection = cli_call(cli, *args, "--fmmu", fmmu, "--logical-payload", addressed,
+                          "--register-layout", layout)["projections"][0]
+    assert projection["logical_sample"]["status"] == "unavailable"
+    assert [entry["logical_sample"].get("raw_hex") for entry in projection["entries"]] == [None, "5D", None]
+
+    def changed_layout(name, update):
+        request = json.loads(layout.read_bytes())
+        update(request)
+        variant = destination / (name + ".json")
+        variant.write_bytes(json.dumps(request).encode())
+        return variant
+
+    for name, update, message in (
+        ("identity", lambda request: request["identity"].update(revision=2), "layout identity differs"),
+        ("hash", lambda request: request.update(esi_sha256="0" * 64), "ESI SHA-256 differs"),
+        ("count", lambda request: request["pdos"][0]["entry_start_bits"].pop(), "one start bit per ESI entry"),
+        ("bit", lambda request: request["pdos"][0].update(entry_start_bits=[1, 8, 0]), "0 through 7"),
+        ("duplicate", lambda request: request["pdos"].append(request["pdos"][0]), "duplicate manual"),
+    ):
+        variant = changed_layout(name, update)
+        assert message in cli_call(cli, *args, "--fmmu", fmmu, "--register-layout", variant, success=False)
+    assert "cannot be used with" in cli_call(
+        cli, *args, "--fmmu", fmmu, "--register-layout", layout,
+        "--register-start-bit", "0x1a20=1", success=False)
+
+    overlap = destination / "physical-overlap.esi.xml"
+    overlap.write_bytes(sample.read_bytes().replace(b"<Index>#x0300</Index>", b"<Index>#x0110</Index>"))
+    overlap_layout = changed_layout("physical-overlap", lambda request: request.update(
+        esi_sha256=hashlib.sha256(overlap.read_bytes()).hexdigest(),
+        pdos=[{"pdo_index": 0x1a20, "entry_start_bits": [1, 4, 0]}]))
+    projection = review(fmmu, overlap_layout, overlap)["projections"][0]
+    assert "overlap in the physical address space" in projection["unavailable"]
+    assert projection["logical_sample"]["status"] == "unavailable"
+
+
 def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                             reply=None, paired_reply=None):
     """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
@@ -8492,6 +8605,9 @@ def main():
     register_manual_bits_destination = destination / "register-pdo-manual-bits"
     register_manual_bits_destination.mkdir()
     verify_register_pdo_manual_bits(cli, register_manual_bits_destination)
+    separate_register_fields_destination = destination / "register-pdo-separate-fields"
+    separate_register_fields_destination.mkdir()
+    verify_register_pdo_separate_fields(cli, separate_register_fields_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

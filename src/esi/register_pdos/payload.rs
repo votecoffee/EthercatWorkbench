@@ -324,16 +324,17 @@ impl Window {
                 }),
                 requested,
             ),
-            Check::MatchedBits { segments, .. } => self.extract(
-                segments.iter().map(|segment| {
-                    (
-                        segment.projection_bit_offset,
-                        segment.logical_start_bit,
-                        segment.bit_count,
-                    )
-                }),
-                requested,
-            ),
+            Check::MatchedBits { segments, .. } | Check::MatchedEntries { segments, .. } => self
+                .extract(
+                    segments.iter().map(|segment| {
+                        (
+                            segment.projection_bit_offset,
+                            segment.logical_start_bit,
+                            segment.bit_count,
+                        )
+                    }),
+                    requested,
+                ),
             Check::Unmapped { reason }
             | Check::Conflict { reason }
             | Check::Unavailable { reason } => {
