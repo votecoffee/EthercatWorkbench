@@ -891,6 +891,92 @@ def verify_register_pdo_lrd_contributors(cli, destination, sample=None, fmmu=Non
         cli, *args, "--fmmu", fmmu, "--lrd-reply", missing, success=False)
 
 
+def verify_register_pdo_bit_fmmus(cli, destination, sample=None, fmmu=None, snapshot=None, reply=None):
+    """Reassemble register bytes across bitwise FMMUs and qualify shared logical bytes."""
+    sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
+    fmmu = ROOT / "samples/register-pdos-fmmu-bits.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    reply = ROOT / "samples/register-pdos-lrd-bit-reply.json" if reply is None else reply
+    args = ("preview-register-pdos", sample, "--device", 0, "--station", "0x1000", "--snapshot", snapshot)
+    output = destination / "bit-reply-review.json"
+    saved = json.loads(reply.read_bytes())
+    base = saved["logical_start"]
+    report = cli_call(cli, *args, "--fmmu", fmmu, "--lrd-reply", reply, "--out", output)
+    assert report == json.loads(output.read_bytes())
+    assert report["fmmu"]["sha256"] == hashlib.sha256(fmmu.read_bytes()).hexdigest()
+    assert report["logical_payload"]["sha256"] == hashlib.sha256(reply.read_bytes()).hexdigest()
+    checks = report["logical_payload"]["lrd_reply"]
+    assert checks["wkc_matches"] and checks["actual_wkc"] == checks["expected_wkc"] == 2
+    assert checks["topology"]["valid"] and checks["station_al"]["clean_safeop"]
+    assert checks["contributors"]["stations"][1]["read_ranges"][0] == {
+        "slot": 0, "start_bit": (base + 7) * 8, "end_bit_exclusive": (base + 7) * 8 + 2,
+    }
+    dl, counter, *_ = report["projections"]
+    assert dl["fmmu_check"] == {
+        "status": "matched_bits", "physical_start": 0x110, "byte_count": 2,
+        "segments": [
+            {"slot": 4, "projection_bit_offset": 0, "physical_start_bit": 0x110 * 8,
+             "logical_start_bit": base * 8 + 1, "bit_count": 5},
+            {"slot": 0, "projection_bit_offset": 5, "physical_start_bit": 0x110 * 8 + 5,
+             "logical_start_bit": (base + 7) * 8 + 2, "bit_count": 11},
+        ],
+    }
+    assert dl["logical_sample"] == {"status": "available", "raw_hex": "B79D"}
+    assert [entry["logical_sample"]["raw_hex"] for entry in dl["entries"]] == ["B7", "9D"]
+    assert [entry["sample"]["raw_hex"] for entry in dl["entries"]] == ["B6", "9E"]
+    assert counter["logical_sample"]["raw_hex"] == "AABB"
+
+    def modified_table(name, station, slot, edits):
+        document = json.loads(fmmu.read_bytes())
+        mapping = document["devices"][station]["slots"][slot]["value"]
+        for offset, value in edits.items():
+            mapping[offset] = value
+        path = destination / (name + ".json")
+        path.write_bytes(json.dumps(document).encode())
+        return path
+
+    overlapping = modified_table("foreign-bit-overlap", 1, 0, {7: 2})
+    report = cli_call(cli, *args, "--fmmu", overlapping, "--lrd-reply", reply)
+    assert report["logical_payload"]["lrd_reply"]["wkc_matches"]
+    dl, counter, *_ = report["projections"]
+    assert dl["logical_sample"]["status"] == "unavailable"
+    assert "station 0x1001 also has an active read mapping" in dl["logical_sample"]["reason"]
+    assert dl["entries"][0]["logical_sample"] == dl["logical_sample"]
+    assert dl["entries"][1]["logical_sample"]["raw_hex"] == "9D"
+    assert counter["logical_sample"]["raw_hex"] == "AABB"
+
+    for name, slot, edit, reason in (
+        ("one-bit-gap", 4, {7: 4}, "gap at projected register bit 0x0110.4"),
+        ("physical-bit-overlap", 4, {7: 6}, "overlap the projected register range"),
+        ("same-station-spacing", 0, {0: 3}, "need three unused logical bytes"),
+    ):
+        problem = modified_table(name, 0, slot, edit)
+        projection = cli_call(cli, *args, "--fmmu", problem)["projections"][0]
+        assert projection["fmmu_check"]["status"] == "conflict"
+        assert reason in projection["fmmu_check"]["reason"]
+
+    just_three_bytes = modified_table("three-unused-bytes", 0, 0, {0: 4})
+    assert cli_call(cli, *args, "--fmmu", just_three_bytes)["projections"][0]["fmmu_check"]["status"] == "matched_bits"
+
+    def addressed(name, address, data, table=fmmu):
+        payload = destination / (name + ".json")
+        payload.write_bytes(json.dumps({"schema": 1, "station_address": 0x1000,
+                                        "logical_start": address, "payload_hex": data}).encode())
+        return cli_call(cli, *args, "--fmmu", table, "--logical-payload", payload)["projections"]
+
+    raw = bytes.fromhex(saved["reply_hex"])[26:26 + saved["byte_count"]]
+    assert addressed("full-addressed", base, raw.hex())[0]["logical_sample"]["raw_hex"] == "B79D"
+    dl = addressed("high-byte-only", base + 7, raw[7:9].hex())[0]
+    assert dl["logical_sample"]["status"] == "unavailable"
+    assert dl["entries"][0]["logical_sample"]["status"] == "unavailable"
+    assert dl["entries"][1]["logical_sample"]["raw_hex"] == "9D"
+
+    ceiling = modified_table("shifted-at-ceiling", 0, 3, {0: 0xfd, 4: 3, 6: 3, 7: 2})
+    build = addressed("upper-address-boundary", 0xfffffffd, "F7 6E FD", ceiling)[3]
+    assert build["fmmu_check"]["segments"][0]["logical_start_bit"] == 0xfffffffd * 8 + 3
+    assert build["logical_sample"]["raw_hex"] == "DEAD"
+
+
 def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                             reply=None, paired_reply=None):
     """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
@@ -1387,7 +1473,7 @@ def verify_split_register_pdo_fmmus(cli, destination, sample=None, fmmu=None, sn
         ("trailing-gap", 7, byte(12, 0), 2, "gap at projected register byte 0x0134"),
         ("physical-overlap", 1, byte(4, 3), 0, "overlap the projected register range"),
         ("logical-overlap", 3, byte(0, 0x30), 1, "projected logical read range"),
-        ("partial-byte", 3, byte(7, 6), 1, "not byte aligned"),
+        ("partial-byte", 3, byte(7, 6), 1, "gap at projected register bit 0x0301.7"),
         ("write-enabled", 6, byte(11, 3), 2, "write-enabled"),
     ):
         changed = variant(name, slot, edit)
@@ -1462,9 +1548,9 @@ def verify_register_pdo_fmmus(cli, destination, sample=None, fmmu=None, snapshot
         ("write-only", 11, 2, "conflict", "write-enabled"),
         ("read-write", 11, 3, "conflict", "write-enabled"),
         ("partial", 4, 1, "conflict", "partially covers"),
-        ("start-bit", 6, 1, "conflict", "not byte aligned"),
-        ("stop-bit", 7, 6, "conflict", "not byte aligned"),
-        ("physical-bit", 10, 1, "conflict", "not byte aligned"),
+        ("start-bit", 6, 1, "conflict", "partially covers"),
+        ("stop-bit", 7, 6, "conflict", "partially covers"),
+        ("physical-bit", 10, 1, "conflict", "partially covers"),
     ):
         variant = changed(name, lambda document: change_slot(document, 0, byte, value))
         verdict = compare(variant)["projections"][0]["fmmu_check"]
@@ -8334,6 +8420,9 @@ def main():
     register_lrd_contributors_destination = destination / "register-pdo-lrd-contributors"
     register_lrd_contributors_destination.mkdir()
     verify_register_pdo_lrd_contributors(cli, register_lrd_contributors_destination)
+    register_bit_fmmu_destination = destination / "register-pdo-bit-fmmus"
+    register_bit_fmmu_destination.mkdir()
+    verify_register_pdo_bit_fmmus(cli, register_bit_fmmu_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

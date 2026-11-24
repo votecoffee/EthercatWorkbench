@@ -30,6 +30,11 @@ pub(super) enum Check {
         byte_count: usize,
         segments: Vec<Segment>,
     },
+    MatchedBits {
+        physical_start: u16,
+        byte_count: usize,
+        segments: Vec<BitSegment>,
+    },
     Unmapped {
         reason: String,
     },
@@ -48,6 +53,30 @@ pub(super) struct Segment {
     physical_start: u16,
     pub(super) logical_start: u32,
     pub(super) byte_count: usize,
+}
+
+#[derive(Serialize)]
+pub(super) struct BitSegment {
+    slot: usize,
+    pub(super) projection_bit_offset: usize,
+    physical_start_bit: u64,
+    pub(super) logical_start_bit: u64,
+    pub(super) bit_count: usize,
+}
+
+impl BitSegment {
+    fn byte_segment(&self) -> Option<Segment> {
+        (self.projection_bit_offset.is_multiple_of(8)
+            && self.logical_start_bit.is_multiple_of(8)
+            && self.bit_count.is_multiple_of(8))
+        .then_some(Segment {
+            slot: self.slot,
+            projection_byte_offset: self.projection_bit_offset / 8,
+            physical_start: (self.physical_start_bit / 8) as u16,
+            logical_start: (self.logical_start_bit / 8) as u32,
+            byte_count: self.bit_count / 8,
+        })
+    }
 }
 
 struct ActiveMapping {
@@ -80,13 +109,13 @@ struct LogicalRead {
 }
 
 impl Contributions {
-    pub(super) fn other_reader(&self, selected: u16, start: u64, end: u64) -> Option<u16> {
+    pub(super) fn other_reader(&self, selected: u16, logical: &Range<u64>) -> Option<u16> {
         self.stations
             .iter()
             .find(|station| {
                 station.station_address != selected
                     && station.read_ranges.iter().any(|range| {
-                        range.start_bit < end * 8 && start * 8 < range.end_bit_exclusive
+                        range.start_bit < logical.end && logical.start < range.end_bit_exclusive
                     })
             })
             .map(|station| station.station_address)
@@ -248,12 +277,6 @@ impl Table {
                     ),
                 };
             }
-            if !slot.mapping.byte_aligned() {
-                return Check::Conflict {
-                    reason: format!("FMMU {} is not byte aligned", slot.slot),
-                };
-            }
-
             if covered.start > next {
                 break;
             }
@@ -272,12 +295,12 @@ impl Table {
                     ),
                 };
             }
-            segments.push(Segment {
+            segments.push(BitSegment {
                 slot: slot.slot,
-                projection_byte_offset: ((covered.start - physical.start) / 8) as usize,
-                physical_start: (covered.start / 8) as u16,
-                logical_start: (logical.start / 8) as u32,
-                byte_count: ((covered.end - covered.start) / 8) as usize,
+                projection_bit_offset: (covered.start - physical.start) as usize,
+                physical_start_bit: covered.start,
+                logical_start_bit: logical.start,
+                bit_count: (covered.end - covered.start) as usize,
             });
             next = covered.end;
         }
@@ -288,6 +311,11 @@ impl Table {
                     "FMMU {} only partially covers the register range",
                     slot.slot
                 ),
+                _ if !next.is_multiple_of(8) => format!(
+                    "active FMMUs leave a gap at projected register bit {:#06x}.{}",
+                    next / 8,
+                    next % 8,
+                ),
                 _ => format!(
                     "active FMMUs leave a gap at projected register byte {:#06x}",
                     next / 8
@@ -295,7 +323,33 @@ impl Table {
             };
             return Check::Conflict { reason };
         }
-        if let [segment] = segments.as_slice() {
+        for slot in physical_hits {
+            if let Some(other) = active.iter().find(|other| {
+                other.slot != slot.slot
+                    && other.mapping.read_enabled
+                    && (!slot.mapping.byte_aligned() || !other.mapping.byte_aligned())
+                    && !separated_by_three_bytes(&slot.logical, &other.logical)
+            }) {
+                return Check::Conflict {
+                    reason: format!(
+                        "FMMU {} and FMMU {} need three unused logical bytes between same-station bitwise read mappings",
+                        slot.slot, other.slot
+                    ),
+                };
+            }
+        }
+        let Some(byte_segments) = segments
+            .iter()
+            .map(BitSegment::byte_segment)
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Check::MatchedBits {
+                physical_start: register,
+                byte_count: width,
+                segments,
+            };
+        };
+        if let [segment] = byte_segments.as_slice() {
             return Check::Matched {
                 slot: segment.slot,
                 physical_start: segment.physical_start,
@@ -306,11 +360,15 @@ impl Table {
         Check::MatchedSplit {
             physical_start: register,
             byte_count: width,
-            segments,
+            segments: byte_segments,
         }
     }
 }
 
 fn overlaps(left: &Range<u64>, right: &Range<u64>) -> bool {
     left.start < right.end && right.start < left.end
+}
+
+fn separated_by_three_bytes(left: &Range<u64>, right: &Range<u64>) -> bool {
+    left.end.div_ceil(8) + 3 <= right.start / 8 || right.end.div_ceil(8) + 3 <= left.start / 8
 }

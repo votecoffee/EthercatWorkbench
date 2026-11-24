@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.109.0** derives the expected LRD Working Counter from the complete saved FMMU table. Schema 4 counts each intersecting station once and withholds fields with overlapping reads from another station. The same-frame AL and topology checks still apply. Physical qualification remains open. [Saved LRD contribution review](pdo-selection.md#derive-the-lrd-working-counter-from-saved-fmmus) · [Verification history](../VERIFICATION.md)
+Version **0.110.0** reconstructs register bytes using saved bitwise FMMU mappings. Schema 4 checks overlap at the bit level, so independent station reads can share a logical byte. Physical qualification remains open. [Saved bitwise review](pdo-selection.md#reassemble-register-bytes-from-bitwise-fmmus) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

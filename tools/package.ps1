@@ -87,6 +87,8 @@ try {
         'samples/register-pdos-lrd-al-reply.json' = 'samples/register-pdos-lrd-al-reply.json'
         'samples/register-pdos-lrd-topology-reply.json' = 'samples/register-pdos-lrd-topology-reply.json'
         'samples/register-pdos-fmmu-contributors.json' = 'samples/register-pdos-fmmu-contributors.json'
+        'samples/register-pdos-fmmu-bits.json' = 'samples/register-pdos-fmmu-bits.json'
+        'samples/register-pdos-lrd-bit-reply.json' = 'samples/register-pdos-lrd-bit-reply.json'
         'samples/register-pdos-lrd-contributors-reply.json' = 'samples/register-pdos-lrd-contributors-reply.json'
         'samples/virtual-pdo-expected.json' = 'samples/virtual-pdo-expected.json'
         'samples/fixed-slot-pdo-readback.json' = 'samples/fixed-slot-pdo-readback.json'

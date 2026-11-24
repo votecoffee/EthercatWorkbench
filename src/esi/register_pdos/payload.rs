@@ -310,13 +310,26 @@ impl Window {
                 logical_start,
                 byte_count,
                 ..
-            } => self.extract(once((0, *logical_start, *byte_count)), requested),
+            } => self.extract(
+                once((0, u64::from(*logical_start) * 8, *byte_count * 8)),
+                requested,
+            ),
             Check::MatchedSplit { segments, .. } => self.extract(
                 segments.iter().map(|segment| {
                     (
-                        segment.projection_byte_offset,
-                        segment.logical_start,
-                        segment.byte_count,
+                        segment.projection_byte_offset * 8,
+                        u64::from(segment.logical_start) * 8,
+                        segment.byte_count * 8,
+                    )
+                }),
+                requested,
+            ),
+            Check::MatchedBits { segments, .. } => self.extract(
+                segments.iter().map(|segment| {
+                    (
+                        segment.projection_bit_offset,
+                        segment.logical_start_bit,
+                        segment.bit_count,
                     )
                 }),
                 requested,
@@ -342,23 +355,31 @@ impl Window {
 
     fn extract(
         &self,
-        segments: impl IntoIterator<Item = (usize, u32, usize)>,
+        segments: impl IntoIterator<Item = (usize, u64, usize)>,
         requested: Range<usize>,
     ) -> Result<Vec<u8>> {
-        let mut data = Vec::with_capacity(requested.len());
-        let window_start = u64::from(self.evidence.logical_start);
-        let window_end = window_start + self.data.len() as u64;
-        for (offset, logical_start, byte_count) in segments {
+        let mut data = vec![0; requested.len()];
+        let requested = requested.start * 8..requested.end * 8;
+        let mut next = requested.start;
+        let window_start = u64::from(self.evidence.logical_start) * 8;
+        let window_end = window_start + self.data.len() as u64 * 8;
+        for (offset, logical_start, bit_count) in segments {
             let start = offset.max(requested.start);
-            let end = (offset + byte_count).min(requested.end);
+            let end = (offset + bit_count).min(requested.end);
             if start >= end {
                 continue;
             }
-            let logical_start = u64::from(logical_start) + (start - offset) as u64;
-            let logical_end = logical_start + (end - start) as u64;
             ensure!(
-                logical_start >= window_start && logical_end <= window_end,
-                "logical bytes {logical_start:#010x}..{logical_end:#010x} are outside the supplied payload",
+                start == next,
+                "FMMU placement did not cover the requested bytes"
+            );
+            let logical_start = logical_start + (start - offset) as u64;
+            let logical = logical_start..logical_start + (end - start) as u64;
+            ensure!(
+                logical.start >= window_start && logical.end <= window_end,
+                "logical bytes {:#010x}..{:#010x} are outside the supplied payload",
+                logical.start / 8,
+                logical.end.div_ceil(8),
             );
             if let Some(station) = self
                 .evidence
@@ -366,24 +387,24 @@ impl Window {
                 .as_ref()
                 .and_then(|reply| reply.contributors.as_ref())
                 .and_then(|contributors| {
-                    contributors.other_reader(
-                        self.evidence.station_address,
-                        logical_start,
-                        logical_end,
-                    )
+                    contributors.other_reader(self.evidence.station_address, &logical)
                 })
             {
                 anyhow::bail!(
                     "station {station:#06x} also has an active read mapping in the requested logical range"
                 );
             }
-            data.extend_from_slice(
-                &self.data[(logical_start - window_start) as usize
-                    ..(logical_end - window_start) as usize],
-            );
+            let source = (logical.start - window_start) as usize;
+            for (source, destination) in
+                (source..).zip(start - requested.start..end - requested.start)
+            {
+                let bit = (self.data[source / 8] >> (source % 8)) & 1;
+                data[destination / 8] |= bit << (destination % 8);
+            }
+            next = end;
         }
         ensure!(
-            data.len() == requested.len(),
+            next == requested.end,
             "FMMU placement did not cover the requested bytes"
         );
         Ok(data)
