@@ -142,14 +142,14 @@ pub(super) fn review(path: &Path, bindings: &[Binding]) -> Result<Review> {
     review_snapshot(snapshot, hex::encode(Sha256::digest(&bytes)), bindings)
 }
 
-pub(crate) struct SavedStation {
+pub(crate) struct SavedStations {
     pub(crate) sha256: String,
     pub(crate) position: usize,
-    pub(crate) station: Station,
+    pub(crate) devices: Vec<Station>,
     pub(crate) stations: Vec<u16>,
 }
 
-pub(crate) fn load_station(path: &Path, address: u16) -> Result<SavedStation> {
+pub(crate) fn load_station(path: &Path, address: u16) -> Result<SavedStations> {
     let (snapshot, bytes) = read_json::<Snapshot>(path, MAX_FILE_BYTES)?;
     ensure!(
         snapshot.schema == 1,
@@ -167,20 +167,18 @@ pub(crate) fn load_station(path: &Path, address: u16) -> Result<SavedStation> {
         super::MAX_DEVICES
     );
     super::validate_stations(&stations, stations.len())?;
-    let (position, station) = snapshot
-        .devices
-        .into_iter()
-        .enumerate()
-        .find(|(_, station)| station.station_address == address)
+    let position = stations
+        .iter()
+        .position(|&station| station == address)
         .with_context(|| format!("station {address:#06x} is absent from the FMMU snapshot"))?;
     ensure!(
-        station.slots.len() <= MAX_CHANNELS,
+        snapshot.devices[position].slots.len() <= MAX_CHANNELS,
         "station has more than {MAX_CHANNELS} FMMU slots"
     );
-    Ok(SavedStation {
+    Ok(SavedStations {
         sha256: hex::encode(Sha256::digest(&bytes)),
         position,
-        station,
+        devices: snapshot.devices,
         stations,
     })
 }

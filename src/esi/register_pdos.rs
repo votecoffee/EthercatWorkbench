@@ -112,9 +112,7 @@ pub fn preview(
             let station = table.evidence.station_address;
             match source {
                 LogicalSource::Payload(path) => payload::Window::load(path, station),
-                LogicalSource::LrdReply(path) => {
-                    payload::Window::load_reply(path, station, &table.stations)
-                }
+                LogicalSource::LrdReply(path) => payload::Window::load_reply(path, table),
             }
         })
         .transpose()?;

@@ -91,7 +91,7 @@ Use `preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --slot 0=0x
 
 Use `preview-modular-pdos samples/module-pdo-group-alignment.esi.xml --device 0 --slot 0=0x400 --slot 1=0x402 --expect-layout samples/module-pdo-expected.json` to compose ordered assignments and calculate ESI group padding offline. The split-group sample records padding explicitly for a group that spans channels. [Expected layout](docs/pdo-selection.md#compose-an-expected-modular-pdo-image)
 
-Use `preview-register-pdos` to see which ESC register bytes a virtual TxPDO declares and which bytes are present in a saved ESC snapshot. A saved FMMU table supplies logical addresses. Decode an addressed payload or check a saved Workbench LRD reply. A paired reply can verify the selected station's AL state and the recorded station order in the same frame. [Register-backed virtual TxPDOs](docs/pdo-selection.md#review-virtual-txpdos-backed-by-esc-registers)
+Use `preview-register-pdos` to see which ESC register bytes a virtual TxPDO declares and which bytes are present in a saved ESC snapshot. A saved FMMU table supplies logical addresses. Decode an addressed payload or check a saved Workbench LRD reply. The same frame can verify the selected station's AL state and recorded station order. Schema 4 derives the expected Working Counter from active FMMU read mappings and withholds fields where another station shares the logical range. [Register-backed virtual TxPDOs](docs/pdo-selection.md#review-virtual-txpdos-backed-by-esc-registers)
 
 Use `preview-pdo-layout` to supply explicit entries for an entryless virtual PDO template and compare its expected geometry with saved CoE readback. [Virtual PDO templates](docs/pdo-selection.md#preview-an-entryless-virtual-pdo-template)
 

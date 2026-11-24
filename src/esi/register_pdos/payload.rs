@@ -1,5 +1,8 @@
 //! Extract register bytes from an explicitly addressed saved logical payload.
-use super::{Sample, fmmu::Check};
+use super::{
+    Sample,
+    fmmu::{Check, Contributions, Table},
+};
 use crate::{
     input_group::{AlRead, MAX_DATAGRAMS, decode_frame_hex, preflight::topology, read_json},
     model::{MAX_PAYLOAD, payload_hex},
@@ -30,7 +33,7 @@ struct SavedReply {
     index: u8,
     logical_start: u32,
     byte_count: usize,
-    expected_wkc: u16,
+    expected_wkc: Option<u16>,
     reply_hex: String,
 }
 
@@ -38,13 +41,15 @@ struct SavedReply {
 struct ReplyEvidence {
     frame_sha256: String,
     index: u8,
-    expected_wkc: u16,
+    expected_wkc: Option<u16>,
     actual_wkc: u16,
     wkc_matches: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     station_al: Option<AlRead>,
     #[serde(skip_serializing_if = "Option::is_none")]
     topology: Option<TopologyEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contributors: Option<Contributions>,
 }
 
 #[derive(Serialize)]
@@ -68,10 +73,28 @@ impl TopologyEvidence {
 
 impl ReplyEvidence {
     fn unavailable_reason(&self) -> Option<String> {
+        let Some(expected) = self.expected_wkc else {
+            return Some(
+                "FMMU station evidence is incomplete or invalid for LRD contribution review".into(),
+            );
+        };
+        if expected == 0 {
+            return Some("no active FMMU read mappings intersect the LRD window".into());
+        }
+        if let Some(declared) = self
+            .contributors
+            .as_ref()
+            .and_then(|contributors| contributors.declared_expected_wkc)
+            && declared != expected
+        {
+            return Some(format!(
+                "declared LRD Working Counter {declared} differs from the FMMU expectation {expected}"
+            ));
+        }
         if !self.wkc_matches {
             return Some(format!(
-                "LRD Working Counter mismatch (expected {}, received {})",
-                self.expected_wkc, self.actual_wkc
+                "LRD Working Counter mismatch (expected {expected}, received {})",
+                self.actual_wkc
             ));
         }
         if let Some(al) = &self.station_al
@@ -179,10 +202,12 @@ impl Window {
         })
     }
 
-    pub(super) fn load_reply(path: &Path, station: u16, stations: &[u16]) -> Result<Self> {
+    pub(super) fn load_reply(path: &Path, table: &Table) -> Result<Self> {
+        let station = table.evidence.station_address;
+        let stations = &table.stations;
         let (saved, bytes) = read_json::<SavedReply>(path, MAX_FILE_BYTES)?;
         ensure!(
-            matches!(saved.schema, 1..=3),
+            matches!(saved.schema, 1..=4),
             "unsupported saved LRD reply schema {}",
             saved.schema
         );
@@ -192,13 +217,17 @@ impl Window {
             saved.station_address,
         );
         ensure!(
-            saved.expected_wkc != 0,
+            saved.schema == 4 || saved.expected_wkc.is_some(),
+            "expected LRD Working Counter is required for schema 1 through 3"
+        );
+        ensure!(
+            saved.expected_wkc != Some(0),
             "expected LRD Working Counter must be nonzero"
         );
         validate_window(saved.logical_start, saved.byte_count)?;
         let reply = decode_frame_hex(&saved.reply_hex).context("decode saved LRD reply frame")?;
         let expects_al = saved.schema >= 2;
-        let expects_topology = saved.schema == 3;
+        let expects_topology = saved.schema >= 3;
         let mut used = if expects_al { 2 } else { 1 };
         let inputs = input_datagrams(station, saved.byte_count);
         let mut parts = [inputs[0]; MAX_DATAGRAMS];
@@ -236,10 +265,24 @@ impl Window {
         } else {
             None
         };
-        let wkc_matches = actual_wkc == saved.expected_wkc;
-        let usable = wkc_matches
-            && station_al.as_ref().is_none_or(|al| al.clean_safeop)
-            && topology.as_ref().is_none_or(|topology| topology.valid);
+        let contributors = (saved.schema == 4).then(|| {
+            table.contributions(saved.logical_start, saved.byte_count, saved.expected_wkc)
+        });
+        let expected_wkc = match &contributors {
+            Some(contributors) => contributors.derived_expected_wkc,
+            None => saved.expected_wkc,
+        };
+        let evidence = ReplyEvidence {
+            frame_sha256: hex::encode(Sha256::digest(&reply)),
+            index: saved.index,
+            expected_wkc,
+            actual_wkc,
+            wkc_matches: expected_wkc == Some(actual_wkc),
+            station_al,
+            topology,
+            contributors,
+        };
+        let usable = evidence.unavailable_reason().is_none();
         Ok(Self {
             evidence: Evidence::new(
                 path,
@@ -247,15 +290,7 @@ impl Window {
                 saved.station_address,
                 saved.logical_start,
                 saved.byte_count,
-                Some(ReplyEvidence {
-                    frame_sha256: hex::encode(Sha256::digest(&reply)),
-                    index: saved.index,
-                    expected_wkc: saved.expected_wkc,
-                    actual_wkc,
-                    wkc_matches,
-                    station_al,
-                    topology,
-                }),
+                Some(evidence),
             )?,
             data: if usable { payload.to_vec() } else { Vec::new() },
         })
@@ -325,6 +360,23 @@ impl Window {
                 logical_start >= window_start && logical_end <= window_end,
                 "logical bytes {logical_start:#010x}..{logical_end:#010x} are outside the supplied payload",
             );
+            if let Some(station) = self
+                .evidence
+                .lrd_reply
+                .as_ref()
+                .and_then(|reply| reply.contributors.as_ref())
+                .and_then(|contributors| {
+                    contributors.other_reader(
+                        self.evidence.station_address,
+                        logical_start,
+                        logical_end,
+                    )
+                })
+            {
+                anyhow::bail!(
+                    "station {station:#06x} also has an active read mapping in the requested logical range"
+                );
+            }
             data.extend_from_slice(
                 &self.data[(logical_start - window_start) as usize
                     ..(logical_end - window_start) as usize],

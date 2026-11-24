@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.108.0** reviews same-frame topology probes alongside the saved LRD and AL read. Schema 3 checks the FMMU table's station count and order and withholds decoding on a conflicting configured alias. Physical qualification remains open. [Saved topology reply review](pdo-selection.md#verify-station-count-and-order-in-the-same-reply) · [Verification history](../VERIFICATION.md)
+Version **0.109.0** derives the expected LRD Working Counter from the complete saved FMMU table. Schema 4 counts each intersecting station once and withholds fields with overlapping reads from another station. The same-frame AL and topology checks still apply. Physical qualification remains open. [Saved LRD contribution review](pdo-selection.md#derive-the-lrd-working-counter-from-saved-fmmus) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

@@ -1003,3 +1003,11 @@ Schema 3 adds a broadcast count and ordered position reads to the saved Workbenc
 The authored two-station fixture matched positions 0x1000 and 0x1001, confirmed clean SAFEOP and decoded DL status B79D and counter AABB. Reordered station bytes, a changed broadcast counter, an unavailable position, a changed FMMU order and a conflicting alias each withheld the samples. A malformed position echo, wrong register, missing probes and schema downgrading were rejected at the frame check. A failed AL Working Counter also withheld samples with otherwise matching topology. The single LRD and paired AL fixtures passed their existing checks.
 
 Formatting, locked Clippy, all 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases each recorded one missed deadline in this run. Physical SAFEOP and timing qualification remain open.
+
+## Version 0.109.0 derived LRD Working Counter for register-backed TxPDOs (2026-11-24)
+
+Schema 4 uses the same LRD, selected-station AL and topology probes as schema 3. The complete saved FMMU table provides an expected LRD Working Counter. Each station with an intersecting active read mapping contributes one, regardless of the number of matching slots. The report lists the clipped bit ranges, records the actual counter from the saved frame and compares any optional declared count with the derived count. An incomplete or invalid station bank makes the expected count unavailable.
+
+The authored two-station fixture derived two contributions from five active read slots and decoded DL status B79D and counter AABB. A partial-bit overlap from the second station withheld the counter while DL status and historical ESC bytes remained available. The fixtures checked a clipped range, endpoint-only contact, inactive and write-only slots, invalid slot WKC, disagreement with the declared expectation, no contributors and a bad reply counter. Schema 3 still required an explicit expectation.
+
+Formatting, locked Clippy, all 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases recorded four and two missed deadlines, respectively. Physical SAFEOP and timing qualification remain open.

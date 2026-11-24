@@ -206,6 +206,16 @@ Use schema 3 for a Workbench reply containing the LRD, the selected station's AL
 
 The report adds `logical_payload.lrd_reply.topology` with the observed count, positions, conflicting alias positions and verdict. If another station lists the selected station address as its configured alias, Workbench withholds the payload because alias activation is unknown in the saved probe. A count or order mismatch also withholds the payload and preserves the LRD and AL observations. Frame header and traversal-echo failures reject the file. This workflow checks topology within the saved frame. Device identity, the set of LRD contributors and physical bench acceptance remain separate evidence.
 
+#### Derive the LRD Working Counter from saved FMMUs
+
+Use schema 4 for the same LRD, AL and topology frame as schema 3. The expected LRD Working Counter comes from the full saved FMMU table. Each station with an active read mapping that intersects the logical window contributes one to the expectation. Multiple matching slots on one station still contribute one. Set `expected_wkc` if you also want to check a declared count against the derived count. A missing or invalid FMMU slot observation makes the derived count unavailable. [EtherCAT Working Counter reference](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --fmmu samples/register-pdos-fmmu-contributors.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-contributors-reply.json --snapshot samples/esc-diagnostics.json --out .local/register-lrd-contributors-review.json
+```
+
+The `logical_payload.lrd_reply.contributors` section shows the derived count, any declared count, each station's verdict, and intersecting read slots with absolute logical bit ranges. Range ends are exclusive. The sample expects two contributions, even though both stations have multiple participating slots. Decoding also requires the matching AL and topology checks. A field whose logical range overlaps an active read on another station is withheld. Other fully covered fields can still decode. The expected count describes the saved mappings. Physical delivery and device identity remain separate evidence. [FMMU sample](../samples/register-pdos-fmmu-contributors.json) · [Saved reply sample](../samples/register-pdos-lrd-contributors-reply.json)
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

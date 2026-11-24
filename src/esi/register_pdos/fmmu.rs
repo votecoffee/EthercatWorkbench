@@ -1,5 +1,5 @@
 //! Compare a register projection with the configured logical mapping saved for one station.
-use crate::input_group::fmmu::{Mapping, load_station};
+use crate::input_group::fmmu::{Mapping, Station, load_station};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{ops::Range, path::Path};
@@ -57,17 +57,50 @@ struct ActiveMapping {
     physical: Range<u64>,
 }
 
-pub(super) struct Table {
-    pub(super) evidence: Evidence,
-    pub(super) stations: Vec<u16>,
+#[derive(Serialize)]
+pub(super) struct Contributions {
+    pub(super) derived_expected_wkc: Option<u16>,
+    pub(super) declared_expected_wkc: Option<u16>,
+    stations: Vec<StationContribution>,
+}
+
+#[derive(Serialize)]
+struct StationContribution {
+    station_address: u16,
+    contributes: Option<bool>,
+    read_ranges: Vec<LogicalRead>,
+    issues: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct LogicalRead {
+    slot: usize,
+    start_bit: u64,
+    end_bit_exclusive: u64,
+}
+
+impl Contributions {
+    pub(super) fn other_reader(&self, selected: u16, start: u64, end: u64) -> Option<u16> {
+        self.stations
+            .iter()
+            .find(|station| {
+                station.station_address != selected
+                    && station.read_ranges.iter().any(|range| {
+                        range.start_bit < end * 8 && start * 8 < range.end_bit_exclusive
+                    })
+            })
+            .map(|station| station.station_address)
+    }
+}
+
+struct StationMappings {
+    address: u16,
+    issues: Vec<String>,
     active: Vec<ActiveMapping>,
 }
 
-impl Table {
-    pub(super) fn load(path: &Path, address: u16) -> Result<Self> {
-        ensure!(address != 0, "FMMU station address must be nonzero");
-        let saved = load_station(path, address)?;
-        let station = saved.station;
+impl StationMappings {
+    fn decode(station: &Station) -> Self {
         let mut issues = station.count_issues();
         let mut active = Vec::new();
         for (slot, read) in station.slots.iter().enumerate() {
@@ -88,6 +121,45 @@ impl Table {
                 }
             }
         }
+        Self {
+            address: station.station_address,
+            issues,
+            active,
+        }
+    }
+
+    fn contribution(&self, logical: &Range<u64>) -> StationContribution {
+        let read_ranges: Vec<_> = self
+            .active
+            .iter()
+            .filter(|slot| slot.mapping.read_enabled && overlaps(&slot.logical, logical))
+            .map(|slot| LogicalRead {
+                slot: slot.slot,
+                start_bit: slot.logical.start.max(logical.start),
+                end_bit_exclusive: slot.logical.end.min(logical.end),
+            })
+            .collect();
+        StationContribution {
+            station_address: self.address,
+            contributes: self.issues.is_empty().then_some(!read_ranges.is_empty()),
+            read_ranges,
+            issues: self.issues.clone(),
+        }
+    }
+}
+
+pub(super) struct Table {
+    pub(super) evidence: Evidence,
+    pub(super) stations: Vec<u16>,
+    decoded: Vec<StationMappings>,
+}
+
+impl Table {
+    pub(super) fn load(path: &Path, address: u16) -> Result<Self> {
+        ensure!(address != 0, "FMMU station address must be nonzero");
+        let saved = load_station(path, address)?;
+        let station = &saved.devices[saved.position];
+        let decoded: Vec<_> = saved.devices.iter().map(StationMappings::decode).collect();
         Ok(Self {
             evidence: Evidence {
                 file_name: path
@@ -101,11 +173,36 @@ impl Table {
                 reported_slots: station.count.value,
                 captured_slots: station.slots.len(),
                 identity_binding: "absent_from_snapshot",
-                issues,
+                issues: decoded[saved.position].issues.clone(),
             },
             stations: saved.stations,
-            active,
+            decoded,
         })
+    }
+
+    pub(super) fn contributions(
+        &self,
+        logical_start: u32,
+        byte_count: usize,
+        declared: Option<u16>,
+    ) -> Contributions {
+        let start = u64::from(logical_start) * 8;
+        let logical = start..start + byte_count as u64 * 8;
+        let stations: Vec<_> = self
+            .decoded
+            .iter()
+            .map(|station| station.contribution(&logical))
+            .collect();
+        let derived_expected_wkc = stations.iter().try_fold(0u16, |count, station| {
+            station
+                .contributes
+                .map(|contributes| count + u16::from(contributes))
+        });
+        Contributions {
+            derived_expected_wkc,
+            declared_expected_wkc: declared,
+            stations,
+        }
     }
 
     pub(super) fn compare(&self, register: u16, width: usize) -> Check {
@@ -116,8 +213,8 @@ impl Table {
         }
         let start = u64::from(register) * 8;
         let physical = start..start + (width as u64) * 8;
-        let mut physical_hits: Vec<_> = self
-            .active
+        let active = &self.decoded[self.evidence.position].active;
+        let mut physical_hits: Vec<_> = active
             .iter()
             .filter(|slot| overlaps(&slot.physical, &physical))
             .collect();
@@ -163,7 +260,7 @@ impl Table {
 
             let logical_start = slot.logical.start + (covered.start - slot.physical.start);
             let logical = logical_start..logical_start + (covered.end - covered.start);
-            if let Some(other) = self.active.iter().find(|other| {
+            if let Some(other) = active.iter().find(|other| {
                 other.slot != slot.slot
                     && other.mapping.read_enabled
                     && overlaps(&other.logical, &logical)

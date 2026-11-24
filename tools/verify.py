@@ -774,6 +774,123 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_register_pdo_lrd_contributors(cli, destination, sample=None, fmmu=None,
+                                        snapshot=None, reply=None):
+    """Derive the LRD count from all saved FMMU banks and check logical byte ownership."""
+    sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
+    fmmu = ROOT / "samples/register-pdos-fmmu-contributors.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    reply = ROOT / "samples/register-pdos-lrd-contributors-reply.json" if reply is None else reply
+    args = ("preview-register-pdos", sample, "--device", 0, "--station", "0x1000", "--snapshot", snapshot)
+    proof = destination / "contributor-review.json"
+    result = cli_call(cli, *args, "--fmmu", fmmu, "--lrd-reply", reply, "--out", proof)
+    assert result == json.loads(proof.read_bytes())
+    details = result["logical_payload"]["lrd_reply"]
+    assert result["fmmu"]["sha256"] == hashlib.sha256(fmmu.read_bytes()).hexdigest()
+    assert result["logical_payload"]["sha256"] == hashlib.sha256(reply.read_bytes()).hexdigest()
+    assert details["expected_wkc"] == details["actual_wkc"] == 2 and details["wkc_matches"]
+    assert details["topology"]["valid"] and details["station_al"]["clean_safeop"]
+    contributors = details["contributors"]
+    assert contributors["derived_expected_wkc"] == 2 and contributors["declared_expected_wkc"] is None
+    first, second = contributors["stations"]
+    assert first["station_address"] == 0x1000 and first["contributes"] and first["issues"] == []
+    assert [row["slot"] for row in first["read_ranges"]] == [0, 1, 2]
+    assert second["station_address"] == 0x1001 and second["contributes"] and second["issues"] == []
+    base = 0x10200000
+    assert second["read_ranges"] == [
+        {"slot": 0, "start_bit": (base + 8) * 8, "end_bit_exclusive": (base + 10) * 8},
+        {"slot": 1, "start_bit": (base + 0x0e) * 8 + 2, "end_bit_exclusive": (base + 0x0e) * 8 + 5},
+    ]
+    assert result["projections"][0]["logical_sample"]["raw_hex"] == "B79D"
+    assert result["projections"][1]["logical_sample"]["raw_hex"] == "AABB"
+
+    original = json.loads(reply.read_bytes())
+    original_frame = bytes.fromhex(original["reply_hex"])
+    wkc_offset = 26 + original["byte_count"]
+
+    def packet(name, *, actual=2, **overrides):
+        raw_frame = original_frame[:wkc_offset] + actual.to_bytes(2, "little") + original_frame[wkc_offset + 2:]
+        data = {**original, "reply_hex": raw_frame.hex(" "), **overrides}
+        path = destination / (name + ".json")
+        path.write_bytes(json.dumps(data).encode())
+        return path
+
+    def table(name, edit):
+        data = json.loads(fmmu.read_bytes())
+        edit(data["devices"])
+        path = destination / (name + ".json")
+        path.write_bytes(json.dumps(data).encode())
+        return path
+
+    def inspect(reply_path=reply, table_path=fmmu):
+        return cli_call(cli, *args, "--fmmu", table_path, "--lrd-reply", reply_path)
+
+    def held(report, message):
+        for projection in report["projections"]:
+            assert projection["logical_sample"]["status"] == "unavailable"
+            assert message in projection["logical_sample"]["reason"]
+        assert report["projections"][0]["entries"][0]["sample"]["raw_hex"] == "B6"
+
+    supplied = inspect(packet("declared-correct", expected_wkc=2))["logical_payload"]["lrd_reply"]
+    assert supplied["wkc_matches"] and supplied["contributors"]["declared_expected_wkc"] == 2
+
+    mismatched = inspect(packet("reply-wkc-low", actual=1))
+    assert mismatched["logical_payload"]["lrd_reply"]["expected_wkc"] == 2
+    assert not mismatched["logical_payload"]["lrd_reply"]["wkc_matches"]
+    held(mismatched, "LRD Working Counter mismatch (expected 2, received 1)")
+    held(inspect(packet("declared-low", actual=1, expected_wkc=1)), "declared LRD Working Counter 1 differs")
+    held(inspect(packet("declared-low-observed-right", expected_wkc=1)), "declared LRD Working Counter 1 differs")
+    invalid = inspect(table_path=table("unread-other-station",
+                                      lambda stations: stations[1]["slots"][1].update(wkc=0)))
+    counts = invalid["logical_payload"]["lrd_reply"]
+    assert counts["expected_wkc"] is None and not counts["wkc_matches"]
+    assert counts["contributors"]["stations"][1]["contributes"] is None
+    assert counts["contributors"]["stations"][1]["issues"] == ["FMMU 1 WKC 0, expected 1"]
+    held(invalid, "FMMU station evidence is incomplete or invalid")
+
+    def move(station_index, slot_index, address):
+        def edit(stations):
+            stations[station_index]["slots"][slot_index]["value"][:4] = address.to_bytes(4, "little")
+        return edit
+
+    shared = inspect(table_path=table("other-bit-reader", move(1, 1, base + 0x11)))
+    assert shared["logical_payload"]["lrd_reply"]["wkc_matches"]
+    assert shared["projections"][0]["logical_sample"]["raw_hex"] == "B79D"
+    counter = shared["projections"][1]
+    assert counter["logical_sample"]["status"] == "unavailable"
+    assert "station 0x1001 also has an active read mapping" in counter["logical_sample"]["reason"]
+    assert counter["entries"][0]["logical_sample"] == counter["logical_sample"]
+    assert counter["entries"][0]["sample"]["raw_hex"] == "0102"
+
+    clipped = inspect(table_path=table("read-crosses-window-end", move(1, 0, base + 0x1d)))
+    read = clipped["logical_payload"]["lrd_reply"]["contributors"]["stations"][1]["read_ranges"][0]
+    assert read == {"slot": 0, "start_bit": (base + 0x1d) * 8, "end_bit_exclusive": (base + 0x1e) * 8}
+    assert clipped["projections"][2]["logical_sample"]["status"] == "unavailable"
+
+    def park_other(stations):
+        move(1, 0, base + 0x1e)(stations)
+        move(1, 1, base - 1)(stations)
+
+    only_selected = inspect(packet("one-contributor", actual=1), table("other-outside", park_other))
+    counts = only_selected["logical_payload"]["lrd_reply"]
+    assert counts["expected_wkc"] == 1 and counts["wkc_matches"]
+    assert counts["contributors"]["stations"][1]["contributes"] is False
+    assert only_selected["projections"][0]["logical_sample"]["raw_hex"] == "B79D"
+
+    def park_all(stations):
+        park_other(stations)
+        for slot_index in range(3):
+            move(0, slot_index, base + 0x100 + 8 * slot_index)(stations)
+
+    none = inspect(packet("no-contributor", actual=0), table("all-outside", park_all))
+    assert none["logical_payload"]["lrd_reply"]["expected_wkc"] == 0
+    held(none, "no active FMMU read mappings intersect the LRD window")
+
+    missing = packet("schema3-without-expected", schema=3)
+    assert "required for schema 1 through 3" in cli_call(
+        cli, *args, "--fmmu", fmmu, "--lrd-reply", missing, success=False)
+
+
 def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                             reply=None, paired_reply=None):
     """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
@@ -1087,7 +1204,7 @@ def verify_register_pdo_lrd_reply(cli, destination, sample=None, fmmu=None, snap
         (variant("extra-data", raw=frame + b"\x00" * 4), "trailing bytes"),
         (variant("zero-wkc", expected_wkc=0), "expected LRD Working Counter must be nonzero"),
         (variant("wrong-station", station_address=4097), "differs from selected FMMU station"),
-        (variant("new-schema", schema=4), "unsupported saved LRD reply schema"),
+        (variant("new-schema", schema=5), "unsupported saved LRD reply schema"),
         (variant("wrong-hex", reply_hex="ZX"), "must contain hex byte pairs"),
         (variant("too-many-payload-bytes", byte_count=1025), "payload exceeds 1024 bytes"),
         (variant("wrap", logical_start=0xffffffff), "extends beyond the 32-bit"),
@@ -8214,6 +8331,9 @@ def main():
     register_lrd_topology_destination = destination / "register-pdo-lrd-topology-reply"
     register_lrd_topology_destination.mkdir()
     verify_register_pdo_lrd_topology_reply(cli, register_lrd_topology_destination)
+    register_lrd_contributors_destination = destination / "register-pdo-lrd-contributors"
+    register_lrd_contributors_destination.mkdir()
+    verify_register_pdo_lrd_contributors(cli, register_lrd_contributors_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)
