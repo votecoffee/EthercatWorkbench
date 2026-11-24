@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.14">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored virtual PDO template fixture</Name></Vendor>
+  <Descriptions>
+    <Groups><Group><Type>Fixture</Type><Name>Authored sample group</Name></Group></Groups>
+    <Devices>
+      <Device Physics="YY">
+        <Type ProductCode="#x00000013" RevisionNo="1">VirtualPdoTemplate</Type>
+        <Name>Authored configurable PDO template</Name>
+        <GroupType>Fixture</GroupType>
+        <Sm>MBoxOut</Sm>
+        <Sm>MBoxIn</Sm>
+        <Sm>Outputs</Sm>
+        <Sm>Inputs</Sm>
+        <RxPdo Sm="2" Fixed="1">
+          <Index>#x1600</Index><Name>Command</Name>
+          <Entry><Index>#x6040</Index><BitLen>16</BitLen><Name>Command word</Name><DataType>UINT</DataType></Entry>
+        </RxPdo>
+        <TxPdo Sm="3">
+          <Index>#x1A00</Index><Name>Default status</Name>
+          <Entry><Index>#x6042</Index><BitLen>16</BitLen><Name>Status word</Name><DataType>UINT</DataType></Entry>
+          <Entry><Index>#x2100</Index><SubIndex>2</SubIndex><BitLen>1</BitLen><Name>Status flag</Name><DataType>BOOL</DataType></Entry>
+          <Entry><Index>0</Index><BitLen>7</BitLen></Entry>
+        </TxPdo>
+        <TxPdo Virtual="true">
+          <Index>#x1A40</Index><Name>Configurable diagnostics template</Name>
+        </TxPdo>
+        <Mailbox><CoE PdoUpload="1" PdoAssign="0" PdoConfig="true"/></Mailbox>
+      </Device>
+    </Devices>
+  </Descriptions>
+</EtherCATInfo>

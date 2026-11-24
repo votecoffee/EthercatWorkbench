@@ -91,6 +91,8 @@ Use `preview-modular-pdos samples/fixed-slot-pdos.esi.xml --device 0 --slot 0=0x
 
 Use `preview-modular-pdos samples/module-pdo-group-alignment.esi.xml --device 0 --slot 0=0x400 --slot 1=0x402 --expect-layout samples/module-pdo-expected.json` to compose ordered assignments and calculate ESI group padding offline. The split-group sample records padding explicitly for a group that spans channels. [Expected layout](docs/pdo-selection.md#compose-an-expected-modular-pdo-image)
 
+Use `preview-pdo-layout` to supply explicit entries for an entryless virtual PDO template and compare its expected geometry with saved CoE readback. [Virtual PDO templates](docs/pdo-selection.md#preview-an-entryless-virtual-pdo-template)
+
 Use `inspect-pdo-readback PROFILE RUN_REPORT` to review observed assignments. Use `export-observed-pdo-profile` to save their typed fields and bit offsets for offline decode or Rx staging. [Saved dynamic PDO readback](docs/pdo-selection.md#inspect-saved-dynamic-pdo-readback)
 
 Add `--run-report samples/fixed-slot-pdo-readback.json` to compare the preview with the sample's saved PDO descriptors, assignment and bit placement. [Readback comparison](docs/pdo-selection.md#compare-module-candidates-with-saved-pdo-readback)

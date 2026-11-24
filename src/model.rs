@@ -41,6 +41,8 @@ pub struct EsiSource {
     pub pdo_capabilities: Option<PdoCapabilities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_pdo_group: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub virtual_sync_managers: Vec<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modular: Option<crate::esi::modular::Description>,
     #[serde(default)]

@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.100.0** exports reusable offline profiles from observed PDO layouts. It retains the saved geometry and report hash, applies recognized ESI scalar types and accepts explicit kinds for other entries. The virtual fixture verifies typed decode, Rx staging and rejection of native acquisition. Physical qualification remains open. Virtual group replay still verifies each connection generation using its own CoE and SII exchanges. [Saved dynamic PDO readback](pdo-selection.md#inspect-saved-dynamic-pdo-readback) · [Embedded PDO setup](input-group.md#capture-pdo-setup-inside-the-replay-fixture) · [Verification history](../VERIFICATION.md)
+Version **0.101.0** composes an offline PDO image using explicitly supplied entries for eligible entryless virtual device PDOs. The preview records the request and ESI hashes and compares ordered descriptors against saved CoE evidence. The authored fixture matches 4 Tx bytes and 2 Rx bytes. Observed profiles support scoped typed decoding and offline Rx staging. Physical qualification remains open. [Virtual PDO templates](pdo-selection.md#preview-an-entryless-virtual-pdo-template) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

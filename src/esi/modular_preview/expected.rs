@@ -4,7 +4,7 @@ use crate::{
     esi::modular::ModulePdoGroup,
     model::{EsiSource, Identity, MAX_PAYLOAD},
     pdo::{Entry, Layout, MappingSource, Pdo, SyncManager},
-    pdo_catalog::{Assignment, Direction},
+    pdo_catalog::Direction,
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,22 @@ struct Request {
     tx_split_groups: Vec<SplitGroupPadding>,
     #[serde(default)]
     rx_split_groups: Vec<SplitGroupPadding>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Assignment {
+    index: u16,
+    sm: u8,
+    entries: Option<Vec<ManualEntry>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualEntry {
+    object_index: u16,
+    subindex: u8,
+    width: u8,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -79,6 +95,7 @@ struct PdoSource {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Origin {
     Device,
+    DeviceVirtualTemplate,
     Module { slot: usize, module_ident: u32 },
     GroupPadding { alignment_bytes: u32 },
 }
@@ -96,12 +113,17 @@ struct DirectionComparison {
     unavailable: Option<String>,
 }
 
+enum CandidateEntries {
+    Declared(Result<Vec<u32>>),
+    Manual,
+}
+
 struct Candidate {
     origin: Origin,
     declared_sm: Option<u8>,
     group: Option<u32>,
     mandatory: bool,
-    descriptors: Result<Vec<u32>>,
+    entries: CandidateEntries,
     excludes: Vec<u16>,
 }
 
@@ -109,6 +131,18 @@ impl ExpectedLayout {
     pub(super) fn compare_saved(&mut self, readback: &readback::Comparison) {
         let compare = |direction, expected: &Image| {
             let (actual, observed_bytes, unavailable) = readback.observed_layout(direction);
+            if actual.is_some()
+                && expected.layout.mapping_source == MappingSource::EsiWithManualEntries
+                && readback.mapping_source(direction) != Some(MappingSource::Coe)
+            {
+                return DirectionComparison {
+                    observed_bytes,
+                    assignments_match: None,
+                    unavailable: Some(
+                        "virtual PDO templates require saved CoE layout evidence".into(),
+                    ),
+                };
+            }
             DirectionComparison {
                 observed_bytes,
                 assignments_match: actual.map(|layout| expected.layout.same_assignments(layout)),
@@ -215,28 +249,35 @@ fn candidate_descriptors(
         .iter()
         .filter(|pdo| pdo.direction == direction)
         .map(|pdo| {
-            let descriptors = if pdo.virtual_pdo || pdo.unsupported {
-                Err(anyhow::anyhow!(
-                    "virtual or vendor-dependent device PDO requires separate interpretation"
-                ))
+            let is_template =
+                pdo.virtual_pdo && pdo.entries.is_empty() && !pdo.fixed && !pdo.unsupported;
+            let (origin, entries) = if is_template {
+                (Origin::DeviceVirtualTemplate, CandidateEntries::Manual)
             } else {
-                pdo.entries
-                    .iter()
-                    .map(|entry| {
-                        let width = u8::try_from(entry.width)
-                            .context("PDO entry exceeds the descriptor bit width")?;
-                        Ok(descriptor(entry.index, entry.subindex, width))
-                    })
-                    .collect()
+                let descriptors = if pdo.virtual_pdo || pdo.unsupported {
+                    Err(anyhow::anyhow!(
+                        "virtual or vendor-dependent device PDO requires separate interpretation"
+                    ))
+                } else {
+                    pdo.entries
+                        .iter()
+                        .map(|entry| {
+                            let width = u8::try_from(entry.width)
+                                .context("PDO entry exceeds the descriptor bit width")?;
+                            Ok(descriptor(entry.index, entry.subindex, width))
+                        })
+                        .collect()
+                };
+                (Origin::Device, CandidateEntries::Declared(descriptors))
             };
             (
                 pdo.index,
                 Candidate {
-                    origin: Origin::Device,
+                    origin,
                     declared_sm: pdo.default_sm,
                     group: esi.device_pdo_group,
                     mandatory: pdo.mandatory,
-                    descriptors,
+                    entries,
                     excludes: pdo.excludes.clone(),
                 },
             )
@@ -254,11 +295,11 @@ fn candidate_descriptors(
                     declared_sm: pdo.declared_sm,
                     group: slot.module_pdo_group,
                     mandatory: pdo.mandatory,
-                    descriptors: Ok(pdo
+                    entries: CandidateEntries::Declared(Ok(pdo
                         .entries
                         .iter()
                         .map(|entry| descriptor(entry.object.resolved, entry.subindex, entry.width))
-                        .collect()),
+                        .collect())),
                     excludes: pdo.excludes.iter().map(|index| index.resolved).collect(),
                 },
             );
@@ -418,9 +459,38 @@ fn compose_direction(
             .sync_managers
             .last_mut()
             .expect("SyncManager for selected PDO");
-        let entries = candidate
-            .descriptors
-            .with_context(|| format!("read PDO {index:#06x} descriptors"))?;
+        let entries = match candidate.entries {
+            CandidateEntries::Declared(descriptors) => {
+                let descriptors =
+                    descriptors.with_context(|| format!("read PDO {index:#06x} descriptors"))?;
+                ensure!(
+                    assignment.entries.is_none(),
+                    "PDO {index:#06x} accepts manual entries only for an entryless virtual device template"
+                );
+                descriptors
+            }
+            CandidateEntries::Manual => {
+                ensure!(
+                    !esi.virtual_sync_managers.contains(&sm)
+                        && !candidate
+                            .declared_sm
+                            .is_some_and(|declared| esi.virtual_sync_managers.contains(&declared)),
+                    "PDO {index:#06x} references a virtual SyncManager that requires separate interpretation"
+                );
+                let manual = assignment.entries.as_deref().with_context(|| {
+                    format!("virtual PDO {index:#06x} needs explicit manual entries")
+                })?;
+                ensure!(
+                    (1..=255).contains(&manual.len()),
+                    "virtual PDO {index:#06x} needs 1 to 255 manual entries"
+                );
+                layout.mapping_source = MappingSource::EsiWithManualEntries;
+                manual
+                    .iter()
+                    .map(|entry| descriptor(entry.object_index, entry.subindex, entry.width))
+                    .collect()
+            }
+        };
         ensure!(
             !entries.is_empty(),
             "expected PDO {index:#06x} has no entries"

@@ -774,6 +774,140 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_virtual_pdo_templates(cli, destination, sample=None, request=None):
+    """Exercise explicit template entries against a CoE readback and refusal cases."""
+    sample = ROOT / "samples/virtual-pdo-template.esi.xml" if sample is None else sample
+    request = ROOT / "samples/virtual-pdo-expected.json" if request is None else request
+    selector = ("--identity", "0x00ff1000/19/1")
+    source, = cli_call(cli, "esi-list", sample)
+    candidate = next(pdo for pdo in source["source"]["pdo_catalog"] if pdo["index"] == 0x1A40)
+    assert candidate["virtual_pdo"] and candidate["entries"] == []
+    profile = destination / "defaults.json"
+    cli_call(cli, "esi-import", sample, *selector, "--out", profile)
+    assert cli_call(cli, "validate", profile)["esi_pdo_selection"]["tx"] == [{"index": 0x1A00, "sm": 3}]
+
+    command = ("preview-pdo-layout", sample, *selector)
+    draft = cli_call(cli, *command, "--device", 0, "--expect-layout", request)
+    assert draft["scope"] == "offline_esi_device_pdo_layout"
+    assert draft["esi_sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    expected = draft["expected_layout"]
+    assert expected["sha256"] == hashlib.sha256(request.read_bytes()).hexdigest()
+    assert "saved_comparison" not in expected and "saved_readback" not in draft
+    tx, rx = expected["tx"], expected["rx"]
+    assert tx["layout"]["mapping_source"] == "esi_with_manual_entries"
+    assert rx["layout"]["mapping_source"] == "esi"
+    assert [row["origin"]["kind"] for row in tx["pdo_sources"]] == ["device_virtual_template", "device"]
+    assert tx["pdo_sources"][0]["declared_sm"] is None
+    assert [(row["bit"], row["width"], row["object_index"]) for row in tx["entries"]] == [
+        (0, 8, 0x2200), (8, 16, 0x6042), (24, 1, 0x2100), (25, 7, 0),
+    ]
+    assert (tx["image_bytes"], rx["image_bytes"]) == (4, 2)
+
+    coe = destination / "preop.json"
+    audit = cli_call(cli, "read-virtual-module-inventory", "--scenario", "dynamic-pdo-layout",
+                     "--pdo-report", coe)["audit"]
+    assert audit["state_requests"] == [1, 2, 1] and audit["coe_uploads"] == 32
+    assert not any(audit[key] for key in ("coe_downloads", "op_requests", "logical_writes", "physical_output_writes"))
+    proof = destination / "review.json"
+    review = cli_call(cli, *command, "--expect-layout", request, "--run-report", coe, "--out", proof)
+    assert review == json.loads(proof.read_bytes())
+    assert review["saved_readback"]["sha256"] == hashlib.sha256(coe.read_bytes()).hexdigest()
+    comparison = review["expected_layout"]["saved_comparison"]
+    assert comparison["tx"] == {"observed_bytes": 4, "assignments_match": True, "unavailable": None}
+    assert comparison["rx"] == {"observed_bytes": 2, "assignments_match": True, "unavailable": None}
+    cli_call(cli, *command, "--expect-layout", request, "--out", proof, success=False)
+    assert review == json.loads(proof.read_bytes())
+
+    def variant(name, mutate, path=request):
+        data = json.loads(path.read_bytes())
+        mutate(data)
+        changed = destination / (name + ".json")
+        changed.write_bytes(json.dumps(data).encode("utf-8"))
+        return changed
+
+    def negative(name, manifest, fragment, esi=sample):
+        output = destination / (name + "-unexpected.json")
+        error = cli_call(cli, command[0], esi, *selector, "--expect-layout", manifest,
+                         "--out", output, success=False)
+        assert fragment in error and not output.exists(), error
+
+    def entry(data):
+        return data["tx"][0]["entries"][0]
+
+    for name, change, fragment in (
+        ("missing", lambda data: data["tx"][0].pop("entries"), "needs explicit manual entries"),
+        ("empty", lambda data: data["tx"][0].update(entries=[]), "needs 1 to 255 manual entries"),
+        ("count", lambda data: data["tx"][0].update(entries=[entry(data)] * 256), "needs 1 to 255 manual entries"),
+        ("width-overflow", lambda data: entry(data).update(width=256), "expected u8"),
+        ("width-zero", lambda data: entry(data).update(width=0), "zero-width PDO mapping"),
+        ("bad-padding", lambda data: entry(data).update(object_index=0), "invalid PDO padding descriptor"),
+        ("overwrite", lambda data: data["rx"][0].update(entries=[entry(data)]), "only for an entryless virtual"),
+        ("wrong-identity", lambda data: data["identity"].update(revision=2), "differs from selected ESI"),
+    ):
+        negative(name, variant(name, change), fragment)
+    assert proof.is_file()
+
+    drifted = variant("one-object-differs", lambda data: entry(data).update(subindex=2))
+    drift = cli_call(cli, *command, "--expect-layout", drifted, "--run-report", coe)["expected_layout"]
+    assert drift["tx"]["image_bytes"] == 4 and drift["saved_comparison"]["tx"]["assignments_match"] is False
+    assert drift["saved_comparison"]["rx"]["assignments_match"] is True
+
+    def saved_tx(data):
+        return data["pdo_verification"]["readback"]["tx"]
+
+    for reported_source in ("sii", None):
+        def change_source(data):
+            if reported_source is None:
+                saved_tx(data).pop("mapping_source")
+            else:
+                saved_tx(data)["mapping_source"] = reported_source
+
+        other = variant(str(reported_source), change_source, path=coe)
+        held = cli_call(cli, *command, "--expect-layout", request, "--run-report", other)["expected_layout"]
+        assert held["saved_comparison"]["tx"] == {
+            "observed_bytes": 4, "assignments_match": None,
+            "unavailable": "virtual PDO templates require saved CoE layout evidence",
+        }
+    expected_only = variant("expected-only", lambda data: saved_tx(data).update(
+        mapping_source="esi_with_manual_entries"), path=coe)
+    held = cli_call(cli, *command, "--expect-layout", request, "--run-report", expected_only,
+                    success=False)
+    assert "layout is an ESI expectation" in held
+
+    xml = sample.read_bytes()
+    for name, old, new, fragment in (
+        ("esc-projection", b"<Name>Configurable diagnostics template</Name>",
+         b"<Name>ESC projection</Name><Entry><Index>#x110</Index><BitLen>8</BitLen></Entry>",
+         "requires separate interpretation"),
+        ("virtual-sm", b"<Sm>Inputs</Sm>", b'<Sm Virtual="true">Inputs</Sm>',
+         "references a virtual SyncManager"),
+        ("declared-virtual-sm", b'<TxPdo Virtual="true">',
+         b'<TxPdo Virtual="true" Sm="4">', "references a virtual SyncManager"),
+        ("fixed-template", b'<TxPdo Virtual="true">', b'<TxPdo Virtual="true" Fixed="1">',
+         "requires separate interpretation"),
+        ("vendor-dependent", b'<TxPdo Virtual="true">',
+         b'<TxPdo Virtual="true" OverwrittenByModule="true">', "requires separate interpretation"),
+    ):
+        alternate = destination / (name + ".esi.xml")
+        assert xml.count(old) == 1
+        edited = xml.replace(old, new)
+        if name == "declared-virtual-sm":
+            edited = edited.replace(b"<Sm>Inputs</Sm>", b'<Sm>Inputs</Sm><Sm Virtual="true">Inputs</Sm>')
+        alternate.write_bytes(edited)
+        negative(name, request, fragment, esi=alternate)
+
+    rx_sample = destination / "rx-template.esi.xml"
+    rx_sample.write_bytes(xml.replace(b'<RxPdo Sm="2" Fixed="1">', b'<RxPdo Sm="2" Virtual="true">')
+                          .replace(b"          <Entry><Index>#x6040</Index><BitLen>16</BitLen><Name>Command word</Name>"
+                                   b"<DataType>UINT</DataType></Entry>\n", b""))
+    rx_request = variant("rx-template", lambda data: data["rx"][0].update(
+        entries=[{"object_index": 0x6040, "subindex": 0, "width": 16}]))
+    symmetric = cli_call(cli, command[0], rx_sample, *selector, "--expect-layout", rx_request,
+                         "--run-report", coe)["expected_layout"]
+    assert symmetric["rx"]["pdo_sources"][0]["origin"]["kind"] == "device_virtual_template"
+    assert symmetric["saved_comparison"]["rx"]["assignments_match"] is True
+
+
 def verify_dynamic_pdo_readback(cli, destination, sample=None):
     """Keep CoE declarations, observed runtime descriptors and ESI hints separate."""
     sample = ROOT / "samples/dynamic-pdo.esi.xml" if sample is None else sample
@@ -7306,6 +7440,9 @@ def main():
     dynamic_destination = destination / "dynamic-pdo-readback"
     dynamic_destination.mkdir()
     verify_dynamic_pdo_readback(cli, dynamic_destination)
+    template_destination = destination / "virtual-pdo-template"
+    template_destination.mkdir()
+    verify_virtual_pdo_templates(cli, template_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

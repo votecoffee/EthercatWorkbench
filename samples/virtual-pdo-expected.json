@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "identity": { "vendor": 16715776, "product": 19, "revision": 1 },
+  "tx": [
+    {
+      "index": 6720,
+      "sm": 3,
+      "entries": [{ "object_index": 8704, "subindex": 1, "width": 8 }]
+    },
+    { "index": 6656, "sm": 3 }
+  ],
+  "rx": [{ "index": 5632, "sm": 2 }]
+}

@@ -71,7 +71,7 @@ impl ReportedLayout {
             "saved {direction:?} layout also declares unavailable readback"
         );
         ensure!(
-            self.source != Some(MappingSource::Esi),
+            !self.source.is_some_and(MappingSource::is_expectation),
             "saved {direction:?} layout is an ESI expectation"
         );
         let parsed = self

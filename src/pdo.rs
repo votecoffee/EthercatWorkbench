@@ -13,14 +13,20 @@ pub enum MappingSource {
     Coe,
     Sii,
     Esi,
+    EsiWithManualEntries,
 }
 
 impl MappingSource {
+    pub(crate) fn is_expectation(self) -> bool {
+        matches!(self, Self::Esi | Self::EsiWithManualEntries)
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Coe => "CoE",
             Self::Sii => "SII",
             Self::Esi => "ESI",
+            Self::EsiWithManualEntries => "ESI with manual entries",
         }
     }
 }

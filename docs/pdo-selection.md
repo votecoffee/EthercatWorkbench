@@ -104,7 +104,7 @@ The sample assigns the second slot's PDOs first because they belong to group 0. 
 
 ## Compose an expected modular PDO image
 
-Add `--expect-layout FILE` to the modular preview. The schema-1 JSON request supplies an exact `identity` and explicit `tx` and `rx` arrays of `{ "index": NUMBER, "sm": NUMBER }` assignments. An empty array requests a zero-byte direction. Use the resolved module indexes from the slot preview and the device-level indexes from the ESI catalog. Order choices by SyncManager and then in assignment order within each SyncManager. Mandatory PDOs use their declared SyncManagers. The preview rejects unknown or repeated indexes, assigned exclusions and selected virtual or oversampled definitions. A chosen slot's definition takes precedence at a shared device/module index. [Bundled assignment request](../samples/module-pdo-expected.json)
+Add `--expect-layout FILE` to the modular preview. The schema-1 JSON request supplies an exact `identity` and explicit `tx` and `rx` arrays of `{ "index": NUMBER, "sm": NUMBER }` assignments. An empty array requests a zero-byte direction. Use the resolved module indexes from the slot preview and the device-level indexes from the ESI catalog. Order choices by SyncManager and then in assignment order within each SyncManager. Mandatory PDOs use their declared SyncManagers. The preview rejects unknown or repeated indexes, assigned exclusions and unsupported definitions such as oversampled PDOs. A chosen slot's definition takes precedence at a shared device/module index. [Bundled assignment request](../samples/module-pdo-expected.json)
 
 ```powershell
 .\ethercat-workbench-cli.exe preview-modular-pdos samples/module-pdo-group-alignment.esi.xml --device 0 --slot 0=0x400 --slot 1=0x402 --expect-layout samples/module-pdo-expected.json --out .local/expected-layout.json
@@ -126,6 +126,19 @@ The alternate virtual scenario places the device's group 2 first on its own Sync
 When a group uses multiple SyncManagers in one direction, supply one choice for the group in `tx_split_groups` or `rx_split_groups`. Use `{ "group": 1, "kind": "assigned", "sm": 4, "widths": [8] }` for one 8-bit padding entry on SM4. Use `{ "group": 1, "kind": "unassigned" }` for explicit absence. The assigned SyncManager must contain a PDO from the group. Workbench uses the padding index declared in the ESI and appends the specified entries after that group's last PDO on the selected SyncManager. Their end must meet the group's alignment in the direction image. The `split_groups` receipt records these choices alongside the expected descriptors.
 
 Use `samples/module-pdo-split-group.esi.xml` and `samples/module-pdo-expected-split.json` with the same preview workflow. Supply slots `0=0x400` and `1=0x402`, or use the saved inventory from the `pdo-group-split-across-sync-managers` virtual scenario. Its PDO report supplies `--run-report` evidence. The sample places the Tx padding on SM4 and the Rx padding on SM5. [Split-group request](../samples/module-pdo-expected-split.json) · [ETG.2000, Table 57](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+## Preview an entryless virtual PDO template
+
+ETG.2000 permits an ESI to declare an entryless virtual PDO for configuration tools to populate. It also uses the virtual attribute for ESC register projections. Workbench composes the entryless, non-fixed device template when the request supplies its complete descriptor list. Virtual PDOs with declared entries, selected or default virtual SyncManagers, vendor-dependent definitions and module-level virtual templates require separate interpretation. [ETG.2000, Table 81](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+For a device without slots, run `preview-pdo-layout`. Use `preview-modular-pdos --expect-layout` when the ESI declares slots. Include the exact identity and both direction arrays from the expected-layout format above. For a selected template, add an ordered `entries` array to its assignment. Use decimal `object_index`, `subindex` and `width` for each entry. Supply 1 to 255 entries with widths of 1 to 255 bits. Describe padding explicitly with object index and subindex zero. The request defines geometry and leaves datatype, object access and device write eligibility to separate review.
+
+```powershell
+.\ethercat-workbench-cli.exe read-virtual-module-inventory --scenario dynamic-pdo-layout --pdo-report .local/template-readback.json
+.\ethercat-workbench-cli.exe preview-pdo-layout samples/virtual-pdo-template.esi.xml --device 0 --expect-layout samples/virtual-pdo-expected.json --run-report .local/template-readback.json --out .local/template-review.json
+```
+
+The expected layout identifies `device_virtual_template` as the PDO origin and `esi_with_manual_entries` as the directional mapping source. The sample places manual object `0x2200:01` at Tx bit 0, followed by the ESI's status PDO. The 4-byte Tx and 2-byte Rx expectations match the fixture. A comparison for a direction with manual entries requires an explicitly reported CoE layout. Workbench compares SyncManager, PDO order and every descriptor and reports unavailable when the source is SII or unspecified. The command previews an offline layout and can save a review receipt. [Authored ESI](../samples/virtual-pdo-template.esi.xml) · [Assignment request](../samples/virtual-pdo-expected.json)
 
 ## Inspect saved dynamic PDO readback
 

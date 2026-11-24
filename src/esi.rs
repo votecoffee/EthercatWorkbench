@@ -169,6 +169,12 @@ fn with_description<T>(
             }
             let pdo_catalog = pdo_catalog(device)?;
             let pdo_capabilities = pdo_capabilities(device)?;
+            let mut virtual_sync_managers = Vec::new();
+            for (index, sm) in device.children().filter(|n| named(*n, "Sm")).enumerate() {
+                if bool_attr(sm, "Virtual")? {
+                    virtual_sync_managers.push(u8::try_from(index).context("virtual SyncManager index exceeds 8 bits")?);
+                }
+            }
             for pdo in pdo_catalog.iter().filter(|p| p.default_sm.is_none()) {
                 notes.push(format!("{:?}Pdo without a default SyncManager was omitted from the default image and retained in the catalog", pdo.direction));
             }
@@ -199,6 +205,7 @@ fn with_description<T>(
                     pdo_catalog,
                     pdo_capabilities,
                     device_pdo_group,
+                    virtual_sync_managers,
                     modular,
                     notes: notes.clone(),
                     identity: Identity {

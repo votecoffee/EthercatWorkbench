@@ -209,7 +209,7 @@ fn check(
         sync_managers: tx.sync_managers,
     });
     if let Some(layout) = &readback {
-        if layout.mapping_source == MappingSource::Esi {
+        if layout.mapping_source.is_expectation() {
             issues.push("ESI layout is an expectation; supply CoE or SII readback".into());
         }
         if station.tx_unavailable.is_some() {

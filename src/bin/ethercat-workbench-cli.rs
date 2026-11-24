@@ -295,6 +295,21 @@ enum Command {
         #[arg(long)]
         pdo_report: Option<PathBuf>,
     },
+    /// Compose a device-level PDO layout offline from an ESI and explicit JSON assignments.
+    #[command(group(clap::ArgGroup::new("layout_device").required(true).multiple(true).args(["device", "identity"])))]
+    PreviewPdoLayout {
+        file: PathBuf,
+        #[arg(long)]
+        device: Option<usize>,
+        #[arg(long, value_parser = esi::identity_selector)]
+        identity: Option<ethercat_workbench::model::Identity>,
+        #[arg(long)]
+        expect_layout: PathBuf,
+        #[arg(long)]
+        run_report: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Resolve module PDO candidate indexes for explicit or detected placements in fixed ESI slots.
     #[command(group(clap::ArgGroup::new("module_device").required(true).multiple(true).args(["device", "identity"])))]
     PreviewModularPdos {
@@ -1048,6 +1063,23 @@ fn main() -> Result<()> {
                 save_inspection(evidence, path)?;
             }
             output(&report)
+        }
+        Command::PreviewPdoLayout {
+            file,
+            device,
+            identity,
+            expect_layout,
+            run_report,
+            out,
+        } => {
+            let report = esi::modular_preview::preview_device_layout(
+                &file,
+                device,
+                identity.as_ref(),
+                &expect_layout,
+                run_report.as_deref(),
+            )?;
+            inspection_export(&report, out.as_deref())
         }
         Command::PreviewModularPdos {
             selection,

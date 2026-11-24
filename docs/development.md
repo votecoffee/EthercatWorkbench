@@ -10,6 +10,8 @@ Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supp
 
 ## Data and ownership
 
+`preview-pdo-layout` uses the expected-layout composer shared with the modular review. That composer keeps the ESI declaration and manual entries provenance on each chosen virtual template. The directional source marks the resulting expectation. Saved evidence readers reject expected layouts as readback and the comparison requires an explicit CoE source for a direction with manual template entries.
+
 `comparison_files.rs` prepares the recorded report and CSV-part references, validates the audit association, and checks source bytes with bounded memory and cooperative cancellation. Desktop Review passes the opened result hash to the worker. The CLI prints the same per-file status report and offers a create-new receipt.
 
 `comparison_bundle.rs` reuses the source check, verifies hashes while copying files, and writes the portable comparison and a relative trial set. It writes the completion receipt after all other files. The desktop runs it on the review worker with the opened comparison's hash. The worker retains the opened comparison during export and publishes a completed receipt even if cancellation arrives after the export commits. Closing the app requests cancellation and waits for the export worker.

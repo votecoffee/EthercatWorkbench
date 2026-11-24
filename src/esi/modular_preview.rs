@@ -221,6 +221,49 @@ struct Index {
     resolved: u16,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DeviceLayoutReview {
+    schema: u32,
+    scope: &'static str,
+    esi_file_name: String,
+    esi_sha256: String,
+    identity: Identity,
+    expected_layout: expected::ExpectedLayout,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saved_readback: Option<readback::Comparison>,
+}
+
+pub fn preview_device_layout(
+    path: &Path,
+    device: Option<usize>,
+    identity: Option<&Identity>,
+    request: &Path,
+    run_report: Option<&Path>,
+) -> Result<DeviceLayoutReview> {
+    let devices = super::load(path)?;
+    let source = &select_device(&devices, device, identity)?.source;
+    ensure!(
+        source.modular.is_none(),
+        "use preview-modular-pdos for ESI devices with slot declarations"
+    );
+    let mut expected_layout = expected::compose(request, source, &[], &[])?;
+    let saved_readback = run_report
+        .map(|path| readback::compare(path, source, None, &mut []))
+        .transpose()?;
+    if let Some(saved) = &saved_readback {
+        expected_layout.compare_saved(saved);
+    }
+    Ok(DeviceLayoutReview {
+        schema: 1,
+        scope: "offline_esi_device_pdo_layout",
+        esi_file_name: source.file_name.clone(),
+        esi_sha256: source.sha256.clone(),
+        identity: source.identity.clone(),
+        expected_layout,
+        saved_readback,
+    })
+}
+
 pub fn preview(
     path: &Path,
     device: Option<usize>,
