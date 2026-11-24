@@ -40,7 +40,7 @@ pub(super) enum Check {
     MatchedEntries {
         width_bits: usize,
         byte_count: usize,
-        segments: Vec<BitSegment>,
+        segments: Vec<EntrySegment>,
     },
     Unmapped {
         reason: String,
@@ -97,29 +97,68 @@ impl BitSegment {
     }
 }
 
+#[derive(Clone, Serialize)]
+#[serde(untagged)]
+pub(super) enum EntrySegment {
+    Mapped(BitSegment),
+    Padding {
+        projection_bit_offset: usize,
+        bit_count: usize,
+        padding: &'static str,
+    },
+}
+
+impl EntrySegment {
+    fn shift(&mut self, bits: usize) {
+        let offset = match self {
+            Self::Mapped(segment) => &mut segment.projection_bit_offset,
+            Self::Padding {
+                projection_bit_offset,
+                ..
+            } => projection_bit_offset,
+        };
+        *offset += bits;
+    }
+
+    pub(super) fn extraction(&self) -> (usize, Option<u64>, usize) {
+        match self {
+            Self::Mapped(segment) => (
+                segment.projection_bit_offset,
+                Some(segment.logical_start_bit),
+                segment.bit_count,
+            ),
+            Self::Padding {
+                projection_bit_offset,
+                bit_count,
+                ..
+            } => (*projection_bit_offset, None, *bit_count),
+        }
+    }
+}
+
 impl Check {
-    pub(super) fn combine(checks: &[Self]) -> Self {
+    pub(super) fn combine<'a>(checks: impl IntoIterator<Item = (usize, Option<&'a Self>)>) -> Self {
         let mut segments = Vec::new();
         let mut width_bits = 0;
-        for (entry, check) in checks.iter().enumerate() {
+        for (entry, (width, check)) in checks.into_iter().enumerate() {
             let start = segments.len();
             match check {
-                Self::Matched {
+                Some(Self::Matched {
                     slot,
                     physical_start,
                     logical_start,
                     byte_count,
-                } => {
-                    segments.push(BitSegment::from_bytes(
+                }) => {
+                    segments.push(EntrySegment::Mapped(BitSegment::from_bytes(
                         *slot,
                         *physical_start,
                         *logical_start,
                         *byte_count,
-                    ));
+                    )));
                 }
-                Self::MatchedSplit {
+                Some(Self::MatchedSplit {
                     segments: bytes, ..
-                } => segments.extend(bytes.iter().map(|segment| {
+                }) => segments.extend(bytes.iter().map(|segment| {
                     let mut bits = BitSegment::from_bytes(
                         segment.slot,
                         segment.physical_start,
@@ -127,15 +166,19 @@ impl Check {
                         segment.byte_count,
                     );
                     bits.projection_bit_offset = segment.projection_byte_offset * 8;
-                    bits
+                    EntrySegment::Mapped(bits)
                 })),
-                Self::MatchedBits { segments: bits, .. }
-                | Self::MatchedEntries { segments: bits, .. } => {
-                    segments.extend_from_slice(bits);
+                Some(Self::MatchedBits { segments: bits, .. }) => {
+                    segments.extend(bits.iter().cloned().map(EntrySegment::Mapped));
                 }
-                Self::Unmapped { reason }
-                | Self::Conflict { reason }
-                | Self::Unavailable { reason } => {
+                Some(Self::MatchedEntries {
+                    segments: entries, ..
+                }) => segments.extend_from_slice(entries),
+                Some(
+                    Self::Unmapped { reason }
+                    | Self::Conflict { reason }
+                    | Self::Unavailable { reason },
+                ) => {
                     return Self::Unavailable {
                         reason: format!(
                             "ESI entry {} has unavailable FMMU placement ({reason})",
@@ -143,14 +186,16 @@ impl Check {
                         ),
                     };
                 }
+                None => segments.push(EntrySegment::Padding {
+                    projection_bit_offset: 0,
+                    bit_count: width,
+                    padding: "zero_filled",
+                }),
             }
             for segment in &mut segments[start..] {
-                segment.projection_bit_offset += width_bits;
+                segment.shift(width_bits);
             }
-            width_bits += segments[start..]
-                .iter()
-                .map(|segment| segment.bit_count)
-                .sum::<usize>();
+            width_bits += width;
         }
         Self::MatchedEntries {
             width_bits,

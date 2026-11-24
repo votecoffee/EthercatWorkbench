@@ -83,6 +83,8 @@ try {
         'samples/register-pdo-bit-fields.esi.xml' = 'samples/register-pdo-bit-fields.esi.xml'
         'samples/register-pdo-separated-fields.esi.xml' = 'samples/register-pdo-separated-fields.esi.xml'
         'samples/register-pdo-manual-layout.json' = 'samples/register-pdo-manual-layout.json'
+        'samples/register-pdo-padded-fields.esi.xml' = 'samples/register-pdo-padded-fields.esi.xml'
+        'samples/register-pdo-padded-layout.json' = 'samples/register-pdo-padded-layout.json'
         'samples/register-pdos-fmmu.json' = 'samples/register-pdos-fmmu.json'
         'samples/register-pdos-fmmu-split.json' = 'samples/register-pdos-fmmu-split.json'
         'samples/register-pdos-logical-payload.json' = 'samples/register-pdos-logical-payload.json'

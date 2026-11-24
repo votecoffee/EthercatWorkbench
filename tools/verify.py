@@ -1156,6 +1156,92 @@ def verify_register_pdo_separate_fields(cli, destination, sample=None, layout=No
     assert projection["logical_sample"]["status"] == "unavailable"
 
 
+def verify_register_pdo_padding(cli, destination, sample=None, layout=None, fmmu=None,
+                                snapshot=None, reply=None):
+    """Pack explicit ESI padding as zero bits while keeping evidence bound to real registers."""
+    sample = ROOT / "samples/register-pdo-padded-fields.esi.xml" if sample is None else sample
+    layout = ROOT / "samples/register-pdo-padded-layout.json" if layout is None else layout
+    fmmu = ROOT / "samples/register-pdos-fmmu-bits.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    reply = ROOT / "samples/register-pdos-lrd-bit-reply.json" if reply is None else reply
+    args = ("preview-register-pdos", sample, "--identity", "0x00ff1000/0x17/1",
+            "--station", "0x1000", "--snapshot", snapshot)
+    flags = ("--fmmu", fmmu, "--lrd-reply", reply)
+    output = destination / "padding-review.json"
+    report = cli_call(cli, *args, *flags, "--register-layout", layout, "--out", output)
+    assert report == json.loads(output.read_bytes())
+    assert report["manual_register_layout"]["sha256"] == hashlib.sha256(layout.read_bytes()).hexdigest()
+    reply_check = report["logical_payload"]["lrd_reply"]
+    assert reply_check["topology"]["valid"] and reply_check["expected_wkc"] == reply_check["actual_wkc"] == 2
+    projection, = report["projections"]
+    assert projection["width_bits"] == 36 and projection["byte_count"] == 5
+    assert projection["logical_sample"]["raw_hex"] == "2CBA040000"
+    assert projection["fmmu_check"]["status"] == "matched_entries"
+    entries = projection["entries"]
+    spans = projection["fmmu_check"]["segments"]
+    assert [entry["bit_offset"] for entry in entries] == [0, 2, 6, 9, 16, 32]
+    for index, offset, width in ((0, 0, 2), (2, 6, 3), (5, 32, 4)):
+        pad = entries[index]
+        assert pad["padding"] == "zero_filled" and pad["sample"] is None
+        assert not ({"physical_start_bit", "fmmu_check", "logical_sample"} & pad.keys())
+        assert spans[index] == {"projection_bit_offset": offset, "bit_count": width, "padding": "zero_filled"}
+    assert [entries[index]["logical_sample"]["raw_hex"] for index in (1, 3, 4)] == ["0B", "5D", "0400"]
+    assert [entries[index]["sample"]["raw_hex"] for index in (1, 3, 4)] == ["0B", "10", "1400"]
+
+    table = json.loads(fmmu.read_bytes())
+    table["devices"][0]["slots"][1]["value"][12] = 0
+    missing = destination / "missing-counter.json"
+    missing.write_bytes(json.dumps(table).encode())
+    projection = cli_call(cli, *args, "--fmmu", missing, "--lrd-reply", reply,
+                          "--register-layout", layout)["projections"][0]
+    assert "entry 4" in projection["fmmu_check"]["reason"]
+    assert projection["logical_sample"]["status"] == "unavailable"
+    assert projection["entries"][1]["logical_sample"]["raw_hex"] == "0B"
+    assert projection["entries"][3]["logical_sample"]["status"] == "unavailable"
+    assert projection["entries"][4]["logical_sample"]["raw_hex"] == "0400"
+
+    saved = json.loads(layout.read_bytes())
+    original_esi = sample.read_bytes()
+
+    def variant(name, starts, esi=sample):
+        path = destination / (name + ".json")
+        request = {**saved, "esi_sha256": hashlib.sha256(esi.read_bytes()).hexdigest(),
+                   "pdos": [{"pdo_index": 0x1a20, "entry_start_bits": starts}]}
+        path.write_bytes(json.dumps(request).encode())
+        return path
+
+    for name, starts, reason in (
+        ("fabricated-padding", [None, None, None, 5, 0, None], "needs zero Index and SubIndex"),
+        ("zero-index-as-register", [0, 1, None, 5, 0, None], "needs null for zero Index"),
+    ):
+        assert reason in cli_call(cli, *args, *flags, "--register-layout", variant(name, starts), success=False)
+
+    starts = [None, 1, None, 5, 0, None]
+    bad_subindex = destination / "nonzero-padding-subindex.esi.xml"
+    bad_subindex.write_bytes(original_esi.replace(b"<Index>0</Index><SubIndex>0</SubIndex>",
+                                                 b"<Index>0</Index><SubIndex>1</SubIndex>"))
+    assert "ESI PDO padding must have subindex zero" in cli_call(
+        cli, args[0], bad_subindex, *args[2:], *flags,
+        "--register-layout", variant("nonzero-subindex", starts, bad_subindex), success=False)
+
+    all_padding = destination / "all-padding.esi.xml"
+    contents = original_esi
+    for index in (b"0110", b"0300", b"0130"):
+        contents = contents.replace(b"<Index>#x" + index + b"</Index>", b"<Index>0</Index>")
+    all_padding.write_bytes(contents)
+    assert "at least one register entry" in cli_call(
+        cli, args[0], all_padding, *args[2:], *flags,
+        "--register-layout", variant("all-padding", [None] * 6, all_padding), success=False)
+
+    oversized = destination / "oversized-padding.esi.xml"
+    oversized.write_bytes(original_esi.replace(b"<Index>0</Index><BitLen>4</BitLen>",
+                                               b"<Index>0</Index><BitLen>8192</BitLen>"))
+    projection = cli_call(cli, args[0], oversized, *args[2:], *flags, "--register-layout",
+                          variant("oversized", starts, oversized))["projections"][0]
+    assert "padded register projection exceeds 1024 bytes" in projection["unavailable"]
+    assert projection["logical_sample"]["status"] == "unavailable"
+
+
 def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                             reply=None, paired_reply=None):
     """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
@@ -8608,6 +8694,9 @@ def main():
     separate_register_fields_destination = destination / "register-pdo-separate-fields"
     separate_register_fields_destination.mkdir()
     verify_register_pdo_separate_fields(cli, separate_register_fields_destination)
+    register_padding_destination = destination / "register-pdo-padding"
+    register_padding_destination.mkdir()
+    verify_register_pdo_padding(cli, register_padding_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

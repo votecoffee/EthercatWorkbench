@@ -2,7 +2,7 @@
 use super::{Device, VirtualSyncManager, load, number, select_device};
 use crate::{
     esc::{self, Snapshot},
-    model::Identity,
+    model::{Identity, MAX_PAYLOAD},
     pdo_catalog::{Definition, Direction},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -76,6 +76,8 @@ struct Entry {
     bit_offset: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     physical_start_bit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    padding: Option<&'static str>,
     sample: Option<Sample>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fmmu_check: Option<fmmu::Check>,
@@ -263,7 +265,7 @@ fn projection(
     fmmu: Option<&fmmu::Table>,
     logical_payload: Option<&payload::Window>,
     manual_start_bit: Option<u8>,
-    entry_start_bits: Option<&[u8]>,
+    entry_start_bits: Option<&[Option<u8>]>,
 ) -> Projection {
     let sm = pdo
         .default_sm
@@ -273,19 +275,25 @@ fn projection(
             Ok(ranges) => (Some(ranges), None),
             Err(error) => (None, Some(format!("{error:#}"))),
         };
-    let width_bits = physical
-        .as_ref()
-        .map(|ranges| ranges.iter().map(Range::len).sum::<usize>());
+    let width_bits = physical.as_ref().map(|geometry| geometry.width_bits);
     let entry_checks: Vec<_> = match (entry_start_bits, &physical, fmmu) {
-        (Some(_), Some(ranges), Some(table)) => ranges
+        (Some(_), Some(geometry), Some(table)) => geometry
+            .entries
             .iter()
-            .map(|range| table.compare(range.clone()))
+            .map(|range| range.clone().map(|range| table.compare(range)))
             .collect(),
         _ => Vec::new(),
     };
     let fmmu_check = fmmu.map(|table| match &physical {
-        Some(_) if entry_start_bits.is_some() => fmmu::Check::combine(&entry_checks),
-        Some(ranges) => table.compare(ranges[0].start..ranges[ranges.len() - 1].end),
+        Some(geometry) => match &geometry.contiguous {
+            Some(range) => table.compare(range.clone()),
+            None => fmmu::Check::combine(
+                pdo.entries
+                    .iter()
+                    .zip(&entry_checks)
+                    .map(|(entry, check)| (entry.width, check.as_ref())),
+            ),
+        },
         None => fmmu::Check::Unavailable {
             reason: "ESI projection geometry is unavailable".into(),
         },
@@ -303,7 +311,11 @@ fn projection(
         .map(|(position, entry)| {
             let offset = bit_offset;
             bit_offset += entry.width;
-            let start = physical.as_ref().map(|ranges| ranges[position].start);
+            let start = physical
+                .as_ref()
+                .and_then(|geometry| geometry.entries[position].as_ref())
+                .map(|range| range.start);
+            let padding = entry_start_bits.is_some_and(|bits| bits[position].is_none());
             let sample = match (start, snapshot) {
                 (Some(start), Some(snapshot)) => {
                     Some(match saved_bits(snapshot, start, entry.width) {
@@ -317,9 +329,10 @@ fn projection(
                 }
                 _ => None,
             };
-            let entry_check = entry_checks.next();
-            let logical_sample = match (logical_payload, entry_check.as_ref()) {
-                (Some(window), Some(check)) => Some(window.sample(check, 0..entry.width)),
+            let entry_check = entry_checks.next().flatten();
+            let logical_sample = match (padding, logical_payload, entry_check.as_ref()) {
+                (true, _, _) => None,
+                (_, Some(window), Some(check)) => Some(window.sample(check, 0..entry.width)),
                 _ => logical.map(|(window, check)| window.sample(check, offset..bit_offset)),
             };
             Entry {
@@ -334,6 +347,7 @@ fn projection(
                 .then_some(offset / 8),
                 bit_offset: (manual_placement && physical.is_some()).then_some(offset),
                 physical_start_bit: entry_start_bits.and(start),
+                padding: padding.then_some("zero_filled"),
                 sample,
                 fmmu_check: entry_check,
                 logical_sample,
@@ -355,13 +369,19 @@ fn projection(
     }
 }
 
+struct Geometry {
+    entries: Vec<Option<Range<usize>>>,
+    width_bits: usize,
+    contiguous: Option<Range<usize>>,
+}
+
 fn geometry(
     device: &Device,
     pdo: &Definition,
     sm: Option<&VirtualSyncManager>,
     manual_start_bit: Option<u8>,
-    entry_start_bits: Option<&[u8]>,
-) -> Result<Vec<Range<usize>>> {
+    entry_start_bits: Option<&[Option<u8>]>,
+) -> Result<Geometry> {
     ensure!(
         !pdo.unsupported,
         "vendor-dependent PDO requires separate interpretation"
@@ -391,26 +411,36 @@ fn geometry(
         start < ESC_REGISTER_END,
         "StartAddress is outside the ESC register area"
     );
-    ensure!(
-        entry_start_bits.is_none() || usize::from(pdo.entries[0].index) == start,
-        "first manual register entry must start at the virtual SyncManager StartAddress"
-    );
-    let mut next = start * 8 + usize::from(manual_start_bit.unwrap_or_default());
+    if let Some(bits) = entry_start_bits {
+        let first = pdo.entries.iter().zip(bits).find(|(_, bit)| bit.is_some());
+        ensure!(
+            first.is_some_and(|(entry, _)| usize::from(entry.index) == start),
+            "first manual register entry must start at the virtual SyncManager StartAddress"
+        );
+    }
+    let first_bit = start * 8 + usize::from(manual_start_bit.unwrap_or_default());
+    let mut next = first_bit;
     let mut ranges = Vec::with_capacity(pdo.entries.len());
+    let mut width_bits = 0;
     let manual = manual_start_bit.is_some() || entry_start_bits.is_some();
     for (position, entry) in pdo.entries.iter().enumerate() {
+        ensure!(entry.width > 0, "register entry width must be positive");
+        width_bits += entry.width;
+        if entry_start_bits.is_some_and(|bits| bits[position].is_none()) {
+            ranges.push(None);
+            continue;
+        }
         ensure!(entry.index != 0, "zero Index could describe padding");
         ensure!(
             manual || entry.subindex == 0,
             "nonzero SubIndex needs separate interpretation"
         );
-        ensure!(entry.width > 0, "register entry width must be positive");
         ensure!(
             manual || entry.width.is_multiple_of(8),
             "a register entry with a non-byte width needs --register-start-bit PDO=BIT"
         );
-        let start = if let Some(bits) = entry_start_bits {
-            usize::from(entry.index) * 8 + usize::from(bits[position])
+        let start = if let Some(bit) = entry_start_bits.and_then(|bits| bits[position]) {
+            usize::from(entry.index) * 8 + usize::from(bit)
         } else {
             ensure!(
                 usize::from(entry.index) == next / 8,
@@ -423,17 +453,25 @@ fn geometry(
             next <= ESC_REGISTER_END * 8,
             "entry extends outside the ESC register area"
         );
-        ranges.push(start..next);
+        ranges.push(Some(start..next));
     }
-    if entry_start_bits.is_some() {
-        let mut ordered: Vec<_> = ranges.iter().collect();
+    if let Some(bits) = entry_start_bits {
+        ensure!(
+            bits.iter().all(Option::is_some) || width_bits <= MAX_PAYLOAD * 8,
+            "padded register projection exceeds {MAX_PAYLOAD} bytes"
+        );
+        let mut ordered: Vec<_> = ranges.iter().flatten().collect();
         ordered.sort_unstable_by_key(|range| range.start);
         ensure!(
             ordered.windows(2).all(|pair| pair[0].end <= pair[1].start),
             "manual register entries overlap in the physical address space"
         );
     }
-    Ok(ranges)
+    Ok(Geometry {
+        entries: ranges,
+        width_bits,
+        contiguous: entry_start_bits.is_none().then_some(first_bit..next),
+    })
 }
 
 fn saved_bits(snapshot: &Snapshot, start: usize, width: usize) -> Result<Vec<u8>> {

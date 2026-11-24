@@ -1,7 +1,7 @@
 //! Extract register bytes from an explicitly addressed saved logical payload.
 use super::{
     Sample, copy_bits,
-    fmmu::{Check, Contributions, Table},
+    fmmu::{Check, Contributions, EntrySegment, Table},
 };
 use crate::{
     input_group::{AlRead, MAX_DATAGRAMS, decode_frame_hex, preflight::topology, read_json},
@@ -311,30 +311,32 @@ impl Window {
                 byte_count,
                 ..
             } => self.extract(
-                once((0, u64::from(*logical_start) * 8, *byte_count * 8)),
+                once((0, Some(u64::from(*logical_start) * 8), *byte_count * 8)),
                 requested,
             ),
             Check::MatchedSplit { segments, .. } => self.extract(
                 segments.iter().map(|segment| {
                     (
                         segment.projection_byte_offset * 8,
-                        u64::from(segment.logical_start) * 8,
+                        Some(u64::from(segment.logical_start) * 8),
                         segment.byte_count * 8,
                     )
                 }),
                 requested,
             ),
-            Check::MatchedBits { segments, .. } | Check::MatchedEntries { segments, .. } => self
-                .extract(
-                    segments.iter().map(|segment| {
-                        (
-                            segment.projection_bit_offset,
-                            segment.logical_start_bit,
-                            segment.bit_count,
-                        )
-                    }),
-                    requested,
-                ),
+            Check::MatchedBits { segments, .. } => self.extract(
+                segments.iter().map(|segment| {
+                    (
+                        segment.projection_bit_offset,
+                        Some(segment.logical_start_bit),
+                        segment.bit_count,
+                    )
+                }),
+                requested,
+            ),
+            Check::MatchedEntries { segments, .. } => {
+                self.extract(segments.iter().map(EntrySegment::extraction), requested)
+            }
             Check::Unmapped { reason }
             | Check::Conflict { reason }
             | Check::Unavailable { reason } => {
@@ -356,7 +358,7 @@ impl Window {
 
     fn extract(
         &self,
-        segments: impl IntoIterator<Item = (usize, u64, usize)>,
+        segments: impl IntoIterator<Item = (usize, Option<u64>, usize)>,
         requested: Range<usize>,
     ) -> Result<Vec<u8>> {
         let mut data = vec![0; requested.len().div_ceil(8)];
@@ -373,6 +375,10 @@ impl Window {
                 start == next,
                 "FMMU placement did not cover the requested bytes"
             );
+            next = end;
+            let Some(logical_start) = logical_start else {
+                continue;
+            };
             let logical_start = logical_start + (start - offset) as u64;
             let logical = logical_start..logical_start + (end - start) as u64;
             ensure!(
@@ -401,7 +407,6 @@ impl Window {
                 start - requested.start,
                 end - start,
             );
-            next = end;
         }
         ensure!(
             next == requested.end,

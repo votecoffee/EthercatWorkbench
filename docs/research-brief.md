@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.112.0** reviews virtual TxPDO fields from separate ESC registers using a JSON layout bound to the exact ESI. It keeps each entry readable when that entry has valid evidence, and packs the full result only when every field is available. Physical qualification remains open. [Separate register field review](pdo-selection.md#review-fields-from-separate-register-ranges) · [Verification history](../VERIFICATION.md)
+Version **0.113.0** retains explicit ESI padding in packed virtual TxPDO results. A saved layout uses null for declared padding, and the report labels those bits as zero-filled. Physical qualification remains open. [Register padding review](pdo-selection.md#retain-explicit-esi-padding) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

@@ -26,15 +26,17 @@ struct Saved {
 #[serde(deny_unknown_fields)]
 struct Pdo {
     pdo_index: u16,
-    entry_start_bits: Vec<u8>,
+    entry_start_bits: Vec<Option<u8>>,
 }
+
+type EntryStarts = HashMap<u16, Vec<Option<u8>>>;
 
 pub(super) fn load(
     path: &Path,
     identity: &Identity,
     esi_sha256: &str,
     pdos: &[&Definition],
-) -> Result<(Evidence, HashMap<u16, Vec<u8>>)> {
+) -> Result<(Evidence, EntryStarts)> {
     let (saved, bytes): (Saved, _) =
         read_json(path, MAX_LAYOUT_BYTES).context("read manual register layout")?;
     ensure!(
@@ -67,8 +69,32 @@ pub(super) fn load(
             "manual register layout PDO {index:#06x} needs one start bit per ESI entry"
         );
         ensure!(
-            pdo.entry_start_bits.iter().all(|&bit| bit < 8),
+            pdo.entry_start_bits.iter().flatten().all(|&bit| bit < 8),
             "manual register layout PDO {index:#06x} entry start bits must be 0 through 7"
+        );
+        for (position, (bit, entry)) in pdo
+            .entry_start_bits
+            .iter()
+            .zip(&definition.entries)
+            .enumerate()
+        {
+            if bit.is_none() {
+                ensure!(
+                    entry.index == 0 && entry.subindex == 0,
+                    "manual register layout PDO {index:#06x} entry {} needs zero Index and SubIndex for null padding",
+                    position + 1,
+                );
+            } else {
+                ensure!(
+                    entry.index != 0,
+                    "manual register layout PDO {index:#06x} entry {} needs null for zero Index padding",
+                    position + 1,
+                );
+            }
+        }
+        ensure!(
+            pdo.entry_start_bits.iter().any(Option::is_some),
+            "manual register layout PDO {index:#06x} needs at least one register entry"
         );
         ensure!(
             entries.insert(index, pdo.entry_start_bits).is_none(),

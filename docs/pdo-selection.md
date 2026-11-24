@@ -238,13 +238,23 @@ Use `--register-start-bit PDO=BIT` to supply a physical start bit from 0 through
 
 #### Review fields from separate register ranges
 
-Use `--register-layout FILE` with a schema-1 JSON layout. The `identity` object specifies `vendor`, `product` and `revision` as integers. Set `esi_sha256` to the SHA-256 digest of the selected ESI file. Each `pdos` item identifies one virtual TxPDO by `pdo_index` and provides exactly one `entry_start_bits` value from 0 through 7 per declared entry. Each offset is relative to its ESI `Index` byte. The first entry still starts in the declared virtual SyncManager start byte. Later entries can use separate register addresses. Physical ranges must stay within the ESC register area and be disjoint. Use either the layout file or `--register-start-bit` for a review.
+Use `--register-layout FILE` with a schema-1 JSON layout. The `identity` object specifies `vendor`, `product` and `revision` as integers. Set `esi_sha256` to the SHA-256 digest of the selected ESI file. Each `pdos` item identifies one virtual TxPDO by `pdo_index` and provides exactly one `entry_start_bits` value per declared entry. Register entries use an offset from 0 through 7 relative to the ESI `Index` byte. Use `null` for an explicit padding entry. The first register entry still starts in the declared virtual SyncManager start byte. Later entries can use separate register addresses. Physical ranges must stay within the ESC register area and be disjoint. Use either the layout file or `--register-start-bit` for a review.
 
 ```powershell
 .\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdo-separated-fields.esi.xml --identity 0x00ff1000/0x16/1 --register-layout samples/register-pdo-manual-layout.json --snapshot samples/esc-diagnostics.json --fmmu samples/register-pdos-fmmu-bits.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-bit-reply.json --out .local/separate-register-review.json
 ```
 
 The sample reads fields at registers `0x0110`, `0x0300` and `0x0130` in ESI order. The report records the manual file name and hash, each entry's physical start bit and checked logical placement, and separate historical and logical samples. `matched_entries` lists all the segments in packed order. The combined logical value is available only when every field is readable. A missing mapping or overlapping read can leave the other fields available. Each entry uses the same FMMU check for exact coverage and read access. [Authored ESI](../samples/register-pdo-separated-fields.esi.xml) · [Manual layout](../samples/register-pdo-manual-layout.json) · [Beckhoff FMMU reference](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
+#### Retain explicit ESI padding
+
+ETG.2000 identifies PDO padding by `Index=0`. In a saved register layout, use `null` in `entry_start_bits` for each padding entry with zero Index, zero or omitted SubIndex, and a positive bit length. A padded projection requires at least one register entry and may occupy up to 1024 packed bytes. The selected ESI identity and file hash still bind the layout. [ETG.2000 Table 64](https://www.jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdo-padded-fields.esi.xml --identity 0x00ff1000/0x17/1 --register-layout samples/register-pdo-padded-layout.json --snapshot samples/esc-diagnostics.json --fmmu samples/register-pdos-fmmu-bits.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-bit-reply.json --out .local/padded-register-review.json
+```
+
+The sample places padding before, between and after the mapped fields. The report labels those spans `zero_filled` and shows their packed offsets. Only the mapped fields have register addresses and individual samples. The packed logical result includes the padding bits and requires valid mapped data for every field. [Authored ESI](../samples/register-pdo-padded-fields.esi.xml) · [Manual layout](../samples/register-pdo-padded-layout.json)
 
 ## Inspect saved dynamic PDO readback
 

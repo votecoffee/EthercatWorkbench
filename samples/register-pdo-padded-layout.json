@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "identity": {
+    "vendor": 16715776,
+    "product": 23,
+    "revision": 1
+  },
+  "esi_sha256": "1381b4f95935ccd5ec42e80950fbe3c7333b32f352930118594574ceebeb1933",
+  "pdos": [
+    {
+      "pdo_index": 6688,
+      "entry_start_bits": [
+        null,
+        1,
+        null,
+        5,
+        0,
+        null
+      ]
+    }
+  ]
+}
