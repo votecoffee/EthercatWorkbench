@@ -308,6 +308,9 @@ enum Command {
         /// Raw ESC diagnostics snapshot, using the same format as decode-esc.
         #[arg(long)]
         snapshot: Option<PathBuf>,
+        /// Manual start bit within the virtual SyncManager start byte, as PDO=BIT (0 through 7).
+        #[arg(long, value_name = "PDO=BIT", value_parser = esi::register_pdos::start_bit)]
+        register_start_bit: Vec<(u16, u8)>,
         /// Saved schema-1 FMMU register table.
         #[arg(long, requires = "station")]
         fmmu: Option<PathBuf>,
@@ -1098,6 +1101,7 @@ fn main() -> Result<()> {
             device,
             identity,
             snapshot,
+            register_start_bit,
             fmmu,
             station,
             logical_payload,
@@ -1114,13 +1118,14 @@ fn main() -> Result<()> {
                 .map(u16::try_from)
                 .transpose()
                 .context("FMMU station address exceeds 16 bits")?;
-            let report = esi::register_pdos::preview(
+            let report = esi::register_pdos::preview_with_start_bits(
                 &file,
                 device,
                 identity.as_ref(),
                 snapshot.as_deref(),
                 fmmu.as_deref().zip(station),
                 logical,
+                &register_start_bit,
             )?;
             inspection_export(&report, out.as_deref())
         }

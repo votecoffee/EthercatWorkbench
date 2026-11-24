@@ -1,6 +1,6 @@
 //! Extract register bytes from an explicitly addressed saved logical payload.
 use super::{
-    Sample,
+    Sample, copy_bits,
     fmmu::{Check, Contributions, Table},
 };
 use crate::{
@@ -358,8 +358,7 @@ impl Window {
         segments: impl IntoIterator<Item = (usize, u64, usize)>,
         requested: Range<usize>,
     ) -> Result<Vec<u8>> {
-        let mut data = vec![0; requested.len()];
-        let requested = requested.start * 8..requested.end * 8;
+        let mut data = vec![0; requested.len().div_ceil(8)];
         let mut next = requested.start;
         let window_start = u64::from(self.evidence.logical_start) * 8;
         let window_end = window_start + self.data.len() as u64 * 8;
@@ -394,13 +393,13 @@ impl Window {
                     "station {station:#06x} also has an active read mapping in the requested logical range"
                 );
             }
-            let source = (logical.start - window_start) as usize;
-            for (source, destination) in
-                (source..).zip(start - requested.start..end - requested.start)
-            {
-                let bit = (self.data[source / 8] >> (source % 8)) & 1;
-                data[destination / 8] |= bit << (destination % 8);
-            }
+            copy_bits(
+                &self.data,
+                (logical.start - window_start) as usize,
+                &mut data,
+                start - requested.start,
+                end - start,
+            );
             next = end;
         }
         ensure!(

@@ -142,7 +142,7 @@ The expected layout identifies `device_virtual_template` as the PDO origin and `
 
 ## Review virtual TxPDOs backed by ESC registers
 
-Run `preview-register-pdos` with an ESI and an exact identity or device index. The review lists device-level virtual TxPDOs with declared entries. The supported geometry uses a virtual `Inputs` SyncManager with an explicit `StartAddress` and one default PDO. Each entry must describe consecutive nonzero ESC register addresses, beginning at that start, with zero or omitted subindex and a whole-byte bit length. The entire range must stay within `0x0000–0x0EFF`. Unsupported geometry stays visible with the reason and the original declarations. [ETG.2000, Tables 29 and 81](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+Run `preview-register-pdos` with an ESI and an exact identity or device index. The review lists device-level virtual TxPDOs with declared entries. The supported geometry uses a virtual `Inputs` SyncManager with an explicit `StartAddress` and one default PDO. Without a manual start bit, each entry must describe consecutive nonzero ESC register addresses, beginning at that start, with zero or omitted subindex and a whole-byte bit length. The entire range must stay within `0x0000–0x0EFF`. Unsupported geometry stays visible with the reason and the original declarations. [ETG.2000, Tables 29 and 81](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
 
 ```powershell
 .\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --snapshot samples/esc-diagnostics.json --out .local/register-pdo-review.json
@@ -218,13 +218,23 @@ The `logical_payload.lrd_reply.contributors` section shows the derived count, an
 
 #### Reassemble register bytes from bitwise FMMUs
 
-The FMMU review supports read mappings that start or end within a byte. `matched_bits` lists each segment in physical register order with its absolute physical and logical bit addresses, projection bit offset and bit count. Bit zero is the least significant bit within each byte. The review checks the documented three unused logical bytes between same-station reads when either slot uses bitwise mapping. ESI declarations still describe contiguous whole-byte register entries. [Beckhoff ESC Technology, section 7](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+The FMMU review supports read mappings that start or end within a byte. `matched_bits` lists each segment in physical register order with its absolute physical and logical bit addresses, projection bit offset and bit count. Bit zero is the least significant bit within each byte. The review checks the documented three unused logical bytes between same-station reads when either slot uses bitwise mapping. The example uses contiguous whole-byte ESI register entries. [Beckhoff ESC Technology, section 7](https://download.beckhoff.com/download/document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
 
 ```powershell
 .\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --fmmu samples/register-pdos-fmmu-bits.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-bit-reply.json --out .local/register-bit-reply-review.json
 ```
 
 The sample reconstructs DL status `B79D` from 5- and 11-bit segments. The second station reads separate bits in one of the same logical bytes, so the schema 4 review can still recover the selected station's field. If the second station reads a shared bit, the affected field is withheld. Addressed payloads can use the same bit placements, with the addressed-payload evidence limits described above. [FMMU sample](../samples/register-pdos-fmmu-bits.json) · [Saved reply sample](../samples/register-pdos-lrd-bit-reply.json)
+
+#### Review sub-byte ESI entries with a manual start bit
+
+Use `--register-start-bit PDO=BIT` to supply a physical start bit from 0 through 7 within the virtual SyncManager's ESI `StartAddress`. Supply it once per selected virtual TxPDO. Workbench places the declared widths contiguously in entry order. Each nonzero `Index` must match the physical byte where that entry begins. The report preserves `SubIndex` as a declaration and calculates bit positions from the manual start and entry widths. This is a Workbench offline interpretation. The ESI tables identify register-backed PDOs and describe the general entry fields. [ETG.2000 Tables 64 and 81](https://www.jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdo-bit-fields.esi.xml --identity 0x00ff1000/0x15/1 --register-start-bit 0x1a20=2 --snapshot samples/esc-diagnostics.json --fmmu samples/register-pdos-fmmu-bits.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-bit-reply.json --out .local/register-bit-fields-review.json
+```
+
+`manual_start_bit` records the supplied choice. `width_bits` and each entry's `bit_offset` describe the packed projection. Each raw value starts at bit zero of its first output byte, with unused high bits zero in its final byte. The sample decodes three fields as `05`, `2D` and `03`. Its historical ESC snapshot shows `35` for the middle field. The saved LRD still requires valid FMMU coverage and its schema's reply checks. [Authored ESI sample](../samples/register-pdo-bit-fields.esi.xml)
 
 ## Inspect saved dynamic PDO readback
 

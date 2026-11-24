@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EtherCATInfo Version="1.14">
+  <Vendor><Id>#x00FF1000</Id><Name>Workbench authored register-bit fixture</Name></Vendor>
+  <Descriptions>
+    <Groups><Group><Type>Fixture</Type><Name>Authored sample group</Name></Group></Groups>
+    <Devices>
+      <Device Physics="YY">
+        <Type ProductCode="#x00000015" RevisionNo="1">VirtualRegisterBitFields</Type>
+        <Name>Authored ESC register bit fields</Name>
+        <GroupType>Fixture</GroupType>
+        <Sm StartAddress="#x0110" Virtual="true">Inputs</Sm>
+        <TxPdo Sm="0" Virtual="true" Fixed="true">
+          <Index>#x1A20</Index><Name>Partial data link status</Name>
+          <Entry><Index>#x0110</Index><SubIndex>0</SubIndex><BitLen>3</BitLen><Name>First group</Name><DataType>BIT3</DataType></Entry>
+          <Entry><Index>#x0110</Index><SubIndex>11</SubIndex><BitLen>6</BitLen><Name>Across register bytes</Name><DataType>BIT6</DataType></Entry>
+          <Entry><Index>#x0111</Index><SubIndex>0</SubIndex><BitLen>3</BitLen><Name>Last group</Name><DataType>BIT3</DataType></Entry>
+        </TxPdo>
+      </Device>
+    </Devices>
+  </Descriptions>
+</EtherCATInfo>

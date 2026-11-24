@@ -33,6 +33,8 @@ pub(super) enum Check {
     MatchedBits {
         physical_start: u16,
         byte_count: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        width_bits: Option<usize>,
         segments: Vec<BitSegment>,
     },
     Unmapped {
@@ -67,6 +69,7 @@ pub(super) struct BitSegment {
 impl BitSegment {
     fn byte_segment(&self) -> Option<Segment> {
         (self.projection_bit_offset.is_multiple_of(8)
+            && self.physical_start_bit.is_multiple_of(8)
             && self.logical_start_bit.is_multiple_of(8)
             && self.bit_count.is_multiple_of(8))
         .then_some(Segment {
@@ -234,14 +237,16 @@ impl Table {
         }
     }
 
-    pub(super) fn compare(&self, register: u16, width: usize) -> Check {
+    pub(super) fn compare(&self, physical: Range<usize>) -> Check {
         if !self.evidence.issues.is_empty() {
             return Check::Unavailable {
                 reason: "selected station has incomplete or invalid FMMU evidence".into(),
             };
         }
-        let start = u64::from(register) * 8;
-        let physical = start..start + (width as u64) * 8;
+        let register = (physical.start / 8) as u16;
+        let width_bits = physical.len();
+        let width = width_bits.div_ceil(8);
+        let physical = physical.start as u64..physical.end as u64;
         let active = &self.decoded[self.evidence.position].active;
         let mut physical_hits: Vec<_> = active
             .iter()
@@ -346,6 +351,7 @@ impl Table {
             return Check::MatchedBits {
                 physical_start: register,
                 byte_count: width,
+                width_bits: (!width_bits.is_multiple_of(8)).then_some(width_bits),
                 segments,
             };
         };

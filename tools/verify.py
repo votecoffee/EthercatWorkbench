@@ -977,6 +977,72 @@ def verify_register_pdo_bit_fmmus(cli, destination, sample=None, fmmu=None, snap
     assert build["logical_sample"]["raw_hex"] == "DEAD"
 
 
+def verify_register_pdo_manual_bits(cli, destination, sample=None, fmmu=None, snapshot=None, reply=None):
+    """Measure packed sub-byte projections only with an explicit register start bit."""
+    sample = ROOT / "samples/register-pdo-bit-fields.esi.xml" if sample is None else sample
+    fmmu = ROOT / "samples/register-pdos-fmmu-bits.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    reply = ROOT / "samples/register-pdos-lrd-bit-reply.json" if reply is None else reply
+    args = ("preview-register-pdos", sample, "--identity", "0x00ff1000/0x15/1",
+            "--fmmu", fmmu, "--station", "0x1000", "--snapshot", snapshot, "--lrd-reply", reply)
+    manual = ("--register-start-bit", "0x1a20=2")
+    declined = cli_call(cli, *args)["projections"][0]
+    assert "manual_start_bit" not in declined and declined["byte_count"] is None
+    assert "--register-start-bit" in declined["unavailable"]
+
+    output = destination / "manual-bit-review.json"
+    report = cli_call(cli, *args, *manual, "--out", output)
+    assert report == json.loads(output.read_bytes())
+    assert report["esi_sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    lrd = report["logical_payload"]["lrd_reply"]
+    assert lrd["actual_wkc"] == lrd["expected_wkc"] == 2 and lrd["topology"]["valid"]
+    projection, = report["projections"]
+    assert projection["manual_start_bit"] == 2 and projection["width_bits"] == 12
+    assert projection["byte_count"] == 2 and projection["unavailable"] is None
+    assert projection["logical_sample"]["raw_hex"] == "6D07"
+    entries = projection["entries"]
+    assert [entry["bit_offset"] for entry in entries] == [0, 3, 9]
+    assert all(entry["byte_offset"] is None for entry in entries)
+    assert [entry["logical_sample"]["raw_hex"] for entry in entries] == ["05", "2D", "03"]
+    assert [entry["sample"]["raw_hex"] for entry in entries] == ["05", "35", "03"]
+    assert entries[1]["declared_subindex"] == 11
+    placement = projection["fmmu_check"]
+    assert placement["status"] == "matched_bits" and placement["width_bits"] == 12
+    assert [segment["bit_count"] for segment in placement["segments"]] == [3, 9]
+    assert placement["segments"][0]["physical_start_bit"] == 0x0110 * 8 + 2
+
+    overlapping = destination / "foreign-bit-overlap.json"
+    table = json.loads(fmmu.read_bytes())
+    table["devices"][1]["slots"][0]["value"][7] = 2
+    overlapping.write_bytes(json.dumps(table).encode())
+    args_overlap = list(args)
+    args_overlap[args_overlap.index("--fmmu") + 1] = overlapping
+    projection = cli_call(cli, *args_overlap, *manual)["projections"][0]
+    assert projection["logical_sample"]["status"] == "unavailable"
+    assert [entry["logical_sample"].get("raw_hex") for entry in projection["entries"]] == ["05", None, "03"]
+    assert "station 0x1001" in projection["entries"][1]["logical_sample"]["reason"]
+    assert projection["entries"][1]["sample"]["raw_hex"] == "35"
+
+    for choices, message in (
+        (("--register-start-bit", "0x1a20=8"), "0 through 7"),
+        (("--register-start-bit", "0x1a20"), "PDO=BIT"),
+        (("--register-start-bit", "0x1a21=2"), "unique virtual TxPDO"),
+        ((*manual, *manual), "duplicate manual register start bit"),
+    ):
+        assert message in cli_call(cli, *args, *choices, success=False)
+
+    bad_index = destination / "wrong-register.esi.xml"
+    bad_index.write_bytes(sample.read_bytes().replace(b"<Index>#x0111</Index>", b"<Index>#x0112</Index>"))
+    rejected = cli_call(cli, args[0], bad_index, *args[2:], *manual)["projections"][0]
+    assert "register indexes must be contiguous" in rejected["unavailable"]
+    assert rejected["byte_count"] is None and rejected["logical_sample"]["status"] == "unavailable"
+
+    ceiling = destination / "past-esc-registers.esi.xml"
+    ceiling.write_bytes(sample.read_bytes().replace(b"#x0110", b"#x0EFF").replace(b"#x0111", b"#x0F00"))
+    rejected = cli_call(cli, args[0], ceiling, *args[2:], *manual)["projections"][0]
+    assert "extends outside the ESC register area" in rejected["unavailable"]
+
+
 def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                             reply=None, paired_reply=None):
     """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
@@ -1678,7 +1744,7 @@ def verify_register_pdos(cli, destination, sample=None, snapshot=None):
          "multiple default PDO assignments"),
         ("non-contiguous", entry, entry.replace(b"#x0111", b"#x0112"), "must be contiguous"),
         ("subindex", entry, entry.replace(b"<SubIndex>0", b"<SubIndex>3"), "nonzero SubIndex"),
-        ("bit-entry", entry, entry.replace(b"<BitLen>8", b"<BitLen>1"), "multiple of 8 bits"),
+        ("bit-entry", entry, entry.replace(b"<BitLen>8", b"<BitLen>1"), "--register-start-bit"),
         ("ambiguous-padding", entry, entry.replace(b"#x0111", b"0"), "could describe padding"),
         ("vendor-dependent", b'Fixed="true"', b'Fixed="true" OverwrittenByModule="true"',
          "vendor-dependent PDO"),
@@ -8423,6 +8489,9 @@ def main():
     register_bit_fmmu_destination = destination / "register-pdo-bit-fmmus"
     register_bit_fmmu_destination.mkdir()
     verify_register_pdo_bit_fmmus(cli, register_bit_fmmu_destination)
+    register_manual_bits_destination = destination / "register-pdo-manual-bits"
+    register_manual_bits_destination.mkdir()
+    verify_register_pdo_manual_bits(cli, register_manual_bits_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

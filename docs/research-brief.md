@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.110.0** reconstructs register bytes using saved bitwise FMMU mappings. Schema 4 checks overlap at the bit level, so independent station reads can share a logical byte. Physical qualification remains open. [Saved bitwise review](pdo-selection.md#reassemble-register-bytes-from-bitwise-fmmus) · [Verification history](../VERIFICATION.md)
+Version **0.111.0** reviews contiguous sub-byte ESI register entries with an explicit offline start bit. The report retains the manual choice, ESI declarations, packed samples and per-field availability. Physical qualification remains open. [Manual register bit review](pdo-selection.md#review-sub-byte-esi-entries-with-a-manual-start-bit) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 
