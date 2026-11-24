@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.116.0** verifies exported register decoder profiles against the original saved ESI, FMMU and LRD evidence. The CLI rebuilds the packed sample and typed mapping and reports source or profile differences. Physical qualification remains open. [Register decoder verification](pdo-selection.md#verify-a-saved-register-decoder-profile) · [Verification history](../VERIFICATION.md)
+Version **0.117.0** bundles a saved register decoder with the exact ESI, FMMU readings, LRD reply and optional manual layout. The CLI follows the fixed bundle paths and rebuilds the verification after relocation. Physical qualification remains open. [Portable register decoder evidence](pdo-selection.md#bundle-verified-register-decoder-evidence) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

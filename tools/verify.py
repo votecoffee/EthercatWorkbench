@@ -1487,6 +1487,95 @@ def verify_register_decoder_audit(cli, destination, sample=None, layout=None, fm
     assert result["pdo_indexes"] == [0x1a21] and result["verified"]
 
 
+def verify_register_decoder_bundle(cli, destination, sample=None, layout=None, fmmu=None, reply=None,
+                                   bit_sample=None):
+    """Preserve exact decoder evidence and recheck it from a relocated directory."""
+    sample = ROOT / "samples/register-pdo-decoder-set.esi.xml" if sample is None else sample
+    layout = ROOT / "samples/register-pdo-decoder-set-layout.json" if layout is None else layout
+    fmmu = ROOT / "samples/register-pdos-fmmu-bits.json" if fmmu is None else fmmu
+    reply = ROOT / "samples/register-pdos-lrd-bit-reply.json" if reply is None else reply
+    bit_sample = ROOT / "samples/register-pdo-bit-fields.esi.xml" if bit_sample is None else bit_sample
+    profile = destination / "decoder.json"
+    cli_call(cli, "preview-register-pdos", sample, "--device", 0, "--station", "0x1000",
+             "--fmmu", fmmu, "--lrd-reply", reply, "--register-layout", layout,
+             "--decoder-pdo", "0x1a21", "--decoder-pdo", "0x1a20", "--decoder-profile", profile)
+    args = ("bundle-register-decoder", profile, "--esi", sample, "--device", 0,
+            "--fmmu", fmmu, "--lrd-reply", reply, "--register-layout", layout)
+    bundle = destination / "bundle"
+    receipt = cli_call(cli, *args, "--out", bundle)
+    manifest = bundle / "bundle.json"
+    assert receipt == json.loads(manifest.read_bytes())
+    assert receipt["schema"] == 1 and receipt["scope"] == "saved_register_decoder_bundle"
+    assert receipt["device_index"] == 0
+    sources = {
+        "profile": (profile, "profile.json"), "esi": (sample, "device.esi.xml"),
+        "fmmu": (fmmu, "fmmu.json"), "lrd_reply": (reply, "lrd-reply.json"),
+        "register_layout": (layout, "register-layout.json"),
+    }
+    assert {file.name for file in bundle.iterdir()} == {"bundle.json"} | {name for _, name in sources.values()}
+    for role, (original, name) in sources.items():
+        data = original.read_bytes()
+        assert data == (bundle / name).read_bytes()
+        assert receipt[role] == {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    relocated = destination / "relocated-bundle"
+    shutil.copytree(bundle, relocated)
+    report = destination / "relocated-verification.json"
+    rebuilt = cli_call(cli, "verify-register-decoder-bundle", relocated, "--out", report)
+    assert rebuilt == json.loads(report.read_bytes()) and rebuilt["receipt"] == receipt
+    assert Path(rebuilt["directory"]) == relocated.resolve()
+    assert rebuilt["receipt_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    assert rebuilt["verification"]["verified"] and rebuilt["verification"]["rebuilt"]
+    assert rebuilt["verification"]["profile_file_name"] == "profile.json"
+    assert rebuilt["verification"]["pdo_indexes"] == [0x1a21, 0x1a20]
+    assert rebuilt["verification"]["profile_sha256"] == receipt["profile"]["sha256"]
+    assert [field["value"] for field in cli_call(cli, "decode", relocated / "profile.json",
+                                               "11222CBA040000")] == ["8721", "11", "93", "4"]
+    assert "already exists" in cli_call(cli, *args, "--out", bundle, success=False)
+    assert manifest.read_bytes() == (relocated / "bundle.json").read_bytes()
+
+    incomplete = destination / "incomplete"
+    incomplete.mkdir()
+    shutil.copyfile(profile, incomplete / "profile.json")
+    assert "bundle.json" in cli_call(cli, "verify-register-decoder-bundle", incomplete, success=False)
+
+    modified = destination / "changed-profile-bundle"
+    shutil.copytree(bundle, modified)
+    member = modified / "profile.json"
+    original = member.read_bytes()
+    changed = original.replace(b"Authored register PDO decoder set", b"Modified register PDO decoder set")
+    assert changed != original and len(changed) == len(original)
+    member.write_bytes(changed)
+    assert "bundle SHA-256" in cli_call(cli, "verify-register-decoder-bundle", modified, success=False)
+
+    tampered = json.loads(original)
+    tampered["register_decoder"]["packed_hex"] = "10222CBA040000"
+    packed = json.dumps(tampered).encode()
+    member.write_bytes(packed)
+    updated = {**receipt, "profile": {"bytes": len(packed), "sha256": hashlib.sha256(packed).hexdigest()}}
+    (modified / "bundle.json").write_bytes(json.dumps(updated).encode())
+    assert "packed_sample" in cli_call(cli, "verify-register-decoder-bundle", modified, success=False)
+
+    stale = destination / "unverified-source"
+    wrong_fmmu = destination / "changed-fmmu.json"
+    wrong_fmmu.write_bytes(fmmu.read_bytes() + b"\n")
+    bad_args = list(args)
+    bad_args[bad_args.index("--fmmu") + 1] = wrong_fmmu
+    assert "fmmu_hash" in cli_call(cli, *bad_args, "--out", stale, success=False)
+    assert not stale.exists()
+
+    manual = destination / "start-bit-decoder.json"
+    cli_call(cli, "preview-register-pdos", bit_sample, "--identity", "0x00ff1000/0x15/1",
+             "--station", "0x1000", "--fmmu", fmmu, "--lrd-reply", reply, "--register-start-bit",
+             "0x1a20=2", "--decoder-pdo", "0x1a20", "--decoder-profile", manual)
+    manual_bundle = destination / "start-bit-bundle"
+    receipt = cli_call(cli, "bundle-register-decoder", manual, "--esi", bit_sample, "--fmmu", fmmu,
+                       "--lrd-reply", reply, "--out", manual_bundle)
+    assert receipt["register_layout"] is None
+    result = cli_call(cli, "verify-register-decoder-bundle", manual_bundle)
+    assert result["verification"]["verified"] and result["verification"]["pdo_indexes"] == [0x1a20]
+
+
 def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                             reply=None, paired_reply=None):
     """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
@@ -8951,6 +9040,9 @@ def main():
     register_decoder_audit_destination = destination / "register-decoder-audit"
     register_decoder_audit_destination.mkdir()
     verify_register_decoder_audit(cli, register_decoder_audit_destination)
+    register_decoder_bundle_destination = destination / "register-decoder-bundle"
+    register_decoder_bundle_destination.mkdir()
+    verify_register_decoder_bundle(cli, register_decoder_bundle_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

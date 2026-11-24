@@ -284,6 +284,17 @@ Use `--verify-decoder PROFILE` with the ESI, FMMU table, saved LRD reply and the
 
 The receipt identifies the checked profile by SHA-256 and reports whether the reconstruction succeeded. A digest or reconstruction mismatch returns a failing exit status and includes its reason in the receipt. Use a new path for the optional receipt.
 
+#### Bundle verified register decoder evidence
+
+Use `bundle-register-decoder` to put a verified offline profile and its original evidence in a new directory. The command reads the ESI identity, station and any manual start bits from the profile. Supply the original register layout file if the export used it. If the ESI contains multiple device entries with the saved identity, add the original `--device INDEX` selection.
+
+```powershell
+.\ethercat-workbench-cli.exe bundle-register-decoder .local/register-decoder-set.json --esi samples/register-pdo-decoder-set.esi.xml --register-layout samples/register-pdo-decoder-set-layout.json --fmmu samples/register-pdos-fmmu-bits.json --lrd-reply samples/register-pdos-lrd-bit-reply.json --out .local/register-decoder-bundle
+.\ethercat-workbench-cli.exe verify-register-decoder-bundle .local/register-decoder-bundle --out .local/register-bundle-verification.json
+```
+
+Move or copy the whole directory to review it elsewhere. Workbench reads the fixed filenames in the bundle, rebuilds the decoder, and checks the file lengths and SHA-256 hashes against the completion receipt. Open the bundled `profile.json` with the desktop offline decoder or the CLI `decode` command.
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

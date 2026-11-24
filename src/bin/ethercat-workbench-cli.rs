@@ -339,6 +339,29 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Preserve a verified register decoder and its evidence in a new directory.
+    BundleRegisterDecoder {
+        profile: PathBuf,
+        #[arg(long)]
+        esi: PathBuf,
+        /// Select an ESI device index when the saved identity is ambiguous in the file.
+        #[arg(long)]
+        device: Option<usize>,
+        #[arg(long)]
+        fmmu: PathBuf,
+        #[arg(long)]
+        lrd_reply: PathBuf,
+        #[arg(long)]
+        register_layout: Option<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Reopen and verify a portable register decoder bundle.
+    VerifyRegisterDecoderBundle {
+        directory: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Compose a device-level PDO layout offline from an ESI and explicit JSON assignments.
     #[command(group(clap::ArgGroup::new("layout_device").required(true).multiple(true).args(["device", "identity"])))]
     PreviewPdoLayout {
@@ -1167,6 +1190,33 @@ fn main() -> Result<()> {
             } else {
                 inspection_export(&report, out.as_deref())
             }
+        }
+        Command::BundleRegisterDecoder {
+            profile,
+            esi,
+            device,
+            fmmu,
+            lrd_reply,
+            register_layout,
+            out,
+        } => {
+            use esi::register_pdos::bundle::{Sources, create};
+            let receipt = create(
+                Sources {
+                    profile: &profile,
+                    esi: &esi,
+                    device_index: device,
+                    fmmu: &fmmu,
+                    lrd_reply: &lrd_reply,
+                    register_layout: register_layout.as_deref(),
+                },
+                &out,
+            )?;
+            output(&receipt)
+        }
+        Command::VerifyRegisterDecoderBundle { directory, out } => {
+            let receipt = esi::register_pdos::bundle::verify(&directory)?;
+            inspection_export(&receipt, out.as_deref())
         }
         Command::PreviewPdoLayout {
             file,

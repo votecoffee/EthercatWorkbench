@@ -1067,3 +1067,11 @@ The register preview can rebuild a saved profile from the supplied ESI, FMMU tab
 The CLI checks a combined profile and a single-PDO profile, exact copies of evidence at renamed paths, preserved existing output files, and edits to local profile names and logging options. It verifies failure reports for modified payloads and endian flags, changed source-file bytes, an ESI and layout digest mismatch, and a saved reply whose Working Counter invalidates reconstruction.
 
 Formatting, locked Clippy, all 196 Rust tests, the locked Windows x64 build, focused CLI checks and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases each recorded one missed deadline. Physical SAFEOP and timing qualification remain open.
+
+## Version 0.117.0 portable register decoder evidence bundles (2026-11-24)
+
+The register decoder bundle command verifies an exported profile against the original ESI, FMMU table, saved LRD reply and any manual layout. The profile supplies the station, ESI identity and inline start bits. The command copies the exact audited source bytes under fixed relative filenames and writes bundle.json after the copies are flushed. Reopening verifies the source contents and reconstructs the decoder using the copied evidence.
+
+The authored two-PDO example reopens and decodes after relocation. The tests check exact original bytes and hashes, existing destination preservation, a missing completion receipt, bad source hashes, an altered profile with and without an updated receipt, and reconstruction from saved inline start bits without a separate layout file.
+
+Formatting, locked Clippy, all 196 Rust tests, the locked Windows x64 build, focused CLI checks and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases recorded eight and two missed deadlines. Physical SAFEOP and timing qualification remain open.

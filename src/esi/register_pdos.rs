@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashMap, ops::Range, path::Path};
 
 mod audit;
+pub mod bundle;
 mod fmmu;
 mod layout;
 mod payload;

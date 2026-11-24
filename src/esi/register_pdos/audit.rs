@@ -20,6 +20,30 @@ pub struct Verification {
     issues: Vec<Issue>,
 }
 
+pub(super) struct SavedProfile {
+    pub(super) profile: Profile,
+    file_name: String,
+    pub(super) sha256: String,
+}
+
+impl SavedProfile {
+    pub(super) fn load(path: &Path) -> Result<Self> {
+        let (profile, raw): (Profile, _) = read_json(path, MAX_PROFILE_BYTES)?;
+        profile
+            .validate()
+            .context("validate saved decoder profile")?;
+        Ok(Self {
+            profile,
+            file_name: path
+                .file_name()
+                .context("profile path has no file name")?
+                .to_string_lossy()
+                .into_owned(),
+            sha256: hex::encode(Sha256::digest(&raw)),
+        })
+    }
+}
+
 #[derive(Serialize)]
 struct Issue {
     check: &'static str,
@@ -27,6 +51,13 @@ struct Issue {
 }
 
 impl Verification {
+    pub(super) fn require_verified(&self) -> Result<()> {
+        if let Some(issue) = self.issues.first() {
+            anyhow::bail!("{}: {}", issue.check, issue.detail);
+        }
+        Ok(())
+    }
+
     fn check(&mut self, matched: bool, check: &'static str, detail: impl Into<String>) {
         if !matched {
             self.issues.push(Issue {
@@ -50,8 +81,11 @@ impl Verification {
 
 impl Review {
     pub fn verify_offline_profile(&self, path: &Path) -> Result<Verification> {
-        let (saved, raw): (Profile, _) = read_json(path, MAX_PROFILE_BYTES)?;
-        saved.validate().context("validate saved decoder profile")?;
+        self.verify_loaded_profile(&SavedProfile::load(path)?)
+    }
+
+    pub(super) fn verify_loaded_profile(&self, source: &SavedProfile) -> Result<Verification> {
+        let saved = &source.profile;
         let provenance = saved
             .register_decoder
             .as_ref()
@@ -67,12 +101,8 @@ impl Review {
         let mut result = Verification {
             schema: 1,
             scope: "saved_register_decoder_reconstruction",
-            profile_file_name: path
-                .file_name()
-                .context("profile path has no file name")?
-                .to_string_lossy()
-                .into_owned(),
-            profile_sha256: hex::encode(Sha256::digest(&raw)),
+            profile_file_name: source.file_name.clone(),
+            profile_sha256: source.sha256.clone(),
             pdo_indexes,
             rebuilt: false,
             verified: false,
@@ -120,7 +150,7 @@ impl Review {
         match self.offline_profile_for_pdos(&result.pdo_indexes) {
             Ok(rebuilt) => {
                 result.rebuilt = true;
-                compare_reconstruction(&mut result, &saved, provenance, &rebuilt)?;
+                compare_reconstruction(&mut result, saved, provenance, &rebuilt)?;
             }
             Err(error) => result.check(false, "reconstruction", format!("{error:#}")),
         }
