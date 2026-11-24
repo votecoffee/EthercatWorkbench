@@ -390,6 +390,17 @@ impl App {
                         "Current input mapping · {} bytes. Pasted bytes never reach the bus.",
                         self.profile.tx_bytes
                     ));
+                    if let Some(decoder) = &self.profile.register_decoder
+                        && ui
+                            .button("Load saved register payload")
+                            .on_hover_text(format!(
+                                "PDO {:#06x} · station {:#06x} · {}",
+                                decoder.pdo_index, decoder.station_address, decoder.reply_file_name
+                            ))
+                            .clicked()
+                    {
+                        self.offline_hex.clone_from(&decoder.packed_hex);
+                    }
                     ui.add(
                         egui::TextEdit::multiline(&mut self.offline_hex)
                             .hint_text("Paste TxPDO hex bytes")
@@ -580,6 +591,39 @@ mod tests {
         flat.apply(&mut app.profile).unwrap();
         let text = draw(&mut app, &ctx, size, vec![]);
         assert!(!text.iter().any(|(s, _)| s == "ESI modules and slots"));
+    }
+
+    #[test]
+    fn register_decoder_loads_the_exported_sample_on_request() {
+        use esi::register_pdos::{LayoutSource, LogicalSource, preview_with_layout};
+
+        let samples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples");
+        let profile = preview_with_layout(
+            &samples.join("register-pdo-padded-fields.esi.xml"),
+            Some(0),
+            None,
+            None,
+            Some((&samples.join("register-pdos-fmmu-bits.json"), 0x1000)),
+            Some(LogicalSource::LrdReply(
+                &samples.join("register-pdos-lrd-bit-reply.json"),
+            )),
+            LayoutSource::File(&samples.join("register-pdo-padded-layout.json")),
+        )
+        .unwrap()
+        .offline_profile(0x1a20)
+        .unwrap();
+        let mut app = app();
+        app.profile = serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
+        app.profile.validate().unwrap();
+        app.offline_hex = "00 00 00 00 00".into();
+        let ctx = egui::Context::default();
+        click(&mut app, &ctx, "Inputs");
+        click(&mut app, &ctx, "Offline decoder…");
+        assert_eq!(app.offline_hex, "00 00 00 00 00");
+        click(&mut app, &ctx, "Load saved register payload");
+        assert_eq!(app.offline_hex, "2CBA040000");
+        assert!(!app.busy());
+        assert!(app.profile.require_native_scope().is_err());
     }
 
     #[test]

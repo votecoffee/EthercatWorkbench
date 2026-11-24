@@ -326,6 +326,12 @@ enum Command {
         /// Saved Workbench LRD reply with AL, topology and bitwise FMMU review.
         #[arg(long, requires_all = ["fmmu", "station"], conflicts_with = "logical_payload")]
         lrd_reply: Option<PathBuf>,
+        /// Register PDO index to export to an offline decoder profile.
+        #[arg(long, value_parser = esi::number, requires = "decoder_profile")]
+        decoder_pdo: Option<u32>,
+        /// Save a decoder profile and its reconstructed sample from a verified schema 4 reply.
+        #[arg(long, requires_all = ["decoder_pdo", "lrd_reply"], conflicts_with = "out")]
+        decoder_profile: Option<PathBuf>,
         /// Export to a new JSON file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -1110,6 +1116,8 @@ fn main() -> Result<()> {
             station,
             logical_payload,
             lrd_reply,
+            decoder_pdo,
+            decoder_profile,
             out,
         } => {
             use esi::register_pdos::{LayoutSource, LogicalSource};
@@ -1135,7 +1143,15 @@ fn main() -> Result<()> {
                 logical,
                 layout,
             )?;
-            inspection_export(&report, out.as_deref())
+            if let Some(destination) = decoder_profile {
+                let pdo = u16::try_from(decoder_pdo.context("decoder PDO index is required")?)
+                    .context("decoder PDO index exceeds 16 bits")?;
+                let profile = report.offline_profile(pdo)?;
+                profile.save(&destination)?;
+                output(&profile)
+            } else {
+                inspection_export(&report, out.as_deref())
+            }
         }
         Command::PreviewPdoLayout {
             file,

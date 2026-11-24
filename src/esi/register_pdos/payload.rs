@@ -140,6 +140,16 @@ pub(super) struct Evidence {
 }
 
 impl Evidence {
+    pub(super) fn verified_reply(&self) -> Option<(&str, &str, u16)> {
+        let reply = self.lrd_reply.as_ref()?;
+        reply.contributors.as_ref()?;
+        reply.unavailable_reason().is_none().then_some((
+            self.file_name.as_str(),
+            self.sha256.as_str(),
+            self.station_address,
+        ))
+    }
+
     fn new(
         path: &Path,
         bytes: &[u8],

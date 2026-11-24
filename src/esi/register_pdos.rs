@@ -2,7 +2,7 @@
 use super::{Device, VirtualSyncManager, load, number, select_device};
 use crate::{
     esc::{self, Snapshot},
-    model::{Identity, MAX_PAYLOAD},
+    model::{EsiSource, Identity, MAX_PAYLOAD},
     pdo_catalog::{Definition, Direction},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -13,6 +13,7 @@ use std::{collections::HashMap, ops::Range, path::Path};
 mod fmmu;
 mod layout;
 mod payload;
+pub mod profile;
 
 const ESC_REGISTER_END: usize = 0x0f00;
 
@@ -23,6 +24,8 @@ pub struct Review {
     identity: Identity,
     esi_file_name: String,
     esi_sha256: String,
+    #[serde(skip)]
+    esi_source: EsiSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     manual_register_layout: Option<layout::Evidence>,
     snapshot: Option<SnapshotEvidence>,
@@ -230,6 +233,7 @@ pub fn preview_with_layout(
         identity: device.source.identity.clone(),
         esi_file_name: device.source.file_name.clone(),
         esi_sha256: device.source.sha256.clone(),
+        esi_source: device.source.clone(),
         manual_register_layout: saved.map(|(evidence, _)| evidence),
         snapshot: snapshot.map(|(evidence, _)| evidence),
         fmmu: fmmu.map(|table| table.evidence),

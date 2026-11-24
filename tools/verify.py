@@ -1242,6 +1242,87 @@ def verify_register_pdo_padding(cli, destination, sample=None, layout=None, fmmu
     assert projection["logical_sample"]["status"] == "unavailable"
 
 
+def verify_register_decoder_profile(cli, destination, sample=None, layout=None, fmmu=None, reply=None):
+    """Load a frozen reconstruction through the ordinary profile and decoder commands."""
+    sample = ROOT / "samples/register-pdo-padded-fields.esi.xml" if sample is None else sample
+    layout = ROOT / "samples/register-pdo-padded-layout.json" if layout is None else layout
+    fmmu = ROOT / "samples/register-pdos-fmmu-bits.json" if fmmu is None else fmmu
+    reply = ROOT / "samples/register-pdos-lrd-bit-reply.json" if reply is None else reply
+    args = ("preview-register-pdos", sample, "--identity", "0x00ff1000/0x17/1",
+            "--station", "0x1000", "--fmmu", fmmu, "--decoder-pdo", "0x1a20")
+    target = destination / "register-decoder.json"
+    export = (*args, "--register-layout", layout, "--lrd-reply", reply, "--decoder-profile", target)
+    saved = cli_call(cli, *export)
+    assert saved == json.loads(target.read_bytes()) == cli_call(cli, "validate", target)
+    decoder = saved["register_decoder"]
+    assert saved["esi"]["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert decoder == {
+        "pdo_index": 0x1a20, "station_address": 0x1000, "packed_bits": 36,
+        "packed_hex": "2CBA040000", "reply_file_name": reply.name,
+        "reply_sha256": hashlib.sha256(reply.read_bytes()).hexdigest(),
+        "fmmu_sha256": hashlib.sha256(fmmu.read_bytes()).hexdigest(),
+        "manual_layout_sha256": hashlib.sha256(layout.read_bytes()).hexdigest(),
+    }
+    assert (saved["tx_bytes"], saved["rx_bytes"]) == (5, 0)
+    fields = cli_call(cli, "decode", target, decoder["packed_hex"])
+    assert [(field["field"], field["bit"], field["width"], field["value"]) for field in fields] == [
+        ("Link status bits", 2, 4, "11"), ("Counter bits", 9, 7, "93"), ("AL status", 16, 16, "4"),
+    ]
+    original = target.read_bytes()
+    assert "create" in cli_call(cli, *export, success=False)
+    assert target.read_bytes() == original
+    blocked = destination / "blocked.csv"
+    assert "register PDO decoder profiles are for offline use" in cli_call(
+        cli, "run", target, "--backend", "safeop", "--seconds", 1, "--csv", blocked, success=False)
+    assert not blocked.exists()
+
+    for name, payload, message in (
+        ("short-payload", "2CBA0400", "invalid packed length"),
+        ("upper-bits", "2CBA0400F0", "nonzero unused bits"),
+    ):
+        profile = json.loads(original)
+        profile["register_decoder"]["packed_hex"] = payload
+        path = destination / (name + ".json")
+        path.write_bytes(json.dumps(profile).encode())
+        assert message in cli_call(cli, "validate", path, success=False)
+
+    def reply_variant(name, edit):
+        packet = json.loads(reply.read_bytes())
+        edit(packet)
+        path = destination / (name + ".json")
+        path.write_bytes(json.dumps(packet).encode())
+        return path
+
+    def replace_wkc(packet):
+        frame = bytearray.fromhex(packet["reply_hex"])
+        offset = 26 + packet["byte_count"]
+        frame[offset:offset + 2] = b"\x01\x00"
+        packet["reply_hex"] = frame.hex()
+
+    for name, packet in (
+        ("older-schema", reply_variant("schema-three", lambda packet: packet.update(schema=3, expected_wkc=2))),
+        ("failed-wkc", reply_variant("wrong-counter", replace_wkc)),
+    ):
+        path = destination / (name + "-profile.json")
+        assert "fully verified schema 4 LRD reply" in cli_call(
+            cli, *args, "--register-layout", layout, "--lrd-reply", packet,
+            "--decoder-profile", path, success=False)
+        assert not path.exists()
+
+    source = destination / "unknown-type.esi.xml"
+    source.write_bytes(sample.read_bytes().replace(b"<DataType>BIT7</DataType>", b"<DataType>VENDOR</DataType>"))
+    manual = json.loads(layout.read_bytes())
+    manual["esi_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+    manual_file = destination / "unknown-type-layout.json"
+    manual_file.write_bytes(json.dumps(manual).encode())
+    partial = destination / "unknown-type-profile.json"
+    filtered = cli_call(cli, args[0], source, *args[2:], "--register-layout", manual_file,
+                        "--lrd-reply", reply, "--decoder-profile", partial)
+    assert filtered["register_decoder"]["withheld_bits"] == [9]
+    assert filtered["register_decoder"]["packed_hex"] == decoder["packed_hex"]
+    assert [field["bit"] for field in filtered["tx"]] == [2, 16]
+
+
 def verify_register_pdo_lrd_topology_reply(cli, destination, sample=None, fmmu=None, snapshot=None,
                                             reply=None, paired_reply=None):
     """Check same-frame station order and alias ambiguity before accepting saved register bytes."""
@@ -8697,6 +8778,9 @@ def main():
     register_padding_destination = destination / "register-pdo-padding"
     register_padding_destination.mkdir()
     verify_register_pdo_padding(cli, register_padding_destination)
+    register_decoder_destination = destination / "register-decoder-profile"
+    register_decoder_destination.mkdir()
+    verify_register_decoder_profile(cli, register_decoder_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

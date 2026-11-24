@@ -1043,3 +1043,11 @@ A saved register layout accepts null for a declared zero-index, zero-subindex pa
 The authored layout adds leading, interior and trailing padding around fields from three separate registers. A saved schema-4 frame decodes 0B, 5D and 0400, packed as 2CBA040000 with the explicit padding. The checks verify that an unmapped counter holds the combined value even with padding present. They reject a null offset on a register, a numeric offset on a padding entry, a nonzero padding subindex, a padding-only layout and a projection that exceeds the packed size limit.
 
 Formatting, locked Clippy, all 194 Rust tests, the locked Windows x64 build, the focused CLI cases and the full headless Windows regression passed. The synthetic 1 ms deadline case and the virtual SII and normal CoE on-change cases recorded 109, 11 and 24 missed deadlines in the suite. Isolated repeats recorded 1, 0 and 0. Physical SAFEOP and timing qualification remain open.
+
+## Version 0.114.0 offline profiles for verified register PDOs (2026-11-24)
+
+The register PDO preview exports a standard offline decoder profile for one complete projection from a verified schema-4 LRD reply. It retains the packed sample, station, PDO, ESI and reply digests, FMMU digest and applicable manual layout or start bit. Padding occupies its packed offsets and adds no typed fields. Supported ESI scalar types become fields. Unsupported types are listed by packed offset. The usual native-scope guard covers the exported profiles.
+
+The padded fixture exports five packed bytes and decodes the verified link, counter and AL fields as 11, 93 and 4. The CLI checks profile reload, source hashes, preserved existing destinations, unsupported fields, invalid saved sample sizes and bits, older reply schema, bad reply WKC and native SAFEOP rejection. A pure egui test opens the ordinary offline decoder, checks that opening it preserves pasted text and loads the stored sample through the new button without starting a session.
+
+Formatting, locked Clippy, all 195 Rust tests, the locked Windows x64 build, focused CLI checks and the full headless Windows regression passed. The synthetic 1 ms deadline and relative cases recorded two and zero missed deadlines, respectively. The virtual CoE/DC on-change case recorded three missed deadlines. Physical SAFEOP and timing qualification remain open.

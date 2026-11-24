@@ -256,6 +256,17 @@ ETG.2000 identifies PDO padding by `Index=0`. In a saved register layout, use `n
 
 The sample places padding before, between and after the mapped fields. The report labels those spans `zero_filled` and shows their packed offsets. Only the mapped fields have register addresses and individual samples. The packed logical result includes the padding bits and requires valid mapped data for every field. [Authored ESI](../samples/register-pdo-padded-fields.esi.xml) · [Manual layout](../samples/register-pdo-padded-layout.json)
 
+#### Export a register PDO decoder profile
+
+Use `--decoder-pdo` and `--decoder-profile` with a fully verified schema-4 LRD reply. The selected register projection must have a complete logical sample. The new offline profile stores the packed sample, the compatible ESI scalar fields and source hashes for the ESI, saved reply and FMMU table. If the projection uses a manual layout or start bit, the profile retains that provenance. Unsupported field types are listed by packed bit offset. Explicit padding occupies space in the saved sample and has no decoder field.
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdo-padded-fields.esi.xml --identity 0x00ff1000/0x17/1 --register-layout samples/register-pdo-padded-layout.json --fmmu samples/register-pdos-fmmu-bits.json --station 0x1000 --lrd-reply samples/register-pdos-lrd-bit-reply.json --decoder-pdo 0x1A20 --decoder-profile .local/register-decoder.json
+.\ethercat-workbench-cli.exe decode .local/register-decoder.json 2CBA040000
+```
+
+Open the export through **Profiles…** on the desktop. Under **Inputs → Offline decoder…**, choose **Load saved register payload** to paste the stored reconstruction and display its typed fields. The profile expects packed register bytes in ESI field order. Live commissioning uses a separate "bench profile" configured for the device's process image.
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

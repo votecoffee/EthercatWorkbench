@@ -10,7 +10,7 @@ const MAX_LAYOUT_BYTES: u64 = 64 * 1024;
 #[derive(Serialize)]
 pub(super) struct Evidence {
     file_name: String,
-    sha256: String,
+    pub(super) sha256: String,
 }
 
 #[derive(Deserialize)]

@@ -245,7 +245,7 @@ fn image(
     ))
 }
 
-fn scalar_kind(data_type: &str, width: usize) -> Option<Kind> {
+pub(crate) fn scalar_kind(data_type: &str, width: usize) -> Option<Kind> {
     let kind = match (data_type, width) {
         ("BOOL" | "BIT", 1) => Kind::Bool,
         ("SINT", 8) | ("INT", 16) | ("DINT", 32) | ("LINT", 64) => Kind::Signed,

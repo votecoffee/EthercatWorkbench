@@ -7,7 +7,7 @@ use std::{ops::Range, path::Path};
 #[derive(Serialize)]
 pub(super) struct Evidence {
     file_name: String,
-    sha256: String,
+    pub(super) sha256: String,
     position: usize,
     pub(super) station_address: u16,
     reported_slots: u8,
