@@ -10,6 +10,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+mod fmmu;
+
 const ESC_REGISTER_END: usize = 0x0f00;
 
 #[derive(Serialize)]
@@ -20,6 +22,8 @@ pub struct Review {
     esi_file_name: String,
     esi_sha256: String,
     snapshot: Option<SnapshotEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fmmu: Option<fmmu::Evidence>,
     projections: Vec<Projection>,
 }
 
@@ -43,6 +47,8 @@ struct Projection {
     declared_start_address: Option<String>,
     byte_count: Option<usize>,
     unavailable: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fmmu_check: Option<fmmu::Check>,
     entries: Vec<Entry>,
 }
 
@@ -69,16 +75,35 @@ pub fn preview(
     index: Option<usize>,
     identity: Option<&Identity>,
     snapshot: Option<&Path>,
+    fmmu: Option<(&Path, u16)>,
 ) -> Result<Review> {
     let devices = load(esi)?;
     let device = select_device(&devices, index, identity)?;
     let snapshot = snapshot.map(load_saved).transpose()?;
+    let fmmu = fmmu
+        .map(|(path, station)| fmmu::Table::load(path, station))
+        .transpose()?;
+    if let (Some((evidence, _)), Some(table)) = (&snapshot, &fmmu) {
+        ensure!(
+            evidence.station_address == table.evidence.station_address,
+            "ESC snapshot station {:#06x} differs from selected FMMU station {:#06x}",
+            evidence.station_address,
+            table.evidence.station_address,
+        );
+    }
     let projections = device
         .source
         .pdo_catalog
         .iter()
         .filter(|pdo| pdo.direction == Direction::Tx && pdo.virtual_pdo && !pdo.entries.is_empty())
-        .map(|pdo| projection(device, pdo, snapshot.as_ref().map(|(_, snapshot)| snapshot)))
+        .map(|pdo| {
+            projection(
+                device,
+                pdo,
+                snapshot.as_ref().map(|(_, snapshot)| snapshot),
+                fmmu.as_ref(),
+            )
+        })
         .collect();
     Ok(Review {
         schema: 1,
@@ -87,6 +112,7 @@ pub fn preview(
         esi_file_name: device.source.file_name.clone(),
         esi_sha256: device.source.sha256.clone(),
         snapshot: snapshot.map(|(evidence, _)| evidence),
+        fmmu: fmmu.map(|table| table.evidence),
         projections,
     })
 }
@@ -111,7 +137,12 @@ fn load_saved(path: &Path) -> Result<(SnapshotEvidence, Snapshot)> {
     Ok((evidence, snapshot))
 }
 
-fn projection(device: &Device, pdo: &Definition, snapshot: Option<&Snapshot>) -> Projection {
+fn projection(
+    device: &Device,
+    pdo: &Definition,
+    snapshot: Option<&Snapshot>,
+    fmmu: Option<&fmmu::Table>,
+) -> Projection {
     let sm = pdo
         .default_sm
         .and_then(|index| device.virtual_sync_managers.get(&index));
@@ -150,6 +181,12 @@ fn projection(device: &Device, pdo: &Definition, snapshot: Option<&Snapshot>) ->
         Ok(bytes) => (Some(bytes), None),
         Err(error) => (None, Some(format!("{error:#}"))),
     };
+    let fmmu_check = fmmu.map(|table| match byte_count {
+        Some(width) => table.compare(pdo.entries[0].index, width),
+        None => fmmu::Check::Unavailable {
+            reason: "ESI projection geometry is unavailable".into(),
+        },
+    });
     Projection {
         pdo_index: pdo.index,
         name: pdo.name.clone(),
@@ -157,6 +194,7 @@ fn projection(device: &Device, pdo: &Definition, snapshot: Option<&Snapshot>) ->
         declared_start_address: sm.and_then(|sm| sm.start_address.clone()),
         byte_count,
         unavailable,
+        fmmu_check,
         entries,
     }
 }

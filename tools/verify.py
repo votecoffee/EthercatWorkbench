@@ -774,6 +774,126 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_register_pdo_fmmus(cli, destination, sample=None, fmmu=None, snapshot=None):
+    """Check register-to-logical spans using the saved FMMU bank from one station."""
+    sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
+    fmmu = ROOT / "samples/register-pdos-fmmu.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    args = ("preview-register-pdos", sample, "--identity", "0x00ff1000/20/1")
+    options = ("--fmmu", fmmu, "--station", "0x1000")
+    target = destination / "review.json"
+    report = cli_call(cli, *args, *options, "--snapshot", snapshot, "--out", target)
+    assert report == json.loads(target.read_bytes())
+    assert report["fmmu"] == {
+        "file_name": fmmu.name, "sha256": hashlib.sha256(fmmu.read_bytes()).hexdigest(),
+        "position": 0, "station_address": 4096, "reported_slots": 4, "captured_slots": 4,
+        "identity_binding": "absent_from_snapshot", "issues": [],
+    }
+    assert [projection["fmmu_check"] for projection in report["projections"]] == [
+        {"status": "matched", "slot": 0, "physical_start": 0x0110,
+         "logical_start": 0x10200000, "byte_count": 2},
+        {"status": "matched", "slot": 1, "physical_start": 0x0300,
+         "logical_start": 0x10200011, "byte_count": 2},
+        {"status": "matched", "slot": 2, "physical_start": 0x0130,
+         "logical_start": 0x10200018, "byte_count": 6},
+        {"status": "matched", "slot": 3, "physical_start": 0x0002,
+         "logical_start": 0xfffffffe, "byte_count": 2},
+    ]
+    assert report["projections"][2]["entries"][1]["sample"]["status"] == "unavailable"
+    plain = cli_call(cli, *args)
+    assert "fmmu" not in plain and "fmmu_check" not in plain["projections"][0]
+    without_data = cli_call(cli, *args, *options)
+    assert without_data["snapshot"] is None
+    assert without_data["projections"][0]["fmmu_check"] == report["projections"][0]["fmmu_check"]
+    assert "existing paths are preserved" in cli_call(cli, *args, *options, "--out", target, success=False)
+
+    unsupported = destination / "unsupported-start.esi.xml"
+    original = sample.read_bytes()
+    assert original.count(b'StartAddress="#x0110"') == 1
+    unsupported.write_bytes(original.replace(b'StartAddress="#x0110"', b'StartAddress="#x010F"'))
+    checked = cli_call(cli, args[0], unsupported, *args[2:], *options)
+    assert checked["projections"][0]["fmmu_check"] == {
+        "status": "unavailable", "reason": "ESI projection geometry is unavailable",
+    }
+    assert checked["projections"][1]["fmmu_check"]["status"] == "matched"
+
+    def changed(name, update):
+        data = json.loads(fmmu.read_bytes())
+        update(data)
+        path = destination / (name + ".json")
+        path.write_bytes(json.dumps(data).encode())
+        return path
+
+    def change_slot(document, slot, byte, value):
+        document["devices"][0]["slots"][slot]["value"][byte] = value
+
+    def compare(path, station="0x1000"):
+        return cli_call(cli, *args, "--fmmu", path, "--station", station)
+
+    for name, byte, value, status, fragment in (
+        ("inactive", 12, 0, "unmapped", "no active FMMU"),
+        ("write-only", 11, 2, "conflict", "write-enabled"),
+        ("read-write", 11, 3, "conflict", "write-enabled"),
+        ("partial", 4, 1, "conflict", "partially covers"),
+        ("start-bit", 6, 1, "conflict", "not byte aligned"),
+        ("stop-bit", 7, 6, "conflict", "not byte aligned"),
+        ("physical-bit", 10, 1, "conflict", "not byte aligned"),
+    ):
+        variant = changed(name, lambda document: change_slot(document, 0, byte, value))
+        verdict = compare(variant)["projections"][0]["fmmu_check"]
+        assert verdict["status"] == status and fragment in verdict["reason"], verdict
+        assert "logical_start" not in verdict
+
+    def added(document, logical, physical, kind=1, bit_range=(0, 7), length=1):
+        station = document["devices"][0]
+        station["count"]["value"] += 1
+        raw = (logical.to_bytes(4, "little") + length.to_bytes(2, "little") + bytes(bit_range)
+               + physical.to_bytes(2, "little") + bytes([0, kind, 1, 0, 0, 0]))
+        station["slots"].append({"wkc": 1, "value": list(raw)})
+
+    for label, logical, physical, bits, message in (
+        ("physical-overlap", 0x2200, 0x0111, (0, 7), "projected register range"),
+        ("logical-bit-overlap", 0x10200001, 0x0400, (2, 4), "projected logical read range"),
+    ):
+        duplicate = changed(label, lambda document: added(document, logical, physical, bit_range=bits))
+        verdict = compare(duplicate)["projections"][0]["fmmu_check"]
+        assert verdict["status"] == "conflict" and message in verdict["reason"], verdict
+    adjacent = changed("logical-adjacent", lambda document: added(document, 0x10200002, 0x0400))
+    assert compare(adjacent)["projections"][0]["fmmu_check"]["status"] == "matched"
+    write_elsewhere = changed("write-logical-alias", lambda document: added(document, 0x10200001, 0x0400, kind=2))
+    assert compare(write_elsewhere)["projections"][0]["fmmu_check"]["status"] == "matched"
+
+    for label, edit, fragment in (
+        ("count-wkc", lambda document: document["devices"][0]["count"].update(wkc=0), "count WKC 0"),
+        ("count-mismatch", lambda document: document["devices"][0]["count"].update(value=6), "snapshot contains 4"),
+        ("unrelated-slot-wkc", lambda document: document["devices"][0]["slots"][3].update(wkc=2), "FMMU 3 WKC 2"),
+        ("zero-length", lambda document: change_slot(document, 0, 4, 0), "zero length"),
+        ("logical-overflow", lambda document: change_slot(document, 3, 4, 3), "logical address space"),
+        ("physical-overflow", lambda document: added(document, 0x2000, 0xffff, length=2), "physical address space"),
+        ("reversed-bit", lambda document: added(document, 0x2000, 0x0400, bit_range=(5, 4)), "reversed logical"),
+    ):
+        checked = compare(changed(label, edit))
+        assert any(fragment in issue for issue in checked["fmmu"]["issues"]), checked
+        assert all(projection["fmmu_check"]["status"] == "unavailable" for projection in checked["projections"])
+
+    selected = compare(fmmu, station="0x1001")
+    assert selected["fmmu"]["position"] == 1 and selected["fmmu"]["station_address"] == 4097
+    assert all(row["fmmu_check"]["status"] == "unmapped" for row in selected["projections"])
+    duplicate = changed("duplicate-station", lambda document: document["devices"][1].update(station_address=4096))
+    rejected_path = destination / "unexpected.json"
+    for extra, fragment in (
+        (("--fmmu", duplicate, "--station", "0x1000"), "duplicate station address"),
+        (("--fmmu", fmmu, "--station", "0x1002"), "absent from the FMMU snapshot"),
+        (("--fmmu", fmmu, "--station", "0x10000"), "exceeds 16 bits"),
+        (("--fmmu", fmmu, "--station", "0"), "must be nonzero"),
+        (("--fmmu", fmmu, "--station", "0x1001", "--snapshot", snapshot), "differs from selected FMMU station"),
+        (("--fmmu", fmmu), "--station"),
+        (("--station", "0x1000"), "--fmmu"),
+    ):
+        assert fragment in cli_call(cli, *args, *extra, "--out", rejected_path, success=False)
+        assert not rejected_path.exists()
+
+
 def verify_register_pdos(cli, destination, sample=None, snapshot=None):
     """Review ESI register byte slices and the historical bytes a snapshot actually covers."""
     sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
@@ -7566,6 +7686,9 @@ def main():
     register_pdo_destination = destination / "register-pdos"
     register_pdo_destination.mkdir()
     verify_register_pdos(cli, register_pdo_destination)
+    register_fmmu_destination = destination / "register-pdo-fmmus"
+    register_fmmu_destination.mkdir()
+    verify_register_pdo_fmmus(cli, register_fmmu_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

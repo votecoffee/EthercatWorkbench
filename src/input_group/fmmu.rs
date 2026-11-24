@@ -1,6 +1,6 @@
 //! Review supplied FMMU register reads for the planned byte-aligned LRD.
 use super::{Binding, read_json};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{ops::Range, path::Path};
@@ -57,20 +57,20 @@ struct Slot {
 }
 
 #[derive(Serialize)]
-struct Mapping {
+pub(crate) struct Mapping {
     logical_start: u32,
     length: u16,
     logical_start_bit: u8,
     logical_stop_bit: u8,
     physical_start: u16,
     physical_start_bit: u8,
-    read_enabled: bool,
-    write_enabled: bool,
-    active: bool,
+    pub(crate) read_enabled: bool,
+    pub(crate) write_enabled: bool,
+    pub(crate) active: bool,
 }
 
 impl Mapping {
-    fn decode(raw: &[u8; 16]) -> Self {
+    pub(crate) fn decode(raw: &[u8; 16]) -> Self {
         Self {
             logical_start: u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]),
             length: u16::from_le_bytes([raw[4], raw[5]]),
@@ -84,6 +84,37 @@ impl Mapping {
         }
     }
 
+    pub(crate) fn byte_aligned(&self) -> bool {
+        (
+            self.logical_start_bit,
+            self.logical_stop_bit,
+            self.physical_start_bit,
+        ) == (0, 7, 0)
+    }
+
+    pub(crate) fn bit_ranges(&self) -> std::result::Result<(Range<u64>, Range<u64>), &'static str> {
+        if self.length == 0 {
+            return Err("active mapping has zero length");
+        }
+        let start_byte = u64::from(self.logical_start);
+        let logical_start = start_byte * 8 + u64::from(self.logical_start_bit);
+        let last_byte = start_byte + u64::from(self.length) - 1;
+        let logical_end = last_byte * 8 + u64::from(self.logical_stop_bit) + 1;
+        if logical_end <= logical_start {
+            return Err("active mapping has an empty or reversed logical bit range");
+        }
+        if logical_end > (1u64 << 35) {
+            return Err("active mapping exceeds the logical address space");
+        }
+        let physical_start =
+            u64::from(self.physical_start) * 8 + u64::from(self.physical_start_bit);
+        let physical_end = physical_start + (logical_end - logical_start);
+        if physical_end > (1u64 << 19) {
+            return Err("active mapping exceeds the physical address space");
+        }
+        Ok((logical_start..logical_end, physical_start..physical_end))
+    }
+
     fn read_range(&self) -> std::result::Result<Option<Range<u64>>, &'static str> {
         if !self.active || !self.read_enabled {
             return Ok(None);
@@ -91,12 +122,7 @@ impl Mapping {
         if self.length == 0 {
             return Err("active read mapping has zero length");
         }
-        if (
-            self.logical_start_bit,
-            self.logical_stop_bit,
-            self.physical_start_bit,
-        ) != (0, 7, 0)
-        {
+        if !self.byte_aligned() {
             return Err("active read mapping is not byte aligned");
         }
         let start = u64::from(self.logical_start);
@@ -114,6 +140,37 @@ impl Mapping {
 pub(super) fn review(path: &Path, bindings: &[Binding]) -> Result<Review> {
     let (snapshot, bytes) = read_json::<Snapshot>(path, MAX_FILE_BYTES)?;
     review_snapshot(snapshot, hex::encode(Sha256::digest(&bytes)), bindings)
+}
+
+pub(crate) fn load_station(path: &Path, address: u16) -> Result<(String, usize, Station)> {
+    let (snapshot, bytes) = read_json::<Snapshot>(path, MAX_FILE_BYTES)?;
+    ensure!(
+        snapshot.schema == 1,
+        "unsupported group FMMU schema {}",
+        snapshot.schema
+    );
+    let stations: Vec<_> = snapshot
+        .devices
+        .iter()
+        .map(|device| device.station_address)
+        .collect();
+    ensure!(
+        (1..=super::MAX_DEVICES).contains(&stations.len()),
+        "FMMU snapshot needs 1 to {} stations",
+        super::MAX_DEVICES
+    );
+    super::validate_stations(&stations, stations.len())?;
+    let (position, station) = snapshot
+        .devices
+        .into_iter()
+        .enumerate()
+        .find(|(_, station)| station.station_address == address)
+        .with_context(|| format!("station {address:#06x} is absent from the FMMU snapshot"))?;
+    ensure!(
+        station.slots.len() <= MAX_CHANNELS,
+        "station has more than {MAX_CHANNELS} FMMU slots"
+    );
+    Ok((hex::encode(Sha256::digest(&bytes)), position, station))
 }
 
 pub(super) fn review_snapshot(
@@ -193,23 +250,30 @@ impl Device {
     }
 }
 
-pub(crate) fn check(station: Station, position: usize, expected: Option<Range<u64>>) -> Device {
-    let mut issues = Vec::new();
-    let mut spans = Vec::new();
-    if station.count.wkc != 1 {
-        issues.push(format!("FMMU count WKC {}, expected 1", station.count.wkc));
-    } else if usize::from(station.count.value) > MAX_CHANNELS {
-        issues.push(format!(
-            "FMMU count {} exceeds {MAX_CHANNELS}",
-            station.count.value
-        ));
-    } else if usize::from(station.count.value) != station.slots.len() {
-        issues.push(format!(
-            "ESC reports {} slots, snapshot contains {}",
-            station.count.value,
-            station.slots.len()
-        ));
+impl Station {
+    pub(crate) fn count_issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.count.wkc != 1 {
+            issues.push(format!("FMMU count WKC {}, expected 1", self.count.wkc));
+        } else if usize::from(self.count.value) > MAX_CHANNELS {
+            issues.push(format!(
+                "FMMU count {} exceeds {MAX_CHANNELS}",
+                self.count.value
+            ));
+        } else if usize::from(self.count.value) != self.slots.len() {
+            issues.push(format!(
+                "ESC reports {} slots, snapshot contains {}",
+                self.count.value,
+                self.slots.len()
+            ));
+        }
+        issues
     }
+}
+
+pub(crate) fn check(station: Station, position: usize, expected: Option<Range<u64>>) -> Device {
+    let mut issues = station.count_issues();
+    let mut spans = Vec::new();
     let slots = station
         .slots
         .into_iter()

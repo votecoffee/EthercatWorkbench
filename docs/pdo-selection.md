@@ -150,6 +150,16 @@ Run `preview-register-pdos` with an ESI and an exact identity or device index. T
 
 Omit `--snapshot` for an ESI-only review. A snapshot supplies raw bytes per entry when its saved register block covers the whole entry. The bundled sample reports the two DL status bytes as `B6` and `9E`, the first two port counters as `0102`, and the AL code as `1D00`. The same report leaves the unrecorded `0x0132–0x0133` entry unavailable. The JSON preserves the source hashes, snapshot label, station and UTC anchor. The snapshot format has no device identity, so confirm it came from the intended SubDevice before using the sampled bytes. This workflow covers offline inspection of raw values. Live FMMU setup and register access remain separate. [Authored ESI](../samples/register-pdos.esi.xml) · [ESC snapshot format](esc-diagnostics.md)
 
+### Locate a projection in saved FMMU evidence
+
+Add `--fmmu FILE --station ADDRESS` to `preview-register-pdos`. Use the schema-1 [saved FMMU table](input-group.md#check-a-saved-fmmu-snapshot) with a count and raw 16-byte slot reads per station. The station address is required even for a one-station file. The review records the selected station and position, table hash, reported and captured slot counts and any issues. An optional ESC snapshot must report the same station address. The source formats do not bind those station addresses to a device identity or connection generation.
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --fmmu samples/register-pdos-fmmu.json --station 0x1000 --snapshot samples/esc-diagnostics.json --out .local/register-fmmu-review.json
+```
+
+A match requires one active, byte-aligned, read-only FMMU to cover the whole projected register range. The matched logical address includes the offset of the projection within that FMMU. The sample maps register `0x0300` at logical address `0x10200011` because its FMMU starts at register `0x02FF`. An overlapping physical mapping or another read FMMU in the matched logical span at the selected station produces a conflict. Partial, bit-aligned and write-enabled covering FMMUs also produce conflicts. A bad Working Counter, inconsistent slot count or invalid active range makes the selected station's comparison unavailable. The optional historical sample bytes keep their own availability even when an FMMU maps the range. [Bundled FMMU table](../samples/register-pdos-fmmu.json) · [Beckhoff FMMU reference](https://download.beckhoff.com/download/Document/io/ethercat-development-products/ethercat_esc_datasheet_sec1_technology_v2.5.pdf)
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

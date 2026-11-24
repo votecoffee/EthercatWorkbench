@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.102.0** reviews contiguous byte-aligned virtual TxPDOs from an ESI and annotates each entry with raw bytes when a saved ESC snapshot covers it. The report hashes both sources and records that the snapshot has no vendor/product/revision binding. The authored sample exercises status, counters, a missing register range and an AL code. Physical qualification remains open. [Register-backed virtual TxPDOs](pdo-selection.md#review-virtual-txpdos-backed-by-esc-registers) · [Verification history](../VERIFICATION.md)
+Version **0.103.0** checks the logical placement of register-backed virtual TxPDOs in a saved FMMU table for an explicitly selected station. The review identifies partial coverage, overlaps, write-enabled slots and invalid readback. It retains the recorded register bytes as independent historical evidence. Physical qualification remains open. [Saved FMMU review](pdo-selection.md#locate-a-projection-in-saved-fmmu-evidence) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

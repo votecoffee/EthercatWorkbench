@@ -308,6 +308,12 @@ enum Command {
         /// Raw ESC diagnostics snapshot, using the same format as decode-esc.
         #[arg(long)]
         snapshot: Option<PathBuf>,
+        /// Saved schema-1 FMMU register table.
+        #[arg(long, requires = "station")]
+        fmmu: Option<PathBuf>,
+        /// Select the configured station address in the saved FMMU table.
+        #[arg(long, requires = "fmmu", value_parser = esi::number)]
+        station: Option<u32>,
         /// Export to a new JSON file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -1086,10 +1092,21 @@ fn main() -> Result<()> {
             device,
             identity,
             snapshot,
+            fmmu,
+            station,
             out,
         } => {
-            let report =
-                esi::register_pdos::preview(&file, device, identity.as_ref(), snapshot.as_deref())?;
+            let station = station
+                .map(u16::try_from)
+                .transpose()
+                .context("FMMU station address exceeds 16 bits")?;
+            let report = esi::register_pdos::preview(
+                &file,
+                device,
+                identity.as_ref(),
+                snapshot.as_deref(),
+                fmmu.as_deref().zip(station),
+            )?;
             inspection_export(&report, out.as_deref())
         }
         Command::PreviewPdoLayout {
