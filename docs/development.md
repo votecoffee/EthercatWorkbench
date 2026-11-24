@@ -14,6 +14,8 @@ Read [AGENTS.md](../AGENTS.md) first. [Operations](operations.md) describes supp
 
 `esi/register_pdos/fmmu.rs` compares declared physical register ranges with the selected station in a saved FMMU table. It shares the FMMU decoder and slot count checks with `input_group/fmmu.rs`. The review clips each covering FMMU to the projected register range and requires exact physical coverage. Bit ranges detect overlaps from neighboring mappings, including partial-byte overlaps. The report gives each verified segment its own logical address and keeps the placement independent of saved raw ESC samples.
 
+`esi/register_pdos/payload.rs` reads one bounded logical payload file and resolves raw entries through verified FMMU segments. A clipped segment contributes only the bytes within the requested entry. A missing byte makes that result unavailable. Source hashes and independent ESC snapshot samples remain in the review.
+
 `preview-pdo-layout` uses the expected-layout composer shared with the modular review. That composer keeps the ESI declaration and manual entries provenance on each chosen virtual template. The directional source marks the resulting expectation. Saved evidence readers reject expected layouts as readback and the comparison requires an explicit CoE source for a direction with manual template entries.
 
 `comparison_files.rs` prepares the recorded report and CSV-part references, validates the audit association, and checks source bytes with bounded memory and cooperative cancellation. Desktop Review passes the opened result hash to the worker. The CLI prints the same per-file status report and offers a create-new receipt.

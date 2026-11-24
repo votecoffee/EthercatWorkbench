@@ -82,6 +82,7 @@ try {
         'samples/register-pdos.esi.xml' = 'samples/register-pdos.esi.xml'
         'samples/register-pdos-fmmu.json' = 'samples/register-pdos-fmmu.json'
         'samples/register-pdos-fmmu-split.json' = 'samples/register-pdos-fmmu-split.json'
+        'samples/register-pdos-logical-payload.json' = 'samples/register-pdos-logical-payload.json'
         'samples/virtual-pdo-expected.json' = 'samples/virtual-pdo-expected.json'
         'samples/fixed-slot-pdo-readback.json' = 'samples/fixed-slot-pdo-readback.json'
         'samples/fixed-slot-module-inventory.json' = 'samples/fixed-slot-module-inventory.json'

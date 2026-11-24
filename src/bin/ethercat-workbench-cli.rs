@@ -314,6 +314,9 @@ enum Command {
         /// Select the configured station address in the saved FMMU table.
         #[arg(long, requires = "fmmu", value_parser = esi::number)]
         station: Option<u32>,
+        /// Saved schema-1 logical payload with an explicit station and start address.
+        #[arg(long, requires_all = ["fmmu", "station"])]
+        logical_payload: Option<PathBuf>,
         /// Export to a new JSON file.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -1094,6 +1097,7 @@ fn main() -> Result<()> {
             snapshot,
             fmmu,
             station,
+            logical_payload,
             out,
         } => {
             let station = station
@@ -1106,6 +1110,7 @@ fn main() -> Result<()> {
                 identity.as_ref(),
                 snapshot.as_deref(),
                 fmmu.as_deref().zip(station),
+                logical_payload.as_deref(),
             )?;
             inspection_export(&report, out.as_deref())
         }

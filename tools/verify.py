@@ -774,6 +774,109 @@ def verify_fixed_slot_pdos(cli, destination, sample=None):
     assert sample.read_bytes() == original
 
 
+def verify_register_pdo_logical_payload(cli, destination, sample=None, fmmu=None, snapshot=None,
+                                        payload=None, single_fmmu=None):
+    """Reassemble an addressed logical window through checked virtual TxPDO mappings."""
+    sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
+    fmmu = ROOT / "samples/register-pdos-fmmu-split.json" if fmmu is None else fmmu
+    snapshot = ROOT / "samples/esc-diagnostics.json" if snapshot is None else snapshot
+    payload = ROOT / "samples/register-pdos-logical-payload.json" if payload is None else payload
+    single_fmmu = ROOT / "samples/register-pdos-fmmu.json" if single_fmmu is None else single_fmmu
+    command = ("preview-register-pdos", sample, "--device", 0)
+    options = ("--fmmu", fmmu, "--station", "0x1000", "--snapshot", snapshot)
+    proof = destination / "review.json"
+    result = cli_call(cli, *command, *options, "--logical-payload", payload, "--out", proof)
+    assert result == json.loads(proof.read_bytes())
+    assert result["logical_payload"] == {
+        "file_name": payload.name, "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
+        "source": "supplied_logical_bytes", "station_address": 4096,
+        "logical_start": 0x10200000, "byte_count": 0x62,
+    }
+    dl, counter, al, build = result["projections"]
+
+    def assert_raw(sample, expected):
+        assert sample == {"status": "available", "raw_hex": expected}, sample
+
+    assert_raw(dl["logical_sample"], "B79D")
+    assert_raw(dl["entries"][0]["logical_sample"], "B7")
+    assert_raw(dl["entries"][1]["logical_sample"], "9D")
+    assert_raw(dl["entries"][0]["sample"], "B6")
+    assert_raw(dl["entries"][1]["sample"], "9E")
+    assert_raw(counter["entries"][0]["logical_sample"], "AABB")
+    assert_raw(counter["entries"][0]["sample"], "0102")
+    assert_raw(al["logical_sample"], "040011220500")
+    assert_raw(al["entries"][1]["logical_sample"], "1122")
+    assert al["entries"][1]["sample"]["status"] == "unavailable"
+    assert build["logical_sample"]["status"] == "unavailable"
+    assert "0xfffffffe..0x100000000" in build["logical_sample"]["reason"]
+    assert_raw(build["entries"][0]["sample"], "3412")
+    no_payload = cli_call(cli, *command, *options)
+    assert "logical_payload" not in no_payload and "logical_sample" not in no_payload["projections"][0]
+    assert "logical_sample" not in no_payload["projections"][0]["entries"][0]
+    assert "existing paths are preserved" in cli_call(cli, *command, *options, "--logical-payload",
+                                                      payload, "--out", proof, success=False)
+
+    def variant(name, *, bom=False, **overrides):
+        source = json.loads(payload.read_bytes())
+        source.update(overrides)
+        data = (b"\xef\xbb\xbf" if bom else b"") + json.dumps(source).encode("utf-8")
+        path = destination / (name + ".json")
+        path.write_bytes(data)
+        return path
+
+    def inspect(path, table=fmmu):
+        return cli_call(cli, *command, "--fmmu", table, "--station", "0x1000",
+                        "--logical-payload", path)
+
+    tail = variant("one-disjoint-byte", bom=True, logical_start=0x10200021, payload_hex="E5")
+    partial = inspect(tail)
+    assert partial["logical_payload"]["sha256"] == hashlib.sha256(tail.read_bytes()).hexdigest()
+    dl = partial["projections"][0]
+    assert partial["snapshot"] is None and dl["entries"][0]["sample"] is None
+    assert dl["logical_sample"]["status"] == "unavailable"
+    assert_raw(dl["entries"][0]["logical_sample"], "E5")
+    assert dl["entries"][1]["logical_sample"]["status"] == "unavailable"
+    half = variant("half-counter", logical_start=0x10200030, payload_hex="AA")
+    assert inspect(half)["projections"][1]["entries"][0]["logical_sample"]["status"] == "unavailable"
+    inside = variant("inside-single-slot", logical_start=0x10200001, payload_hex="D1")
+    single = inspect(inside, table=single_fmmu)["projections"][0]
+    assert single["fmmu_check"]["status"] == "matched"
+    assert single["entries"][0]["logical_sample"]["status"] == "unavailable"
+    assert_raw(single["entries"][1]["logical_sample"], "D1")
+    upper = variant("upper-boundary", logical_start=0xfffffffe, payload_hex="7E7F")
+    assert_raw(inspect(upper)["projections"][3]["logical_sample"], "7E7F")
+
+    broken_table = json.loads(fmmu.read_bytes())
+    broken_table["devices"][0]["slots"][1]["value"][12] = 0
+    broken = destination / "partial-fmmu.json"
+    broken.write_bytes(json.dumps(broken_table).encode())
+    held = cli_call(cli, *command, "--fmmu", broken, "--station", "4096",
+                    "--snapshot", snapshot, "--logical-payload", payload)["projections"][0]
+    assert held["fmmu_check"]["status"] == "conflict"
+    assert held["logical_sample"]["status"] == "unavailable" and "partially covers" in held["logical_sample"]["reason"]
+    assert held["entries"][0]["logical_sample"]["status"] == "unavailable"
+    assert_raw(held["entries"][0]["sample"], "B6")
+
+    rejected = destination / "unexpected.json"
+    invalid = [
+        (variant("wrong-station", station_address=4097), "differs from selected FMMU station"),
+        (variant("new-schema", schema=2), "unsupported logical payload schema"),
+        (variant("unknown-field", wkc=1), "unknown field"),
+        (variant("empty-hex", payload_hex="  "), "must contain at least one byte"),
+        (variant("bad-hex", payload_hex="GE"), "use pairs of hexadecimal digits"),
+        (variant("wrap", logical_start=0xffffffff, payload_hex="AABB"), "extends beyond the 32-bit"),
+        (variant("long", payload_hex="AA" * 1025), "payload exceeds 1024 bytes"),
+    ]
+    excessive = destination / "oversize.json"
+    excessive.write_bytes(b" " * 16385)
+    invalid.append((excessive, "exceeds 16384 bytes"))
+    for source, reason in invalid:
+        assert reason in cli_call(cli, *command, *options, "--logical-payload", source,
+                                  "--out", rejected, success=False)
+        assert not rejected.exists()
+    assert "--fmmu" in cli_call(cli, *command, "--logical-payload", payload, success=False)
+
+
 def verify_split_register_pdo_fmmus(cli, destination, sample=None, fmmu=None, snapshot=None):
     """Validate clipped, ordered register coverage across multiple saved FMMU slots."""
     sample = ROOT / "samples/register-pdos.esi.xml" if sample is None else sample
@@ -7765,6 +7868,9 @@ def main():
     split_fmmu_destination = destination / "split-register-pdo-fmmus"
     split_fmmu_destination.mkdir()
     verify_split_register_pdo_fmmus(cli, split_fmmu_destination)
+    register_payload_destination = destination / "register-pdo-logical-payload"
+    register_payload_destination.mkdir()
+    verify_register_pdo_logical_payload(cli, register_payload_destination)
     runtime_destination = destination / "runtime-check"
     runtime_destination.mkdir()
     verify_runtime_check(cli, runtime_destination)

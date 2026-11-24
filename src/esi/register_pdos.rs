@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 mod fmmu;
+mod payload;
 
 const ESC_REGISTER_END: usize = 0x0f00;
 
@@ -24,6 +25,8 @@ pub struct Review {
     snapshot: Option<SnapshotEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fmmu: Option<fmmu::Evidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logical_payload: Option<payload::Evidence>,
     projections: Vec<Projection>,
 }
 
@@ -49,6 +52,8 @@ struct Projection {
     unavailable: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fmmu_check: Option<fmmu::Check>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logical_sample: Option<Sample>,
     entries: Vec<Entry>,
 }
 
@@ -61,6 +66,8 @@ struct Entry {
     width_bits: usize,
     byte_offset: Option<usize>,
     sample: Option<Sample>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logical_sample: Option<Sample>,
 }
 
 #[derive(Serialize)]
@@ -76,6 +83,7 @@ pub fn preview(
     identity: Option<&Identity>,
     snapshot: Option<&Path>,
     fmmu: Option<(&Path, u16)>,
+    logical_payload: Option<&Path>,
 ) -> Result<Review> {
     let devices = load(esi)?;
     let device = select_device(&devices, index, identity)?;
@@ -91,6 +99,14 @@ pub fn preview(
             table.evidence.station_address,
         );
     }
+    let logical_payload = logical_payload
+        .map(|path| {
+            let table = fmmu
+                .as_ref()
+                .context("logical payload review requires a saved FMMU table")?;
+            payload::Window::load(path, table.evidence.station_address)
+        })
+        .transpose()?;
     let projections = device
         .source
         .pdo_catalog
@@ -102,6 +118,7 @@ pub fn preview(
                 pdo,
                 snapshot.as_ref().map(|(_, snapshot)| snapshot),
                 fmmu.as_ref(),
+                logical_payload.as_ref(),
             )
         })
         .collect();
@@ -113,6 +130,7 @@ pub fn preview(
         esi_sha256: device.source.sha256.clone(),
         snapshot: snapshot.map(|(evidence, _)| evidence),
         fmmu: fmmu.map(|table| table.evidence),
+        logical_payload: logical_payload.map(|window| window.evidence),
         projections,
     })
 }
@@ -142,11 +160,24 @@ fn projection(
     pdo: &Definition,
     snapshot: Option<&Snapshot>,
     fmmu: Option<&fmmu::Table>,
+    logical_payload: Option<&payload::Window>,
 ) -> Projection {
     let sm = pdo
         .default_sm
         .and_then(|index| device.virtual_sync_managers.get(&index));
-    let placement = geometry(device, pdo, sm);
+    let (byte_count, unavailable) = match geometry(device, pdo, sm) {
+        Ok(bytes) => (Some(bytes), None),
+        Err(error) => (None, Some(format!("{error:#}"))),
+    };
+    let fmmu_check = fmmu.map(|table| match byte_count {
+        Some(width) => table.compare(pdo.entries[0].index, width),
+        None => fmmu::Check::Unavailable {
+            reason: "ESI projection geometry is unavailable".into(),
+        },
+    });
+    let logical = logical_payload.zip(fmmu_check.as_ref());
+    let logical_sample =
+        logical.map(|(window, check)| window.sample(check, 0..byte_count.unwrap_or_default()));
     let mut byte_offset = 0;
     let entries = pdo
         .entries
@@ -155,7 +186,7 @@ fn projection(
             let offset = byte_offset;
             let width = entry.width / 8;
             byte_offset += width;
-            let sample = match (placement.is_ok(), snapshot) {
+            let sample = match (byte_count.is_some(), snapshot) {
                 (true, Some(snapshot)) => Some(match saved_bytes(snapshot, entry.index, width) {
                     Ok(bytes) => Sample::Available {
                         raw_hex: hex::encode_upper(bytes),
@@ -172,21 +203,13 @@ fn projection(
                 declared_index: entry.index,
                 declared_subindex: entry.subindex,
                 width_bits: entry.width,
-                byte_offset: placement.is_ok().then_some(offset),
+                byte_offset: byte_count.is_some().then_some(offset),
                 sample,
+                logical_sample: logical
+                    .map(|(window, check)| window.sample(check, offset..byte_offset)),
             }
         })
         .collect();
-    let (byte_count, unavailable) = match placement {
-        Ok(bytes) => (Some(bytes), None),
-        Err(error) => (None, Some(format!("{error:#}"))),
-    };
-    let fmmu_check = fmmu.map(|table| match byte_count {
-        Some(width) => table.compare(pdo.entries[0].index, width),
-        None => fmmu::Check::Unavailable {
-            reason: "ESI projection geometry is unavailable".into(),
-        },
-    });
     Projection {
         pdo_index: pdo.index,
         name: pdo.name.clone(),
@@ -195,6 +218,7 @@ fn projection(
         byte_count,
         unavailable,
         fmmu_check,
+        logical_sample,
         entries,
     }
 }

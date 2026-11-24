@@ -555,7 +555,7 @@ fn validate_stations(stations: &[u16], expected: usize) -> Result<()> {
     Ok(())
 }
 
-fn read_json<T: DeserializeOwned>(path: &Path, max_bytes: u64) -> Result<(T, Vec<u8>)> {
+pub(crate) fn read_json<T: DeserializeOwned>(path: &Path, max_bytes: u64) -> Result<(T, Vec<u8>)> {
     let mut bytes = Vec::new();
     File::open(path)
         .with_context(|| format!("open {}", path.display()))?

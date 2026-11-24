@@ -166,6 +166,16 @@ Use the split sample to check a projection that spans multiple FMMUs. The report
 .\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --fmmu samples/register-pdos-fmmu-split.json --station 0x1000 --snapshot samples/esc-diagnostics.json --out .local/register-split-fmmu-review.json
 ```
 
+### Decode a saved logical payload
+
+Add `--logical-payload FILE` to a review with `--fmmu` and `--station`. The schema-1 JSON file specifies `station_address`, `logical_start` and `payload_hex`. Give the address and station as JSON integers. Provide one contiguous window of 1 to 1024 bytes as pairs of hexadecimal digits, optionally separated by spaces. The station must match the selected FMMU station and the window must fit within the 32-bit logical address space. Workbench records the payload file hash and its declared logical range. Frame origin, Working Counter and device identity remain unverified for these supplied bytes. [Saved payload sample](../samples/register-pdos-logical-payload.json)
+
+```powershell
+.\ethercat-workbench-cli.exe preview-register-pdos samples/register-pdos.esi.xml --device 0 --fmmu samples/register-pdos-fmmu-split.json --station 0x1000 --logical-payload samples/register-pdos-logical-payload.json --snapshot samples/esc-diagnostics.json --out .local/register-payload-review.json
+```
+
+The report adds a `logical_sample` for each complete projection and entry whose bytes are covered. It follows the checked FMMU placements and assembles the raw result in register order. The example recovers DL status bytes `B79D` from logical addresses `0x10200021` and `0x10200000`. A field can be available even when another field falls outside the window. An incomplete entry or unverified placement carries an unavailable reason. The ESC snapshot's existing `sample` values remain separately attributed, including when the bytes disagree.
+
 ## Inspect saved dynamic PDO readback
 
 The ESI import retains three independent CoE attributes. `upload` records `PdoUpload`, which describes whether to upload the device's PDO configuration and assignment. `assign` and `configure` record `PdoAssign` and `PdoConfig`, the startup download declarations for assignments and mappings. An omitted declaration stays unknown. [ETG.2000, CoE mailbox attributes](https://jianwei.fun/wp-content/uploads/2023/11/ETG2000_S_R_V1i0i7_EtherCATSlaveInformationSpecification.pdf)

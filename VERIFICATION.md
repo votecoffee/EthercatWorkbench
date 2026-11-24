@@ -971,3 +971,11 @@ The saved FMMU review clips each covering slot to the projected register range. 
 The authored table split three projections. DL status mapped to 0x10200021 and 0x10200000 in register order. The 16-bit counter spanned two slots. The AL projection spanned three slots and retained the independent unavailable sample for its middle bytes. The fixture checked clipping, gaps, physical overlap, logical overlap between participating slots, partial-byte alignment, write enablement and a failed slot Working Counter.
 
 Formatting, locked Clippy, all 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The single-slot fixture preserved its alignment diagnostic. Physical timing and native SAFEOP qualification remain open.
+
+## Version 0.105.0 logical payload review for register-backed TxPDOs (2026-11-24)
+
+The logical payload option accepts a single addressed window for the selected FMMU station. Review records its SHA-256 and extracts complete raw results through matched single-slot or split FMMU placement. It reports logical payload and saved ESC register bytes under their own source labels and validates payload length and the 32-bit address boundary.
+
+The authored split fixture recovered DL status B79D from logical addresses 0x10200021 and 0x10200000 in physical register order. The 16-bit counter decoded as AABB. The AL middle entry decoded as 1122 while the ESC snapshot reported that entry unavailable. The fixture also recovered only the supplied field in a narrow window and withheld an incomplete 16-bit entry and results with conflicting FMMU placement. It checked a single-slot interior byte, exactly two bytes ending at the address boundary, BOM and source hashing, invalid schema and hex, missing FMMU evidence, station mismatch, wraparound and file size limits.
+
+Formatting, locked Clippy, all 194 Rust tests, the locked Windows x64 build and the full headless Windows regression passed. The 1 ms virtual timing cases reached 321 missed deadlines in the full suite. The isolated repeat of the CoE, CoE normal and CoE segmented cases recorded 0 to 2 missed deadlines per one-second run. Physical timing and native SAFEOP qualification remain open.

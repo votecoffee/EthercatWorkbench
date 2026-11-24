@@ -1,6 +1,6 @@
 # Research and handoff brief
 
-Version **0.104.0** reviews register-backed virtual TxPDOs that span multiple saved FMMU slots. It verifies exact byte coverage and reports separate logical addresses in physical register order. Gaps, overlaps, write-enabled slots and invalid evidence remain visible. Physical qualification remains open. [Saved FMMU review](pdo-selection.md#locate-a-projection-in-saved-fmmu-evidence) · [Verification history](../VERIFICATION.md)
+Version **0.105.0** decodes an addressed logical payload through checked single-slot or split FMMU placements. It assembles raw data in register order and withholds incomplete results. The report keeps logical payload bytes and ESC snapshot bytes independently attributed. Physical qualification remains open. [Logical payload review](pdo-selection.md#decode-a-saved-logical-payload) · [Verification history](../VERIFICATION.md)
 
 ## Decisions to retain
 

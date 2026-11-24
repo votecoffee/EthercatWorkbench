@@ -44,10 +44,10 @@ pub(super) enum Check {
 #[derive(Serialize)]
 pub(super) struct Segment {
     slot: usize,
-    projection_byte_offset: usize,
+    pub(super) projection_byte_offset: usize,
     physical_start: u16,
-    logical_start: u32,
-    byte_count: usize,
+    pub(super) logical_start: u32,
+    pub(super) byte_count: usize,
 }
 
 struct ActiveMapping {
